@@ -45,10 +45,19 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
 
 export const DEFAULT_APP_BASIC_SETTINGS: AppBasicSettings = {
   uiTheme: 'light',
+  uiAccent: 'amber',
+  uiCustomAccentHex: '#0369A1',
+  uiWallpaperPreset: 'none',
+  uiWallpaperBlur: 4,
+  uiWallpaperOverlay: 52,
   tapToTurnPage: true,
   keepScreenAwake: false,
   autoResumeLastBook: false,
   defaultReadingStyle: 'novel',
+  autoSyncGoogleDrive: false,
+  standaloneDeviceMode: true,
+  hapticFeedback: true,
+  volumeKeyPageTurn: true,
 };
 
 function openDb(): Promise<IDBDatabase> {
@@ -343,5 +352,22 @@ export function saveAppBasicSettings(settings: AppBasicSettings): void {
     localStorage.setItem('laziread_basic_settings', JSON.stringify(settings));
   } catch {
     // Ignore storage quota errors
+  }
+}
+
+export async function loadAppWallpaperDataUrl(): Promise<string | null> {
+  try {
+    const val = await getMetaValue<string | null>('app_wallpaper_data');
+    return typeof val === 'string' && val.length > 0 ? val : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveAppWallpaperDataUrl(dataUrl: string | null): Promise<void> {
+  try {
+    await setMetaValue('app_wallpaper_data', dataUrl || '');
+  } catch {
+    // Ignore storage errors
   }
 }

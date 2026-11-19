@@ -77,7 +77,7 @@ export const CollectionModal: React.FC<CollectionModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-label={editingCollection ? 'Chỉnh sửa bộ sưu tập' : 'Tạo bộ sưu tập mới'}
-        className="ios-sheet-enter w-full sm:max-w-lg max-h-[88vh] bg-[#FBF9F5] dark:bg-[#16181C] rounded-t-[28px] sm:rounded-[26px] border border-white/60 dark:border-stone-800 shadow-2xl flex flex-col overflow-hidden"
+        className="ios-sheet-enter w-full sm:max-w-lg h-auto max-h-[85dvh] bg-[#FBF9F5] dark:bg-[#16181C] rounded-t-[28px] sm:rounded-[26px] border border-white/60 dark:border-stone-800 shadow-2xl flex flex-col overflow-hidden"
       >
         <div className="sm:hidden flex justify-center pt-2.5">
           <div className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />

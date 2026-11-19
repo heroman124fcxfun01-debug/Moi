@@ -7,6 +7,11 @@
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-serif-book: 'Lora', 'Source Serif 4', Georgia, serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --app-accent: #92400e;
+    --app-accent-dark: #f59e0b;
+    --app-accent-rgb: 146, 64, 14;
+    --app-bg-light: #f7f4ee;
+    --app-bg-dark: #121316;
   }
 
   html {
@@ -17,20 +22,116 @@
   }
 
   body {
-    background-color: #f7f4ee;
+    background-color: var(--app-bg-light);
     color: #1c1917;
+    transition: background-color 220ms ease;
   }
 
   .dark body {
-    background-color: #121316;
+    background-color: var(--app-bg-dark);
     color: #e7e5e4;
   }
 
-  /* Samsung Galaxy S24 Ultra AMOLED Deep Black Mode */
+  /* AMOLED Deep Black Mode */
   .dark.amoled body {
     background-color: #000000;
     color: #f4f4f5;
   }
+}
+
+/* Dynamic App Accent Color Override (applies across app chrome, never overrides book paper themes) */
+html[data-app-accent-custom='true'] .text-amber-800,
+html[data-app-accent-custom='true'] .text-amber-900 {
+  color: var(--app-accent) !important;
+}
+html.dark[data-app-accent-custom='true'] .dark\:text-amber-400,
+html.dark[data-app-accent-custom='true'] .dark\:text-amber-300 {
+  color: var(--app-accent-dark) !important;
+}
+html[data-app-accent-custom='true'] .bg-amber-800,
+html[data-app-accent-custom='true'] .bg-amber-700,
+html[data-app-accent-custom='true'] .hover\:bg-amber-900:hover {
+  background-color: var(--app-accent) !important;
+}
+html.dark[data-app-accent-custom='true'] .dark\:bg-amber-600 {
+  background-color: var(--app-accent-dark) !important;
+}
+html[data-app-accent-custom='true'] .border-amber-800,
+html[data-app-accent-custom='true'] .border-amber-700,
+html[data-app-accent-custom='true'] .hover\:border-amber-700:hover,
+html[data-app-accent-custom='true'] .hover\:border-amber-800:hover {
+  border-color: var(--app-accent) !important;
+}
+html[data-app-accent-custom='true'] .bg-amber-100\/80,
+html[data-app-accent-custom='true'] .bg-amber-50\/60,
+html[data-app-accent-custom='true'] .bg-amber-50 {
+  background-color: rgba(var(--app-accent-rgb), 0.12) !important;
+}
+html[data-app-accent-custom='true'] .accent-amber-800 {
+  accent-color: var(--app-accent) !important;
+}
+html[data-app-accent-custom='true'] .ios-dock-pill-active {
+  box-shadow:
+    0 8px 20px rgba(var(--app-accent-rgb), 0.28),
+    0 2px 6px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Frosted Translucent Glass Cards when user enables an App Wallpaper (never active in Reader) */
+.app-wallpaper-active main section.bg-white,
+.app-wallpaper-active main section .bg-white,
+.app-wallpaper-active main .bg-white,
+.app-wallpaper-active main [class*="bg-white/"],
+.app-wallpaper-active main .bg-\[\#FBF9F5\] {
+  background-color: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(18px) saturate(165%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(165%) !important;
+  border-color: rgba(255, 255, 255, 0.56) !important;
+  box-shadow:
+    0 10px 28px rgba(24, 20, 16, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
+}
+
+.app-wallpaper-active main .bg-stone-50,
+.app-wallpaper-active main [class*="bg-stone-50/"],
+.app-wallpaper-active main [class*="bg-amber-50/"] {
+  background-color: rgba(255, 255, 255, 0.38) !important;
+  backdrop-filter: blur(14px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(150%) !important;
+}
+
+.dark .app-wallpaper-active main section.bg-white,
+.dark .app-wallpaper-active main section .bg-white,
+.dark .app-wallpaper-active main .bg-white,
+.dark .app-wallpaper-active main [class*="dark:bg-[#16181C]"],
+.dark .app-wallpaper-active main [class*="dark:bg-stone-900"],
+.dark .app-wallpaper-active main [class*="dark:bg-zinc-900"] {
+  background-color: rgba(18, 20, 26, 0.48) !important;
+  backdrop-filter: blur(18px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(160%) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
+}
+
+.dark .app-wallpaper-active main [class*="dark:bg-amber-950/"] {
+  background-color: rgba(40, 26, 14, 0.42) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+}
+
+/* Keep interactive inputs legible inside frosted cards */
+.app-wallpaper-active main select,
+.app-wallpaper-active main input[type="text"],
+.app-wallpaper-active main textarea {
+  background-color: rgba(255, 255, 255, 0.65) !important;
+}
+
+.dark .app-wallpaper-active main select,
+.dark .app-wallpaper-active main input[type="text"],
+.dark .app-wallpaper-active main textarea {
+  background-color: rgba(18, 20, 26, 0.68) !important;
 }
 
 .font-display {
@@ -254,19 +355,19 @@
 
 @keyframes iosSheetUp {
   0% {
-    opacity: 0;
-    transform: translateY(36px) scale(0.97);
+    opacity: 0.92;
+    transform: translateY(18px);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
 @keyframes iosDrawerSlideRight {
   0% {
-    opacity: 0;
-    transform: translateX(32px);
+    opacity: 0.92;
+    transform: translateX(20px);
   }
   100% {
     opacity: 1;
@@ -276,8 +377,8 @@
 
 @keyframes iosDrawerSlideLeft {
   0% {
-    opacity: 0;
-    transform: translateX(-32px);
+    opacity: 0.92;
+    transform: translateX(-20px);
   }
   100% {
     opacity: 1;
@@ -295,23 +396,35 @@
 }
 
 .ios-view-enter {
-  animation: iosViewEnter 340ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosViewEnter 280ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 
 .ios-reader-enter {
-  animation: iosReaderPush 380ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosReaderPush 300ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 
 .ios-sheet-enter {
-  animation: iosSheetUp 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  animation: iosSheetUp 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .ios-drawer-right {
-  animation: iosDrawerSlideRight 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  animation: iosDrawerSlideRight 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .ios-drawer-left {
-  animation: iosDrawerSlideLeft 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  animation: iosDrawerSlideLeft 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ios-view-enter,
+  .ios-reader-enter,
+  .ios-sheet-enter,
+  .ios-drawer-right,
+  .ios-drawer-left {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
 }
 
 .ios-tap-card {
@@ -326,21 +439,21 @@
 }
 
 .ios-glass-dock {
-  background: rgba(251, 249, 245, 0.8);
-  backdrop-filter: blur(22px) saturate(180%);
-  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  background: rgba(251, 249, 245, 0.54);
+  backdrop-filter: blur(22px) saturate(190%);
+  -webkit-backdrop-filter: blur(22px) saturate(190%);
   box-shadow:
     0 14px 36px rgba(28, 22, 16, 0.16),
     0 2px 8px rgba(28, 22, 16, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .dark .ios-glass-dock {
-  background: rgba(26, 28, 34, 0.82);
+  background: rgba(24, 26, 32, 0.56);
   box-shadow:
     0 16px 40px rgba(0, 0, 0, 0.55),
     0 2px 8px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .ios-dock-pill {
@@ -385,23 +498,23 @@
   animation: spinVinylDisc 20s linear infinite;
 }
 
-/* iPhone Liquid-Glass Rounded Selection Bars & Water-Drop Pills */
+/* iPhone Liquid-Glass Rounded Selection Bars & Sliding Transparent Water-Drop */
 .ios-liquid-bar {
-  background: rgba(244, 239, 230, 0.72);
-  backdrop-filter: blur(18px) saturate(180%);
-  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  background: rgba(248, 245, 239, 0.48);
+  backdrop-filter: blur(22px) saturate(190%);
+  -webkit-backdrop-filter: blur(22px) saturate(190%);
   box-shadow:
-    0 6px 20px rgba(28, 22, 16, 0.08),
+    0 8px 24px rgba(24, 20, 16, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    inset 0 -1px 0 rgba(28, 22, 16, 0.05);
+    inset 0 -1px 0 rgba(24, 20, 16, 0.06);
 }
 
 .dark .ios-liquid-bar {
-  background: rgba(34, 37, 44, 0.72);
+  background: rgba(26, 29, 36, 0.48);
   box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.25);
+    0 10px 28px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.28);
 }
 
 .ios-liquid-pill {
@@ -417,18 +530,70 @@
 }
 
 .ios-liquid-pill-active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(252, 248, 241, 0.9) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.62) 0%, rgba(255, 255, 255, 0.36) 100%);
+  backdrop-filter: blur(14px) saturate(200%);
+  -webkit-backdrop-filter: blur(14px) saturate(200%);
   box-shadow:
-    0 6px 16px rgba(146, 64, 14, 0.16),
+    0 6px 18px rgba(var(--app-accent-rgb), 0.16),
     0 1px 4px rgba(28, 22, 16, 0.08),
-    inset 0 1.5px 0 rgba(255, 255, 255, 0.98);
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.96),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.45);
 }
 
 .dark .ios-liquid-pill-active {
-  background: linear-gradient(180deg, rgba(58, 62, 74, 0.92) 0%, rgba(42, 45, 54, 0.92) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.08) 100%);
+  backdrop-filter: blur(14px) saturate(200%);
+  -webkit-backdrop-filter: blur(14px) saturate(200%);
   box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.45),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    0 6px 18px rgba(0, 0, 0, 0.42),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.34),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.08);
+}
+
+/* Sliding Transparent Glass Water-Drop Indicator (iOS Liquid Glass spring glide) */
+.liquid-waterdrop-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.66) 0%,
+    rgba(255, 255, 255, 0.34) 55%,
+    rgba(255, 255, 255, 0.48) 100%
+  );
+  backdrop-filter: blur(14px) saturate(210%) brightness(1.06);
+  -webkit-backdrop-filter: blur(14px) saturate(210%) brightness(1.06);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow:
+    0 6px 18px rgba(var(--app-accent-rgb), 0.16),
+    0 2px 6px rgba(20, 18, 16, 0.08),
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.98),
+    inset 0 -1.5px 3px rgba(var(--app-accent-rgb), 0.12);
+  transition:
+    transform 340ms cubic-bezier(0.32, 0.72, 0, 1),
+    width 340ms cubic-bezier(0.32, 0.72, 0, 1),
+    height 340ms cubic-bezier(0.32, 0.72, 0, 1),
+    box-shadow 260ms ease;
+  will-change: transform, width, height;
+}
+
+.dark .liquid-waterdrop-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.24) 0%,
+    rgba(255, 255, 255, 0.1) 55%,
+    rgba(255, 255, 255, 0.16) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.45),
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.4),
+    inset 0 -1.5px 3px rgba(var(--app-accent-rgb), 0.22);
+}
+
+.liquid-waterdrop-gliding {
+  box-shadow:
+    0 10px 24px rgba(var(--app-accent-rgb), 0.22),
+    0 3px 10px rgba(20, 18, 16, 0.12),
+    inset 0 2px 3px rgba(255, 255, 255, 1),
+    inset 0 -2px 4px rgba(var(--app-accent-rgb), 0.18);
 }
 
 .ios-liquid-btn {

@@ -1,5 +1,14 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, FileText, Image as ImageIcon, BookOpen, Download, Loader2 } from 'lucide-react';
+import {
+  X,
+  Upload,
+  FileText,
+  Image as ImageIcon,
+  BookOpen,
+  Download,
+  Loader2,
+  Camera,
+} from 'lucide-react';
 import type { Book, BookReadingStyle, Chapter, TranslationMode } from '../types/book';
 import { parseEpubBuffer, buildEpubBlob } from '../utils/epubBuilder';
 import { parsePdfBufferToBook } from '../utils/pdfParser';
@@ -13,6 +22,8 @@ import {
   slugifyFilename,
   TARGET_LANGUAGES,
 } from '../utils/fileHelpers';
+import { tryOnDeviceHardwareOcr } from '../utils/deviceHardware';
+import { tryOnDeviceTranslateParagraphs } from '../utils/languagePacks';
 import { resolveApiUrl } from '../utils/apiClient';
 
 interface ImportBookModalProps {
@@ -20,6 +31,7 @@ interface ImportBookModalProps {
   onClose: () => void;
   onImportBook: (book: Book, openImmediately?: boolean) => void;
   defaultReadingStyle?: BookReadingStyle;
+  standaloneDeviceMode?: boolean;
 }
 
 type ImportTab = 'file' | 'image' | 'text';
@@ -29,6 +41,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
   onClose,
   onImportBook,
   defaultReadingStyle = 'novel',
+  standaloneDeviceMode = true,
 }) => {
   const [activeTab, setActiveTab] = useState<ImportTab>('file');
   const [isBusy, setIsBusy] = useState(false);
@@ -51,6 +64,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -175,32 +189,58 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
         const mimeMatch = prefix.match(/data:(.*?);/);
         const mimeType = mimeMatch?.[1] || file.type || 'image/png';
 
-        const resp = await fetch(resolveApiUrl('/api/ai/ocr-translate'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imageBase64: b64,
-            mimeType,
-            targetLang: imageTargetLang,
-            mode: imageMode,
-          }),
-        });
+        let origParas: string[] = [];
+        let transParas: string[] = [];
+        let pageDetectedTitle = '';
 
-        const data = await resp.json();
-        if (!resp.ok) {
-          throw new Error(data.error || 'Lỗi dịch trang ảnh từ máy chủ AI.');
+        // Try on-device hardware TextDetector first when in standalone phone mode
+        if (standaloneDeviceMode) {
+          const hardwareLines = await tryOnDeviceHardwareOcr(dataUrl);
+          if (hardwareLines && hardwareLines.length > 0) {
+            origParas = hardwareLines;
+            if (imageMode !== 'original') {
+              const localTrans = await tryOnDeviceTranslateParagraphs(origParas, imageTargetLang);
+              if (localTrans) transParas = localTrans;
+            }
+          }
         }
 
-        if (!detectedTitle && data.detectedTitle) {
-          detectedTitle = data.detectedTitle;
+        if (origParas.length === 0) {
+          try {
+            const resp = await fetch(resolveApiUrl('/api/ai/ocr-translate'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                imageBase64: b64,
+                mimeType,
+                targetLang: imageTargetLang,
+                mode: imageMode,
+              }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+              throw new Error(data.error || 'Lỗi dịch trang ảnh từ máy chủ AI.');
+            }
+            pageDetectedTitle = data.detectedTitle || '';
+            origParas = Array.isArray(data.originalParagraphs) ? data.originalParagraphs : [];
+            transParas = Array.isArray(data.translatedParagraphs) ? data.translatedParagraphs : [];
+          } catch (ocrErr) {
+            const fallbackLines = await tryOnDeviceHardwareOcr(dataUrl);
+            if (fallbackLines && fallbackLines.length > 0) {
+              origParas = fallbackLines;
+              if (imageMode !== 'original') {
+                const localTrans = await tryOnDeviceTranslateParagraphs(origParas, imageTargetLang);
+                if (localTrans) transParas = localTrans;
+              }
+            } else {
+              throw ocrErr;
+            }
+          }
         }
 
-        const origParas: string[] = Array.isArray(data.originalParagraphs)
-          ? data.originalParagraphs
-          : [];
-        const transParas: string[] = Array.isArray(data.translatedParagraphs)
-          ? data.translatedParagraphs
-          : [];
+        if (!detectedTitle && pageDetectedTitle) {
+          detectedTitle = pageDetectedTitle;
+        }
 
         const finalParagraphs =
           imageMode === 'override' && transParas.length > 0 ? transParas : origParas;
@@ -210,7 +250,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
           index: i,
           title:
             imageFiles.length === 1
-              ? data.detectedTitle || 'Trang sách 1'
+              ? pageDetectedTitle || 'Trang sách 1'
               : `Trang ${i + 1} · ${file.name.replace(/\.[^.]+$/, '')}`,
           paragraphs: finalParagraphs.length > 0 ? finalParagraphs : ['(Không nhận dạng được chữ trên ảnh)'],
           translations:
@@ -529,7 +569,28 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                   className="hidden"
                   onChange={(e) => setImageFiles(Array.from(e.target.files || []))}
                 />
-                <div className="mt-3 flex items-center justify-center gap-3">
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => {
+                    const shot = Array.from(e.target.files || []);
+                    if (shot.length > 0) {
+                      setImageFiles((prev) => [...prev, ...shot]);
+                    }
+                  }}
+                />
+                <div className="mt-3 flex flex-wrap items-center justify-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-amber-700/50 bg-amber-50/70 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 text-xs font-medium hover:opacity-90"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Chụp ảnh (Camera)</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => imageInputRef.current?.click()}
@@ -544,7 +605,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                     className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-800 text-white text-xs font-medium hover:bg-amber-900 disabled:opacity-50"
                   >
                     <BookOpen className="w-3.5 h-3.5" />
-                    <span>Quét & Tạo sách</span>
+                    <span>Quét &amp; Tạo sách</span>
                   </button>
                 </div>
                 {imageFiles.length > 0 && (

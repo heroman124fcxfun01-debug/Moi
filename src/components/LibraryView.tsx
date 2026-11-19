@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   BookOpen,
@@ -10,7 +10,12 @@ import {
   FolderPlus,
   Globe,
   Headphones,
+  Image as ImageIcon,
+  Layers,
+  LayoutGrid,
+  List,
   MoreVertical,
+  Orbit,
   Plus,
   RotateCcw,
   Search,
@@ -29,7 +34,16 @@ import { buildEpubBlob } from '../utils/epubBuilder';
 import { buildLibraryCollectionZip } from '../utils/webCrawlerEngine';
 import { downloadBlob, slugifyFilename } from '../utils/fileHelpers';
 import { getMonthlyReadingChart, getWeeklyReadingChart } from '../utils/syncAndStats';
+import {
+  sortBooksByMode,
+  sortCollectionsByMode,
+  type BookSortMode,
+  type CollectionSortMode,
+} from '../utils/librarySort';
+import { compressWallpaperImageFile } from '../utils/appAppearance';
 import { CollectionModal } from './CollectionModal';
+import { BookShowcase3D } from './BookShowcase3D';
+import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
 
 interface LibraryViewProps {
   books: Book[];
@@ -42,10 +56,11 @@ interface LibraryViewProps {
   onOpenImportModal: () => void;
   onGoToWebScraper: () => void;
   onRestoreSamples: () => void;
+  focusCollectionSignal?: { name: string; tick: number } | null;
 }
 
 type LibraryShelfTab = 'all' | 'imported' | 'downloaded' | 'collections';
-type SortMode = 'recent' | 'title_asc' | 'title_desc' | 'author_asc' | 'progress_desc';
+type LibraryViewMode = 'grid' | 'list' | 'carousel3d' | 'stack3d';
 
 const SOURCE_LABELS: Record<BookSourceType, string> = {
   sample: 'Ấn bản mẫu',
@@ -67,16 +82,61 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   collections,
   readingLogs,
   onOpenBook,
+  onUpdateBook,
   onDeleteBook,
   onUpdateCollections,
   onOpenImportModal,
   onGoToWebScraper,
   onRestoreSamples,
+  focusCollectionSignal = null,
 }) => {
+  const coverInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [shelfTab, setShelfTab] = useState<LibraryShelfTab>('all');
-  const [sortMode, setSortMode] = useState<SortMode>('recent');
+
+  useEffect(() => {
+    if (!focusCollectionSignal) return;
+    setShelfTab('collections');
+    setSearchQuery(focusCollectionSignal.name);
+  }, [focusCollectionSignal]);
+
+  const [sortMode, setSortMode] = useState<BookSortMode>('recent');
+  const [collectionSortMode, setCollectionSortMode] = useState<CollectionSortMode>('name_asc');
+  const [viewMode, setViewMode] = useState<LibraryViewMode>(() => {
+    try {
+      const saved = localStorage.getItem('laziread_library_view_mode') as LibraryViewMode | null;
+      if (saved && ['grid', 'list', 'carousel3d', 'stack3d'].includes(saved)) return saved;
+    } catch {
+      // ignore storage errors
+    }
+    return 'grid';
+  });
+
+  const handleSetViewMode = (mode: LibraryViewMode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem('laziread_library_view_mode', mode);
+    } catch {
+      // ignore
+    }
+  };
+
   const [chartPeriod, setChartPeriod] = useState<'week' | 'month'>('week');
+  const shelfTabsRef = useRef<HTMLDivElement>(null);
+  const viewModeBarRef = useRef<HTMLDivElement>(null);
+  const chartToggleRef = useRef<HTMLDivElement>(null);
+  const { thumb: shelfThumb, isGliding: shelfGliding } = useLiquidDropIndicator(
+    shelfTab,
+    shelfTabsRef
+  );
+  const { thumb: viewModeThumb, isGliding: viewModeGliding } = useLiquidDropIndicator(
+    viewMode,
+    viewModeBarRef
+  );
+  const { thumb: chartThumb, isGliding: chartGliding } = useLiquidDropIndicator(
+    chartPeriod,
+    chartToggleRef
+  );
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [isExportingArchive, setIsExportingArchive] = useState(false);
 
@@ -85,7 +145,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     book: Book;
     collectionId?: string;
   } | null>(null);
-  const [showAddToColPicker, setShowAddToColPicker] = useState(false);
+  const [menuSubView, setMenuSubView] = useState<'main' | 'collections' | 'rename'>('main');
+  const [renameTitleInput, setRenameTitleInput] = useState('');
+  const [renameAuthorInput, setRenameAuthorInput] = useState('');
+  const [isUpdatingCover, setIsUpdatingCover] = useState(false);
 
   // User-created Collection Modal state
   const [isColModalOpen, setIsColModalOpen] = useState(false);
@@ -120,38 +183,34 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       return true;
     });
 
-    return [...filtered].sort((a, b) => {
-      if (sortMode === 'title_asc') return a.title.localeCompare(b.title, 'vi');
-      if (sortMode === 'title_desc') return b.title.localeCompare(a.title, 'vi');
-      if (sortMode === 'author_asc') return a.author.localeCompare(b.author, 'vi');
-      if (sortMode === 'progress_desc') return b.progressPercent - a.progressPercent;
-      return b.lastReadAt - a.lastReadAt;
-    });
+    return sortBooksByMode(filtered, sortMode);
   }, [books, searchQuery, shelfTab, sortMode]);
 
-  // User-created collections sorted A -> Z (empty until user creates them)
+  // User-created collections sorted by selected collectionSortMode (A->Z, recent read, recent added, Z->A)
   const sortedCollections = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return [...collections]
-      .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
+    return sortCollectionsByMode(collections, books, collectionSortMode)
       .map((col) => {
-        const colBooks = col.bookIds
-          .map((id) => books.find((b) => b.id === id))
-          .filter((b): b is Book => Boolean(b))
-          .filter(
-            (b) =>
-              !q ||
-              col.name.toLowerCase().includes(q) ||
-              b.title.toLowerCase().includes(q) ||
-              b.author.toLowerCase().includes(q)
-          );
+        const colBooks = sortBooksByMode(
+          col.bookIds
+            .map((id) => books.find((b) => b.id === id))
+            .filter((b): b is Book => Boolean(b))
+            .filter(
+              (b) =>
+                !q ||
+                col.name.toLowerCase().includes(q) ||
+                b.title.toLowerCase().includes(q) ||
+                b.author.toLowerCase().includes(q)
+            ),
+          sortMode
+        );
         return {
           ...col,
           resolvedBooks: colBooks,
         };
       })
       .filter((col) => !q || col.name.toLowerCase().includes(q) || col.resolvedBooks.length > 0);
-  }, [collections, books, searchQuery]);
+  }, [collections, books, searchQuery, collectionSortMode, sortMode]);
 
   const handleExportEpub = async (book: Book, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -227,8 +286,116 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     collectionId?: string
   ) => {
     e.stopPropagation();
-    setShowAddToColPicker(false);
+    setMenuSubView('main');
+    setRenameTitleInput(book.title);
+    setRenameAuthorInput(book.author);
     setMenuContext({ book, collectionId });
+  };
+
+  const handleSaveBookRename = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!menuContext) return;
+    const trimmedTitle = renameTitleInput.trim();
+    if (!trimmedTitle) return;
+    const updated: Book = {
+      ...menuContext.book,
+      title: trimmedTitle,
+      author: renameAuthorInput.trim() || menuContext.book.author,
+    };
+    onUpdateBook(updated);
+    setMenuContext(null);
+    setMenuSubView('main');
+  };
+
+  const handlePickBookCover = async (files: FileList | null) => {
+    if (!files || files.length === 0 || !menuContext) return;
+    setIsUpdatingCover(true);
+    try {
+      const compressedCover = await compressWallpaperImageFile(files[0], 720, 0.86);
+      const updated: Book = {
+        ...menuContext.book,
+        coverUrl: compressedCover,
+      };
+      onUpdateBook(updated);
+      setMenuContext({ ...menuContext, book: updated });
+    } finally {
+      setIsUpdatingCover(false);
+      if (coverInputRef.current) coverInputRef.current.value = '';
+    }
+  };
+
+  const renderListBookRow = (book: Book, collectionId?: string) => {
+    const stats = estimateBookStats(book.chapters);
+    return (
+      <article
+        key={`list-${collectionId || 'shelf'}-${book.id}`}
+        className="ios-tap-card flex items-center gap-3 p-2.5 sm:p-3 rounded-xl border border-stone-200/90 dark:border-stone-800 bg-white/90 dark:bg-[#16181C]/95 hover:border-amber-700 transition-colors"
+      >
+        <button
+          type="button"
+          onClick={() => onOpenBook(book.id)}
+          className="flex items-center gap-3 min-w-0 flex-1 text-left focus:outline-none"
+        >
+          <div className="w-11 h-15 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0">
+            {book.coverUrl ? (
+              <img
+                src={book.coverUrl}
+                alt={`Bìa ${book.title}`}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-[10px] font-display font-bold p-1 text-center">
+                {book.title.slice(0, 2)}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex items-center gap-2">
+              <h3 className="text-xs sm:text-sm font-semibold text-stone-900 dark:text-stone-100 truncate">
+                {book.title}
+              </h3>
+              <span className="hidden sm:inline text-[10px] px-1.5 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 shrink-0">
+                {SOURCE_LABELS[book.sourceType]}
+              </span>
+            </div>
+            <p className="text-[11px] text-stone-500 dark:text-stone-400 truncate">
+              {book.author} · {stats.chapterCount} chương
+            </p>
+            <div className="flex items-center gap-2 max-w-xs">
+              <div className="flex-1 h-1.5 bg-stone-200 dark:bg-stone-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-amber-800 dark:bg-amber-600"
+                  style={{ width: `${book.progressPercent}%` }}
+                />
+              </div>
+              <span className="text-[10px] text-stone-500 tabular-nums">
+                {book.progressPercent}%
+              </span>
+            </div>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => onOpenBook(book.id, true)}
+            aria-label={`Nghe sách nói ${book.title}`}
+            className="p-2 rounded-lg text-stone-500 hover:text-amber-800 dark:hover:text-amber-400 hover:bg-stone-100 dark:hover:bg-stone-800"
+          >
+            <Headphones className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => openBookOptionsMenu(book, e, collectionId)}
+            aria-label={`Tùy chọn cho ${book.title}`}
+            className="p-2 rounded-lg text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+        </div>
+      </article>
+    );
   };
 
   const renderCompactBookCard = (book: Book, collectionId?: string) => {
@@ -303,21 +470,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   };
 
   return (
-    <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 py-5 sm:py-7 space-y-8">
+    <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-5 pb-3 sm:pt-7 sm:pb-4 space-y-7">
       {/* 1. TRÊN CÙNG: SÁCH MỚI ĐỌC */}
       {recentBooks.length > 0 && (
         <section aria-label="Sách mới đọc" className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h1 className="text-sm sm:text-base font-display font-semibold text-stone-900 dark:text-stone-100">
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <h1 className="text-base sm:text-lg font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
               Sách mới đọc
             </h1>
             {featuredBook && (
               <button
                 type="button"
                 onClick={() => onOpenBook(featuredBook.id)}
-                className="text-xs font-medium text-amber-800 dark:text-amber-400 hover:underline"
+                className="text-xs font-medium text-amber-800 dark:text-amber-400 hover:underline whitespace-nowrap shrink-0"
               >
-                Đọc tiếp ngay →
+                Đọc tiếp →
               </button>
             )}
           </div>
@@ -381,34 +548,42 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
       {/* 2. TIẾP THEO: KHO SÁCH RIÊNG & BỘ SƯU TẬP */}
       <section aria-label="Thư viện riêng và Bộ sưu tập" className="space-y-4">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-base sm:text-lg font-display font-semibold text-stone-900 dark:text-stone-100">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 min-w-0">
+          <h2 className="text-base sm:text-lg font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
             Kho sách riêng
           </h2>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={onGoToWebScraper}
-              className="ios-liquid-pill inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-xs font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
+              className="ios-liquid-pill inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-xs font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
             >
-              <Globe className="w-3.5 h-3.5" />
+              <Globe className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">Cộng đồng Web</span>
               <span className="sm:hidden">Web</span>
             </button>
             <button
               type="button"
               onClick={onOpenImportModal}
-              className="ios-liquid-btn inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 whitespace-nowrap"
+              className="ios-liquid-btn inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 whitespace-nowrap"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-3.5 h-3.5 shrink-0" />
               <span>Thêm sách</span>
             </button>
           </div>
         </div>
 
-        {/* Liquid-Glass Rounded Tabs + Search / Sort Controls */}
+        {/* Liquid-Glass Sliding Water-Drop Tabs + Search / Sort Controls */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          <div className="grid grid-cols-2 sm:inline-flex p-1 ios-liquid-bar border border-white/75 dark:border-zinc-700/60 rounded-[22px] sm:rounded-full gap-1">
+          <div
+            ref={shelfTabsRef}
+            className="relative grid grid-cols-2 sm:inline-flex p-1 ios-liquid-bar border border-white/75 dark:border-zinc-700/60 rounded-[22px] sm:rounded-full gap-1"
+          >
+            <LiquidDropThumb
+              thumb={shelfThumb}
+              isGliding={shelfGliding}
+              roundedClass="rounded-full"
+            />
             {(
               [
                 { id: 'all', label: `Tất cả (${books.length})` },
@@ -426,11 +601,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <button
                 key={tab.id}
                 type="button"
+                data-liquid-key={tab.id}
                 onClick={() => setShelfTab(tab.id)}
-                className={`ios-liquid-pill px-3 sm:px-3.5 py-1.5 text-[11px] sm:text-xs font-medium rounded-full whitespace-nowrap min-h-[34px] text-center ${
+                className={`relative z-10 ios-liquid-pill min-w-0 truncate px-2.5 sm:px-3.5 py-1.5 text-[11px] sm:text-xs font-medium rounded-full whitespace-nowrap min-h-[34px] text-center ${
                   shelfTab === tab.id
-                    ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
-                    : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white hover:bg-white/45 dark:hover:bg-white/10'
+                    ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                    : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
                 }`}
               >
                 {tab.label}
@@ -438,42 +614,101 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1 sm:w-56">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[150px] sm:w-52">
               <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm sách, tác giả..."
+                placeholder={
+                  shelfTab === 'collections' ? 'Tìm bộ sưu tập, sách...' : 'Tìm sách, tác giả...'
+                }
                 aria-label="Tìm kiếm sách trong tủ"
                 className="w-full pl-9 pr-3.5 py-2 text-xs rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-900 dark:text-stone-100 focus:outline-none min-h-[38px]"
               />
             </div>
 
-            {shelfTab !== 'collections' && (
+            {shelfTab === 'collections' ? (
+              <select
+                aria-label="Sắp xếp bộ sưu tập"
+                value={collectionSortMode}
+                onChange={(e) => setCollectionSortMode(e.target.value as CollectionSortMode)}
+                className="ios-liquid-pill px-3 py-2 text-xs font-medium rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100 min-h-[38px]"
+              >
+                <option value="name_asc">Bộ sưu tập A → Z</option>
+                <option value="recent_read">Mới đọc gần đây</option>
+                <option value="recent_added">Mới thêm gần đây</option>
+                <option value="name_desc">Bộ sưu tập Z → A</option>
+              </select>
+            ) : (
               <select
                 aria-label="Sắp xếp sách"
                 value={sortMode}
-                onChange={(e) => setSortMode(e.target.value as SortMode)}
-                className="ios-liquid-pill px-3.5 py-2 text-xs font-medium rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100 min-h-[38px]"
+                onChange={(e) => setSortMode(e.target.value as BookSortMode)}
+                className="ios-liquid-pill px-3 py-2 text-xs font-medium rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100 min-h-[38px]"
               >
-                <option value="recent">Đọc gần đây</option>
+                <option value="recent">Mới đọc gần đây</option>
+                <option value="added_desc">Mới thêm gần đây</option>
                 <option value="title_asc">Tên A → Z</option>
                 <option value="title_desc">Tên Z → A</option>
                 <option value="author_asc">Tác giả A → Z</option>
                 <option value="progress_desc">Tiến độ cao nhất</option>
               </select>
             )}
+
+            {/* 4-Mode Library Display Switcher (Grid, List, 3D Circular Carousel, 3D Swipe Stack) */}
+            <div
+              ref={viewModeBarRef}
+              role="group"
+              aria-label="Kiểu hiển thị kệ sách"
+              className="relative inline-flex items-center p-0.5 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60"
+            >
+              <LiquidDropThumb
+                thumb={viewModeThumb}
+                isGliding={viewModeGliding}
+                roundedClass="rounded-full"
+              />
+              {(
+                [
+                  { id: 'grid', label: 'Bìa & tên', icon: LayoutGrid },
+                  { id: 'list', label: 'Danh sách', icon: List },
+                  { id: 'carousel3d', label: '3D vòng tròn', icon: Orbit },
+                  { id: 'stack3d', label: '3D xếp chồng', icon: Layers },
+                ] as const
+              ).map((item) => {
+                const Icon = item.icon;
+                const active = viewMode === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-liquid-key={item.id}
+                    onClick={() => handleSetViewMode(item.id)}
+                    title={item.label}
+                    aria-label={`Hiển thị kiểu ${item.label}`}
+                    aria-pressed={active}
+                    className={`relative z-10 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[11px] font-medium transition-colors min-h-[32px] ${
+                      active
+                        ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                        : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5 shrink-0" />
+                    <span className="hidden xl:inline">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        {/* User-Created Collections View OR 3-up Horizontal Book Grid */}
+        {/* User-Created Collections View OR Multi-Mode Book Showcase */}
         {shelfTab === 'collections' ? (
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-stone-500 dark:text-stone-400">
-                Tự tạo bộ sưu tập theo chủ đề của bạn (tự động xếp theo A → Z)
+                Tự tạo bộ sưu tập theo chủ đề của bạn — hỗ trợ sắp xếp A → Z, mới đọc &amp; mới thêm
               </p>
               <button
                 type="button"
@@ -574,6 +809,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       <div className="py-5 text-center text-xs text-stone-500">
                         Bộ sưu tập này chưa có sách nào. Nhấn &quot;Thêm / Sửa sách&quot; để chọn sách thêm vào.
                       </div>
+                    ) : viewMode === 'list' ? (
+                      <div className="space-y-2">
+                        {col.resolvedBooks.map((book) => renderListBookRow(book, col.id))}
+                      </div>
+                    ) : viewMode === 'carousel3d' || viewMode === 'stack3d' ? (
+                      <BookShowcase3D
+                        books={col.resolvedBooks}
+                        mode={viewMode}
+                        onOpenBook={onOpenBook}
+                        onOpenMenu={(book, e) => openBookOptionsMenu(book, e, col.id)}
+                      />
                     ) : (
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
                         {col.resolvedBooks.map((book) => renderCompactBookCard(book, col.id))}
@@ -612,6 +858,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               )}
             </div>
           </div>
+        ) : viewMode === 'list' ? (
+          <div data-testid="book-list" className="space-y-2">
+            {filteredAndSortedBooks.map((book) => renderListBookRow(book))}
+          </div>
+        ) : viewMode === 'carousel3d' || viewMode === 'stack3d' ? (
+          <BookShowcase3D
+            books={filteredAndSortedBooks}
+            mode={viewMode}
+            onOpenBook={onOpenBook}
+            onOpenMenu={(book, e) => openBookOptionsMenu(book, e)}
+          />
         ) : (
           <div
             data-testid="book-grid"
@@ -718,13 +975,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </div>
               </div>
 
-              <div className="inline-flex p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium gap-1">
+              <div
+                ref={chartToggleRef}
+                className="relative inline-flex p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium gap-1"
+              >
+                <LiquidDropThumb
+                  thumb={chartThumb}
+                  isGliding={chartGliding}
+                  roundedClass="rounded-full"
+                />
                 <button
                   type="button"
+                  data-liquid-key="week"
                   onClick={() => setChartPeriod('week')}
-                  className={`ios-liquid-pill px-3 py-1 rounded-full ${
+                  className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
                     chartPeriod === 'week'
-                      ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
+                      ? 'text-amber-800 dark:text-amber-300 font-semibold'
                       : 'text-stone-600 dark:text-stone-300'
                   }`}
                 >
@@ -732,10 +998,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </button>
                 <button
                   type="button"
+                  data-liquid-key="month"
                   onClick={() => setChartPeriod('month')}
-                  className={`ios-liquid-pill px-3 py-1 rounded-full ${
+                  className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
                     chartPeriod === 'month'
-                      ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
+                      ? 'text-amber-800 dark:text-amber-300 font-semibold'
                       : 'text-stone-600 dark:text-stone-300'
                   }`}
                 >
@@ -851,7 +1118,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </button>
               </div>
 
-              {!showAddToColPicker ? (
+              <input
+                ref={coverInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => handlePickBookCover(e.target.files)}
+              />
+
+              {menuSubView === 'main' ? (
                 <div className="p-2 pb-4 sm:pb-2 space-y-1 text-xs">
                   <button
                     type="button"
@@ -881,7 +1156,34 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => setShowAddToColPicker(true)}
+                    onClick={() => {
+                      setRenameTitleInput(menuContext.book.title);
+                      setRenameAuthorInput(menuContext.book.author);
+                      setMenuSubView('rename');
+                    }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
+                  >
+                    <Edit3 className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                    <span>Đổi tên sách &amp; tác giả</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isUpdatingCover}
+                    onClick={() => coverInputRef.current?.click()}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100 disabled:opacity-50"
+                  >
+                    <ImageIcon className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                    <span>
+                      {isUpdatingCover
+                        ? 'Đang xử lý ảnh bìa...'
+                        : 'Đổi bìa sách (Chọn ảnh từ máy)'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMenuSubView('collections')}
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
                   >
                     <FolderPlus className="w-4 h-4 text-amber-800 dark:text-amber-400" />
@@ -935,6 +1237,63 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <span>Xóa sách khỏi tủ</span>
                   </button>
                 </div>
+              ) : menuSubView === 'rename' ? (
+                <form onSubmit={handleSaveBookRename} className="p-3.5 pb-5 sm:pb-3.5 space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-stone-800 dark:text-stone-200">
+                      Đổi tên sách
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMenuSubView('main')}
+                      className="text-[11px] text-stone-500 hover:text-stone-900 dark:hover:text-stone-200"
+                    >
+                      ← Quay lại
+                    </button>
+                  </div>
+
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-stone-500">Tên sách</span>
+                    <input
+                      type="text"
+                      value={renameTitleInput}
+                      onChange={(e) => setRenameTitleInput(e.target.value)}
+                      placeholder="Nhập tên sách mới..."
+                      aria-label="Tên sách mới"
+                      required
+                      autoFocus
+                      className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-700"
+                    />
+                  </label>
+
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-stone-500">Tác giả</span>
+                    <input
+                      type="text"
+                      value={renameAuthorInput}
+                      onChange={(e) => setRenameAuthorInput(e.target.value)}
+                      placeholder="Tên tác giả..."
+                      aria-label="Tên tác giả mới"
+                      className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-700"
+                    />
+                  </label>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setMenuSubView('main')}
+                      className="flex-1 px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 text-stone-700 dark:text-stone-300 font-medium"
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 px-3 py-2 rounded-xl bg-amber-800 text-white font-semibold hover:bg-amber-900"
+                    >
+                      Lưu tên mới
+                    </button>
+                  </div>
+                </form>
               ) : (
                 <div className="p-3 pb-5 sm:pb-3 space-y-2.5 text-xs">
                   <div className="flex items-center justify-between">
@@ -943,7 +1302,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     </span>
                     <button
                       type="button"
-                      onClick={() => setShowAddToColPicker(false)}
+                      onClick={() => setMenuSubView('main')}
                       className="text-[11px] text-stone-500 hover:text-stone-900"
                     >
                       ← Quay lại

@@ -22,7 +22,7 @@ export type PageTurnStyle = 'curl' | 'slide' | 'flip3d' | 'cover' | 'fade' | 'no
 export type PageWidthOption = 'narrow' | 'medium' | 'wide' | 'full';
 export type TextAlignOption = 'justify' | 'left';
 
-export type GeminiVoiceName = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';
+export type GeminiVoiceName = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr' | 'Aoede';
 
 export type CharacterVoiceSource = 'gemini' | 'browser' | 'external';
 
@@ -152,6 +152,8 @@ export interface ExternalVoiceAsset {
   mimeType: string;
   dataUrl: string;
   durationSec?: number;
+  originType?: 'imported' | 'studio';
+  originLabel?: string;
   toneSettings?: VoiceToneSettings;
   analyzedProfile?: {
     description: string;
@@ -188,12 +190,41 @@ export interface ReaderSettings {
   targetLang: string;
 }
 
+export type AppAccentId =
+  | 'amber'
+  | 'ocean'
+  | 'forest'
+  | 'indigo'
+  | 'rose'
+  | 'teal'
+  | 'slate'
+  | 'custom';
+
+export interface DefaultVoiceSelection {
+  source: CharacterVoiceSource;
+  id: string;
+  label: string;
+  geminiVoice?: GeminiVoiceName;
+  externalVoiceId?: string;
+  browserVoiceURI?: string;
+}
+
 export interface AppBasicSettings {
   uiTheme: 'light' | 'dark' | 'amoled';
+  uiAccent?: AppAccentId;
+  uiCustomAccentHex?: string;
+  uiWallpaperPreset?: string;
+  uiWallpaperBlur?: number;
+  uiWallpaperOverlay?: number;
   tapToTurnPage: boolean;
   keepScreenAwake: boolean;
   autoResumeLastBook: boolean;
   defaultReadingStyle: BookReadingStyle;
+  defaultVoice?: DefaultVoiceSelection;
+  autoSyncGoogleDrive?: boolean;
+  standaloneDeviceMode?: boolean;
+  hapticFeedback?: boolean;
+  volumeKeyPageTurn?: boolean;
 }
 
 export interface ReadingLogEntry {
