@@ -28,21 +28,48 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Thiết lập Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Kiểm tra & cấu hình Android SDK (API 34)
+        shell: bash
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "Using Android SDK: $SDK_DIR"
+          test -d "$SDK_DIR" || { echo "Android SDK directory not found: $SDK_DIR"; exit 1; }
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          SDKMANAGER=""
+          for candidate in \
+            "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" \
+            "$SDK_DIR/tools/bin/sdkmanager"; do
+            if [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+          if [ -n "$SDKMANAGER" ]; then
+            echo "Found sdkmanager: $SDKMANAGER"
+            yes | "$SDKMANAGER" --sdk_root="$SDK_DIR" --licenses >/dev/null 2>&1 || true
+            "$SDKMANAGER" --sdk_root="$SDK_DIR" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          else
+            echo "sdkmanager not found; using preinstalled SDK packages"
+            ls -la "$SDK_DIR/platforms" || true
+          fi
 
       - name: Cài thư viện và build giao diện Web (dist)
         env:
           VITE_API_BASE_URL: ${{ vars.LAZIREAD_SERVER_URL || '' }}
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
-          npm install --legacy-peer-deps
+          node -v
+          npm -v
+          npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
       - name: Tạo dự án Android với Capacitor 6
         env:
           CI: true
+          CAPACITOR_TELEMETRY: '0'
         run: |
-          npm install --legacy-peer-deps @capacitor/core@6.2.3 @capacitor/cli@6.2.3 @capacitor/android@6.2.3
+          npm install --legacy-peer-deps --no-audit --no-fund @capacitor/core@6.2.3 @capacitor/cli@6.2.3 @capacitor/android@6.2.3
           rm -rf android
           npx cap add android
           npx cap sync android
@@ -50,29 +77,36 @@ jobs:
       - name: Biên dịch file APK (Debug Test)
         working-directory: android
         run: |
-          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > local.properties
+          java -version
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "sdk.dir=$SDK_DIR" > local.properties
+          cat local.properties
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk ../LaziRead-S24Ultra.apk
+          ls -lh ../LaziRead-S24Ultra.apk
 
       - name: Tải lên file APK vào GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: LaziRead-S24Ultra-APK
           path: LaziRead-S24Ultra.apk
+          if-no-files-found: error
           retention-days: 30
 
       - name: Phát hành 1 file APK trực tiếp tại GitHub Releases
-        uses: softprops/action-gh-release@v2
+        continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: apk-latest
-          name: LaziRead Android APK (Bản cài đặt trực tiếp)
-          body: |
-            File cài đặt Android `.apk` cho Samsung Galaxy S24 Ultra và các máy Android.
-            - Tải trực tiếp file `LaziRead-S24Ultra.apk` bên dưới và mở để cài đặt.
-            - Đọc EPUB/PDF, Nghe giọng thiết bị offline và Trình trộn 20 âm thanh nền hoạt động hoàn toàn ngoại tuyến.
-            - Để dùng thêm AI TTS/Dịch/Quét Web bên trong file APK, nhập link máy chủ đã Deploy vào mục **Cài đặt → Link Máy chủ AI**.
-          files: LaziRead-S24Ultra.apk
-          overwrite_files: true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES="File cài đặt Android .apk cho Samsung Galaxy S24 Ultra và các máy Android.
+          - Tải trực tiếp file LaziRead-S24Ultra.apk bên dưới và mở để cài đặt.
+          - Đọc EPUB/PDF, Nghe giọng thiết bị offline và Trình trộn 20 âm thanh nền hoạt động ngoại tuyến.
+          - Để dùng thêm AI TTS/Dịch/Quét Web bên trong file APK, nhập link máy chủ vào Cài đặt → Link Máy chủ AI."
+          if gh release view apk-latest >/dev/null 2>&1; then
+            gh release upload apk-latest LaziRead-S24Ultra.apk --clobber
+          else
+            gh release create apk-latest LaziRead-S24Ultra.apk \
+              --title "LaziRead Android APK (Bản cài đặt trực tiếp)" \
+              --notes "$NOTES"
+          fi

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   Bookmark,
@@ -10,8 +11,10 @@ import {
   Languages,
   List,
   Loader2,
+  MoreVertical,
   Music,
   Play,
+  Settings,
   SlidersHorizontal,
   X,
 } from 'lucide-react';
@@ -108,6 +111,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [showAudio, setShowAudio] = useState(initialOpenAudio);
   const [showAmbient, setShowAmbient] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
   const [ambientActiveCount, setAmbientActiveCount] = useState(
     () => Object.keys(ambientSoundManager.getSnapshot().activeVolumes).length
   );
@@ -525,22 +529,22 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         filter: `brightness(${settings.brightness}%) sepia(${settings.warmth}%)`,
         ...vintageTexture,
       }}
-      className="min-h-[calc(100vh-57px)] flex flex-col transition-colors duration-200"
+      className="min-h-screen flex flex-col transition-colors duration-200"
     >
-      {/* Liquid-Glass Reader Utility Toolbar */}
+      {/* Ultra-slim Distraction-Free Top Bar — all controls collapsed into corner Gear / 3-dot Menu */}
       <div
         style={{
           borderColor: activeTheme.border,
           backgroundColor: activeTheme.surface,
         }}
-        className="sticky top-[57px] z-30 border-b backdrop-blur-md px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2"
+        className="sticky top-0 z-30 h-[52px] border-b backdrop-blur-md px-3 sm:px-5 flex items-center justify-between gap-2"
       >
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <button
             type="button"
             onClick={onBackToLibrary}
             aria-label="Quay lại tủ sách"
-            className="ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap"
+            className="ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap shrink-0"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Tủ sách</span>
@@ -550,193 +554,289 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             type="button"
             onClick={() => setShowToc((v) => !v)}
             aria-label="Mở mục lục và đánh dấu"
-            className="ios-liquid-pill inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 max-w-[180px] sm:max-w-[230px] truncate"
+            className="min-w-0 flex-1 text-left px-2 py-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 truncate text-xs font-medium opacity-85"
           >
-            <List className="w-3.5 h-3.5 shrink-0" />
             <span className="truncate">{currentChapter?.title || book.title}</span>
           </button>
-
-          {/* Genre / Văn phong đọc selector */}
-          <select
-            aria-label="Chọn văn phong đọc"
-            value={readingStyle}
-            onChange={(e) =>
-              onUpdateBook({
-                ...book,
-                readingStyle: e.target.value as BookReadingStyle,
-              })
-            }
-            className="ios-liquid-pill px-3 py-1.5 text-[11px] font-medium rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-stone-800 dark:text-stone-100"
-          >
-            <option value="novel" className="text-stone-900">
-              Văn phong: Tiểu thuyết
-            </option>
-            <option value="selfhelp" className="text-stone-900">
-              Văn phong: Học tập
-            </option>
-            <option value="essay" className="text-stone-900">
-              Văn phong: Tản văn
-            </option>
-            <option value="research" className="text-stone-900">
-              Văn phong: Nghiên cứu
-            </option>
-          </select>
         </div>
 
-        {/* Translation Mode + Studio Controls */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <div className="inline-flex items-center p-0.5 rounded-full ios-liquid-bar border border-white/65 dark:border-white/15 gap-0.5">
-            {(
-              [
-                { id: 'original', label: 'Gốc' },
-                { id: 'override', label: 'Dịch đè' },
-                { id: 'bilingual', label: 'Song ngữ' },
-              ] as Array<{ id: TranslationMode; label: string }>
-            ).map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                onClick={() => handleTranslationModeChange(mode.id)}
-                className={`ios-liquid-pill px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap ${
-                  settings.translationMode === mode.id
-                    ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
-                    : 'text-stone-700 dark:text-stone-200 opacity-85 hover:opacity-100'
-                }`}
-              >
-                {mode.label}
-              </button>
-            ))}
-          </div>
-
-          <select
-            aria-label="Ngôn ngữ dịch sách"
-            value={settings.targetLang}
-            onChange={async (e) => {
-              const lang = e.target.value;
-              onUpdateSettings({ targetLang: lang });
-              if (settings.translationMode !== 'original') {
-                await translateCurrentChapter(lang);
-              }
-            }}
-            className="ios-liquid-pill px-3 py-1 text-[11px] font-medium rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-stone-800 dark:text-stone-100"
-          >
-            {TARGET_LANGUAGES.map((l) => (
-              <option key={l.code} value={l.code} className="text-stone-900">
-                {l.label}
-              </option>
-            ))}
-          </select>
-
-          {settings.translationMode !== 'original' && (
-            <button
-              type="button"
-              disabled={isTranslating}
-              onClick={() => translateCurrentChapter(settings.targetLang)}
-              className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-[11px] font-medium whitespace-nowrap"
-            >
-              {isTranslating ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <Languages className="w-3 h-3" />
-              )}
-              <span>{isTranslating ? 'Đang dịch...' : 'Dịch lại'}</span>
-            </button>
+        {/* Single Corner Options Trigger (Gear + 3-dots) */}
+        <button
+          type="button"
+          onClick={() => setShowToolsMenu((v) => !v)}
+          aria-label="Mở menu tùy chọn đọc sách"
+          aria-expanded={showToolsMenu}
+          className={`ios-liquid-pill relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium shrink-0 ${
+            showToolsMenu || showSettings || showAudio || showAmbient
+              ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
+              : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <MoreVertical className="w-3.5 h-3.5 -ml-1 opacity-75" />
+          {(ambientActiveCount > 0 || settings.translationMode !== 'original') && (
+            <span className="w-2 h-2 rounded-full bg-amber-700 absolute -top-0.5 -right-0.5 ring-2 ring-[#FBF9F5] dark:ring-[#16181C]" />
           )}
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowAudio(false);
-              setShowAmbient(false);
-              setShowSettings((v) => !v);
-            }}
-            aria-label="Mở bảng tùy chỉnh chữ, phông và nền"
-            className={`ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full border text-xs font-medium whitespace-nowrap ${
-              showSettings
-                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
-                : 'ios-liquid-bar border-white/60 dark:border-white/15 text-stone-800 dark:text-stone-100'
-            }`}
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>Aa</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowSettings(false);
-              setShowAudio(false);
-              setShowAmbient((v) => !v);
-            }}
-            aria-label="Mở trình phát âm thanh và nhạc nền khi đọc"
-            className={`ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full border text-xs font-medium whitespace-nowrap ${
-              showAmbient || ambientActiveCount > 0
-                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
-                : 'ios-liquid-bar border-white/60 dark:border-white/15 text-stone-800 dark:text-stone-100'
-            }`}
-          >
-            <Music className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Nhạc nền</span>
-            {ambientActiveCount > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-amber-800 text-white text-[10px] leading-none">
-                {ambientActiveCount}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleContinueListenFromHere}
-            aria-label="Nghe tiếp bằng giọng AI từ đoạn đang đọc"
-            className="ios-liquid-btn inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 whitespace-nowrap"
-          >
-            <Play className="w-3 h-3" />
-            <span>Nghe tiếp</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowSettings(false);
-              setShowAmbient(false);
-              setShowAudio((v) => !v);
-            }}
-            aria-label="Mở phòng thu nghe AI và phân tích nhân vật"
-            className={`ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full border text-xs font-medium whitespace-nowrap ${
-              showAudio
-                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
-                : 'ios-liquid-bar border-white/60 dark:border-white/15 text-stone-800 dark:text-stone-100'
-            }`}
-          >
-            <Headphones className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Giọng AI</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={toggleChapterBookmark}
-            aria-label={isBookmarked ? 'Bỏ đánh dấu chương' : 'Đánh dấu chương này'}
-            className="ios-liquid-pill w-8 h-8 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 flex items-center justify-center text-stone-800 dark:text-stone-100"
-          >
-            {isBookmarked ? (
-              <BookMarked className="w-3.5 h-3.5 text-amber-700" />
-            ) : (
-              <Bookmark className="w-3.5 h-3.5" />
-            )}
-          </button>
-
-          <button
-            type="button"
-            disabled={isExporting}
-            onClick={handleExportCurrentEpub}
-            aria-label="Xuất sách hiện tại thành file EPUB"
-            className="ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Xuất EPUB</span>
-          </button>
-        </div>
+        </button>
       </div>
+
+      {/* Collapsible Corner Liquid-Glass Options Popover / Sheet */}
+      {showToolsMenu &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[70] flex items-end sm:items-start sm:justify-end bg-black/35 backdrop-blur-xs p-0 sm:pt-[60px] sm:pr-5"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowToolsMenu(false);
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Tùy chọn trình đọc sách"
+              className="ios-sheet-enter w-full sm:w-[360px] bg-[#FBF9F5]/95 dark:bg-[#191B1F]/95 backdrop-blur-2xl text-stone-900 dark:text-stone-100 rounded-t-[28px] sm:rounded-[26px] border border-white/70 dark:border-stone-800 shadow-2xl overflow-hidden max-h-[85vh] flex flex-col"
+            >
+              <div className="sm:hidden flex justify-center pt-2.5">
+                <div className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />
+              </div>
+
+              <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200/80 dark:border-stone-800">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-display font-semibold truncate">
+                    Tùy chọn đọc &amp; nghe sách
+                  </h2>
+                  <p className="text-[11px] text-stone-500 truncate">{book.title}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowToolsMenu(false)}
+                  aria-label="Đóng menu tùy chọn đọc"
+                  className="w-8 h-8 rounded-full bg-stone-200/70 dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 pb-6 sm:pb-4 space-y-4 overflow-y-auto text-xs">
+                {/* Primary Tool Shortcuts Grid */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      setShowAudio(false);
+                      setShowAmbient(false);
+                      setShowSettings(true);
+                    }}
+                    className="ios-liquid-pill flex items-center gap-2.5 p-3 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-left font-medium"
+                  >
+                    <SlidersHorizontal className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold truncate">Chữ, Nền &amp; Lật</div>
+                      <div className="text-[10px] text-stone-500 truncate">Aa · Giấy cũ</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      handleContinueListenFromHere();
+                    }}
+                    className="ios-liquid-btn flex items-center gap-2.5 p-3 rounded-2xl bg-amber-800 text-white text-left font-medium"
+                  >
+                    <Play className="w-4 h-4 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold truncate">Nghe tiếp AI</div>
+                      <div className="text-[10px] text-amber-100 truncate">Từ đoạn đang đọc</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      setShowSettings(false);
+                      setShowAmbient(false);
+                      setShowAudio(true);
+                    }}
+                    className="ios-liquid-pill flex items-center gap-2.5 p-3 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-left font-medium"
+                  >
+                    <Headphones className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold truncate">Giọng AI &amp; Vai</div>
+                      <div className="text-[10px] text-stone-500 truncate">Quét nhân vật</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      setShowSettings(false);
+                      setShowAudio(false);
+                      setShowAmbient(true);
+                    }}
+                    className="ios-liquid-pill flex items-center gap-2.5 p-3 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-left font-medium"
+                  >
+                    <Music className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold truncate">
+                        Nhạc nền{ambientActiveCount > 0 ? ` (${ambientActiveCount})` : ''}
+                      </div>
+                      <div className="text-[10px] text-stone-500 truncate">20 tiếng chill</div>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Translation Mode & Language */}
+                <div className="space-y-2 pt-2 border-t border-stone-200/80 dark:border-stone-800">
+                  <div className="text-[11px] font-semibold text-stone-600 dark:text-stone-400">
+                    Chế độ dịch trực tiếp
+                  </div>
+                  <div className="grid grid-cols-3 p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 gap-1">
+                    {(
+                      [
+                        { id: 'original', label: 'Gốc' },
+                        { id: 'override', label: 'Dịch đè' },
+                        { id: 'bilingual', label: 'Song ngữ' },
+                      ] as Array<{ id: TranslationMode; label: string }>
+                    ).map((mode) => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => handleTranslationModeChange(mode.id)}
+                        className={`ios-liquid-pill py-1.5 text-[11px] font-medium rounded-full ${
+                          settings.translationMode === mode.id
+                            ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
+                            : 'text-stone-600 dark:text-stone-300'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <select
+                      aria-label="Ngôn ngữ dịch sách"
+                      value={settings.targetLang}
+                      onChange={async (e) => {
+                        const lang = e.target.value;
+                        onUpdateSettings({ targetLang: lang });
+                        if (settings.translationMode !== 'original') {
+                          await translateCurrentChapter(lang);
+                        }
+                      }}
+                      className="flex-1 px-3 py-2 text-xs rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100"
+                    >
+                      {TARGET_LANGUAGES.map((l) => (
+                        <option key={l.code} value={l.code} className="text-stone-900">
+                          Dịch sang: {l.label}
+                        </option>
+                      ))}
+                    </select>
+
+                    {settings.translationMode !== 'original' && (
+                      <button
+                        type="button"
+                        disabled={isTranslating}
+                        onClick={() => translateCurrentChapter(settings.targetLang)}
+                        className="ios-liquid-pill inline-flex items-center gap-1 px-3 py-2 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-xs font-medium shrink-0"
+                      >
+                        {isTranslating ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Languages className="w-3.5 h-3.5" />
+                        )}
+                        <span>Dịch lại</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Reading Style */}
+                <div className="space-y-1.5 pt-2 border-t border-stone-200/80 dark:border-stone-800">
+                  <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-400">
+                    Văn phong đọc AI
+                  </label>
+                  <select
+                    aria-label="Chọn văn phong đọc"
+                    value={readingStyle}
+                    onChange={(e) =>
+                      onUpdateBook({
+                        ...book,
+                        readingStyle: e.target.value as BookReadingStyle,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-xs font-medium rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100"
+                  >
+                    <option value="novel" className="text-stone-900">
+                      Văn phong: Tiểu thuyết
+                    </option>
+                    <option value="selfhelp" className="text-stone-900">
+                      Văn phong: Học tập
+                    </option>
+                    <option value="essay" className="text-stone-900">
+                      Văn phong: Tản văn
+                    </option>
+                    <option value="research" className="text-stone-900">
+                      Văn phong: Nghiên cứu
+                    </option>
+                  </select>
+                </div>
+
+                {/* Utility Row: TOC, Bookmark, Export EPUB */}
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-stone-200/80 dark:border-stone-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      setShowToc(true);
+                    }}
+                    className="ios-liquid-pill flex flex-col items-center justify-center gap-1 py-2.5 px-2 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium"
+                  >
+                    <List className="w-4 h-4" />
+                    <span>Mục lục</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      toggleChapterBookmark();
+                    }}
+                    className={`ios-liquid-pill flex flex-col items-center justify-center gap-1 py-2.5 px-2 rounded-2xl border text-[11px] font-medium ${
+                      isBookmarked
+                        ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
+                        : 'ios-liquid-bar border-white/75 dark:border-zinc-700/60'
+                    }`}
+                  >
+                    {isBookmarked ? (
+                      <BookMarked className="w-4 h-4 text-amber-700" />
+                    ) : (
+                      <Bookmark className="w-4 h-4" />
+                    )}
+                    <span>{isBookmarked ? 'Đã lưu dấu' : 'Đánh dấu'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isExporting}
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      handleExportCurrentEpub();
+                    }}
+                    className="ios-liquid-pill flex flex-col items-center justify-center gap-1 py-2.5 px-2 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Xuất EPUB</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* Main Content + Docked Side Drawers */}
       <div className="flex-1 flex relative">

@@ -306,7 +306,8 @@ export default function App() {
           : 'bg-[#F7F4EE] dark:bg-[#121316] text-stone-900 dark:text-stone-100'
       } ${activeTab !== 'reader' ? 'pb-28' : ''}`}
     >
-      {/* Strict 3-Zone Top Navigation Bar */}
+      {/* Strict 3-Zone Top Navigation Bar (hidden in distraction-free Reader mode) */}
+      {activeTab !== 'reader' && (
       <header
         className={`sticky top-0 z-40 backdrop-blur-xs border-b ${
           basicSettings.uiTheme === 'amoled'
@@ -346,11 +347,7 @@ export default function App() {
                 if (activeBook) setActiveTab('reader');
               }}
               disabled={!activeBook}
-              className={`ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 disabled:opacity-40 ${
-                activeTab === 'reader'
-                  ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
-                  : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white hover:bg-white/45 dark:hover:bg-white/10'
-              }`}
+              className="ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 disabled:opacity-40 text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white hover:bg-white/45 dark:hover:bg-white/10"
             >
               Trình đọc
             </button>
@@ -413,6 +410,7 @@ export default function App() {
           </div>
         </div>
       </header>
+      )}
 
       {!isLoaded ? (
         <div className="max-w-7xl mx-auto px-6 py-16 text-xs text-stone-500">

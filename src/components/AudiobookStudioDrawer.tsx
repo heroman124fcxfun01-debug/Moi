@@ -542,7 +542,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   return (
     <aside
       aria-label="Phòng thu sách nói AI và phân vai nhân vật"
-      className="ios-drawer-right fixed inset-y-0 right-0 z-40 w-full max-w-md lg:static lg:z-20 lg:w-[420px] lg:shrink-0 lg:sticky lg:top-[105px] lg:h-[calc(100vh-105px)] bg-[#FBF9F5]/95 dark:bg-[#16181C]/95 backdrop-blur-xl text-stone-900 dark:text-stone-100 border-l border-stone-200/80 dark:border-stone-800 rounded-l-3xl lg:rounded-none shadow-2xl lg:shadow-none flex flex-col"
+      className="ios-drawer-right fixed inset-y-0 right-0 z-40 w-full max-w-md lg:static lg:z-20 lg:w-[420px] lg:shrink-0 lg:sticky lg:top-[52px] lg:h-[calc(100vh-52px)] bg-[#FBF9F5]/95 dark:bg-[#16181C]/95 backdrop-blur-xl text-stone-900 dark:text-stone-100 border-l border-stone-200/80 dark:border-stone-800 rounded-l-3xl lg:rounded-none shadow-2xl lg:shadow-none flex flex-col"
     >
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-200 dark:border-stone-800">
         <div className="min-w-0">
