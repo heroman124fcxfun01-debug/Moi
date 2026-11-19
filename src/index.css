@@ -1,0 +1,447 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Playfair Display', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-serif-book: 'Lora', 'Source Serif 4', Georgia, serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-color: #f7f4ee;
+    color: #1c1917;
+  }
+
+  .dark body {
+    background-color: #121316;
+    color: #e7e5e4;
+  }
+
+  /* Samsung Galaxy S24 Ultra AMOLED Deep Black Mode */
+  .dark.amoled body {
+    background-color: #000000;
+    color: #f4f4f5;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-book {
+  font-family: var(--font-serif-book);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Editorial Drop Cap */
+.editorial-dropcap::first-letter {
+  font-family: var(--font-display);
+  font-size: 3.2em;
+  line-height: 0.85;
+  float: left;
+  padding-right: 0.14em;
+  padding-top: 0.06em;
+  font-weight: 600;
+}
+
+/* Custom thin scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 113, 108, 0.28);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 113, 108, 0.5);
+}
+
+/* Tactile E-Reader Page Turn Animations */
+.page-turn-stage {
+  perspective: 1600px;
+}
+
+@keyframes pageCurlNext {
+  0% {
+    opacity: 0.45;
+    transform: translateX(6%) rotateY(-14deg) skewY(1.5deg) scale(0.985);
+    transform-origin: left center;
+    box-shadow: -24px 0 42px rgba(40, 26, 10, 0.22);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) rotateY(0deg) skewY(0deg) scale(1);
+    transform-origin: left center;
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes pageCurlPrev {
+  0% {
+    opacity: 0.45;
+    transform: translateX(-6%) rotateY(14deg) skewY(-1.5deg) scale(0.985);
+    transform-origin: right center;
+    box-shadow: 24px 0 42px rgba(40, 26, 10, 0.22);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) rotateY(0deg) skewY(0deg) scale(1);
+    transform-origin: right center;
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes pageSlideNext {
+  0% {
+    opacity: 0.2;
+    transform: translateX(48px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pageSlidePrev {
+  0% {
+    opacity: 0.2;
+    transform: translateX(-48px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pageFlip3dNext {
+  0% {
+    opacity: 0.25;
+    transform: rotateY(48deg);
+    transform-origin: left center;
+    box-shadow: 18px 8px 36px rgba(30, 20, 8, 0.22);
+  }
+  100% {
+    opacity: 1;
+    transform: rotateY(0deg);
+    transform-origin: left center;
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes pageFlip3dPrev {
+  0% {
+    opacity: 0.25;
+    transform: rotateY(-48deg);
+    transform-origin: right center;
+    box-shadow: -18px 8px 36px rgba(30, 20, 8, 0.22);
+  }
+  100% {
+    opacity: 1;
+    transform: rotateY(0deg);
+    transform-origin: right center;
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes pageCoverNext {
+  0% {
+    opacity: 0.85;
+    transform: translateX(64px) scale(0.99);
+    box-shadow: -16px 0 36px rgba(0, 0, 0, 0.18);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes pageCoverPrev {
+  0% {
+    opacity: 0.85;
+    transform: translateX(-64px) scale(0.99);
+    box-shadow: 16px 0 36px rgba(0, 0, 0, 0.18);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes pageFadeTurn {
+  0% {
+    opacity: 0.15;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.page-turn-curl-next {
+  animation: pageCurlNext 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.page-turn-curl-prev {
+  animation: pageCurlPrev 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.page-turn-slide-next {
+  animation: pageSlideNext 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.page-turn-slide-prev {
+  animation: pageSlidePrev 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.page-turn-flip3d-next {
+  animation: pageFlip3dNext 420ms cubic-bezier(0.2, 0.85, 0.3, 1) both;
+}
+.page-turn-flip3d-prev {
+  animation: pageFlip3dPrev 420ms cubic-bezier(0.2, 0.85, 0.3, 1) both;
+}
+.page-turn-cover-next {
+  animation: pageCoverNext 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.page-turn-cover-prev {
+  animation: pageCoverPrev 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.page-turn-fade {
+  animation: pageFadeTurn 260ms ease-out both;
+}
+
+/* iPhone-style Spring Transitions, Raised Glass Dock & LaziBook Vinyl Disc */
+@keyframes iosViewEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes iosReaderPush {
+  0% {
+    opacity: 0;
+    transform: scale(0.96) translateY(16px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes iosSheetUp {
+  0% {
+    opacity: 0;
+    transform: translateY(36px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes iosDrawerSlideRight {
+  0% {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes iosDrawerSlideLeft {
+  0% {
+    opacity: 0;
+    transform: translateX(-32px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes spinVinylDisc {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ios-view-enter {
+  animation: iosViewEnter 340ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+
+.ios-reader-enter {
+  animation: iosReaderPush 380ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+
+.ios-sheet-enter {
+  animation: iosSheetUp 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+.ios-drawer-right {
+  animation: iosDrawerSlideRight 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+.ios-drawer-left {
+  animation: iosDrawerSlideLeft 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+.ios-tap-card {
+  transition:
+    transform 240ms cubic-bezier(0.32, 0.72, 0, 1),
+    box-shadow 240ms cubic-bezier(0.32, 0.72, 0, 1),
+    border-color 200ms ease;
+}
+
+.ios-tap-card:active {
+  transform: scale(0.97);
+}
+
+.ios-glass-dock {
+  background: rgba(251, 249, 245, 0.8);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  box-shadow:
+    0 14px 36px rgba(28, 22, 16, 0.16),
+    0 2px 8px rgba(28, 22, 16, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.dark .ios-glass-dock {
+  background: rgba(26, 28, 34, 0.82);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.ios-dock-pill {
+  transition:
+    transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    box-shadow 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 220ms ease;
+  box-shadow:
+    0 3px 10px rgba(28, 22, 16, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.dark .ios-dock-pill {
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.ios-dock-pill:active {
+  transform: scale(0.92);
+}
+
+.ios-dock-pill-active {
+  box-shadow:
+    0 8px 20px rgba(146, 64, 14, 0.24),
+    0 2px 6px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.dark .ios-dock-pill-active {
+  box-shadow:
+    0 8px 20px rgba(217, 119, 6, 0.22),
+    0 2px 8px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.vinyl-spin-playing {
+  animation: spinVinylDisc 6.5s linear infinite;
+}
+
+.vinyl-spin-reading {
+  animation: spinVinylDisc 20s linear infinite;
+}
+
+/* iPhone Liquid-Glass Rounded Selection Bars & Water-Drop Pills */
+.ios-liquid-bar {
+  background: rgba(244, 239, 230, 0.72);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  box-shadow:
+    0 6px 20px rgba(28, 22, 16, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0 rgba(28, 22, 16, 0.05);
+}
+
+.dark .ios-liquid-bar {
+  background: rgba(34, 37, 44, 0.72);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25);
+}
+
+.ios-liquid-pill {
+  transition:
+    transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    box-shadow 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 220ms ease,
+    color 180ms ease;
+}
+
+.ios-liquid-pill:active {
+  transform: scale(0.95);
+}
+
+.ios-liquid-pill-active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(252, 248, 241, 0.9) 100%);
+  box-shadow:
+    0 6px 16px rgba(146, 64, 14, 0.16),
+    0 1px 4px rgba(28, 22, 16, 0.08),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.98);
+}
+
+.dark .ios-liquid-pill-active {
+  background: linear-gradient(180deg, rgba(58, 62, 74, 0.92) 0%, rgba(42, 45, 54, 0.92) 100%);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.ios-liquid-btn {
+  transition:
+    transform 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    box-shadow 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 180ms ease;
+  box-shadow:
+    0 6px 16px rgba(28, 22, 16, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.ios-liquid-btn:active {
+  transform: scale(0.95);
+}
+

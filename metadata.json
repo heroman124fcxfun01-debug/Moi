@@ -1,0 +1,6 @@
+{
+  "name": "LaziRead — Đọc Sách & Phòng Thu AI",
+  "description": "Ứng dụng đọc sách đa năng: hỗ trợ EPUB, chuyển đổi PDF sang EPUB, dịch ảnh & sách song ngữ/ghi đè, quét truyện web tự động chuyển trang tạo EPUB, tùy biến phông chữ & nền đọc, phân tích nhân vật và nghe sách bằng giọng AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,13 @@
+{
+  "appId": "com.laziread.app",
+  "appName": "LaziRead",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#F7F4EE"
+  }
+}
