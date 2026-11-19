@@ -19,12 +19,26 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+    touch-action: manipulation;
+  }
+
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
   }
 
   body {
     background-color: var(--app-bg-light);
     color: #1c1917;
     transition: background-color 220ms ease;
+    margin: 0;
   }
 
   .dark body {

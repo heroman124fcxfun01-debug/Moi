@@ -44,8 +44,12 @@ import {
 import {
   buildRenderedParagraphs,
   computeReadingProgress,
-  paginateParagraphs,
 } from '../utils/textProcessing';
+import {
+  findScreenPageForParagraph,
+  paginateChapterForViewport,
+  type ScreenPageChunk,
+} from '../utils/screenPaginator';
 import {
   PAGE_TURN_STYLES,
   getPageTurnAnimationClass,
@@ -177,12 +181,26 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [turnTick, setTurnTick] = useState(0);
   const [spokenParaIndex, setSpokenParaIndex] = useState<number | null>(null);
   const [spokenProgressRatio, setSpokenProgressRatio] = useState(0);
-  const [activeParaAction, setActiveParaAction] = useState<number | null>(null);
+  const [activeParaAction, setActiveParaAction] = useState<{
+    paragraphIndex: number;
+    copied?: boolean;
+  } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>(() => ({
+    width: typeof window !== 'undefined' ? Math.min(window.innerWidth - 32, 672) : 360,
+    height: typeof window !== 'undefined' ? Math.max(320, window.innerHeight - 132) : 600,
+  }));
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const pageMeasureBoxRef = useRef<HTMLDivElement>(null);
   const paraRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
+  const longPressOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingLastPageOnPrevChapterRef = useRef(false);
+  const anchorParagraphRef = useRef<number>(book.currentParagraphIndex || 0);
 
   const chapterIndex = Math.min(
     Math.max(0, book.currentChapterIndex),
@@ -351,37 +369,122 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     );
   }, [currentChapter, settings.translationMode, settings.targetLang]);
 
-  const pages = useMemo(() => {
-    const wordsPerPage = settings.columnsInPaginated === 2 ? 320 : 210;
-    return paginateParagraphs(renderedParagraphs, wordsPerPage);
-  }, [renderedParagraphs, settings.columnsInPaginated]);
+  // Measure the real available phone/desktop viewport reading box so 1 frame = 1 exact page
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const widthLimitMap: Record<ReaderSettings['pageWidth'], number> = {
+      narrow: 576,
+      medium: 672,
+      wide: 896,
+      full: 1152,
+    };
+
+    const updateSize = () => {
+      const box = pageMeasureBoxRef.current || scrollContainerRef.current;
+      const rawW = box ? box.clientWidth : window.innerWidth;
+      const rawH = box ? box.clientHeight : Math.max(320, window.innerHeight - 108);
+      const horizPad = window.innerWidth >= 640 ? 64 : 32;
+      const maxArticleW = widthLimitMap[settings.pageWidth] || 672;
+      const contentW = Math.max(220, Math.min(rawW - horizPad, maxArticleW));
+      const contentH = Math.max(260, rawH - 18);
+      setStageSize((prev) =>
+        Math.abs(prev.width - contentW) > 3 || Math.abs(prev.height - contentH) > 3
+          ? { width: contentW, height: contentH }
+          : prev
+      );
+    };
+
+    updateSize();
+    const ro =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateSize) : null;
+    if (ro && (pageMeasureBoxRef.current || scrollContainerRef.current)) {
+      ro.observe((pageMeasureBoxRef.current || scrollContainerRef.current)!);
+    }
+    window.addEventListener('resize', updateSize);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, [settings.pageWidth, settings.readingMode, showAudio, showSettings, showAmbient]);
+
+  // True screen-fitted pagination: recalculates total pages automatically when fontSize/lineHeight/viewport changes
+  const screenPages = useMemo(() => {
+    return paginateChapterForViewport({
+      paragraphs: renderedParagraphs,
+      chapterTitle: currentChapter?.title || book.title,
+      viewportWidth: stageSize.width,
+      viewportHeight: stageSize.height,
+      settings,
+    });
+  }, [
+    renderedParagraphs,
+    currentChapter?.title,
+    book.title,
+    stageSize.width,
+    stageSize.height,
+    settings.fontFamily,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.paragraphSpacing,
+    settings.letterSpacing,
+    settings.fontWeight,
+    settings.firstLineIndent,
+    settings.dropCap,
+    settings.columnsInPaginated,
+  ]);
+
+  // Keep user anchored on their exact reading paragraph whenever fontSize or viewport re-paginates
+  useEffect(() => {
+    if (settings.readingMode !== 'paginated') return;
+    if (pendingLastPageOnPrevChapterRef.current) {
+      pendingLastPageOnPrevChapterRef.current = false;
+      setCurrentPageIndex(Math.max(0, screenPages.length - 1));
+      return;
+    }
+    const targetIdx = findScreenPageForParagraph(screenPages, anchorParagraphRef.current);
+    setCurrentPageIndex((prev) => {
+      const clamped = Math.min(Math.max(0, targetIdx), Math.max(0, screenPages.length - 1));
+      return prev === clamped ? prev : clamped;
+    });
+  }, [screenPages, settings.readingMode]);
 
   // Keep spoken paragraph visible (auto-flip page in paginated mode + smooth scroll in scroll mode)
   useEffect(() => {
     if (spokenParaIndex === null) return;
+    anchorParagraphRef.current = spokenParaIndex;
     if (settings.readingMode === 'paginated') {
-      const targetPageIdx = pages.findIndex((pg) =>
-        pg.some((pair) => pair.index === spokenParaIndex)
-      );
+      const targetPageIdx = findScreenPageForParagraph(screenPages, spokenParaIndex);
       if (targetPageIdx >= 0 && targetPageIdx !== currentPageIndex) {
         setCurrentPageIndex(targetPageIdx);
       }
+    } else {
+      const timer = window.setTimeout(() => {
+        const el = paraRefs.current.get(spokenParaIndex);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 60);
+      return () => window.clearTimeout(timer);
     }
-    const timer = window.setTimeout(() => {
-      const el = paraRefs.current.get(spokenParaIndex);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 60);
-    return () => window.clearTimeout(timer);
-  }, [spokenParaIndex, settings.readingMode, pages]);
+  }, [spokenParaIndex, settings.readingMode, screenPages]);
 
   useEffect(() => {
-    setCurrentPageIndex(0);
+    setActiveParaAction(null);
+    if (pendingLastPageOnPrevChapterRef.current) {
+      const lastIdx = Math.max(0, screenPages.length - 1);
+      setCurrentPageIndex(lastIdx);
+      const lastChunk = screenPages[lastIdx]?.chunks[0];
+      anchorParagraphRef.current = lastChunk?.paragraphIndex ?? 0;
+    } else {
+      anchorParagraphRef.current = book.currentParagraphIndex || 0;
+      const startPage = findScreenPageForParagraph(screenPages, anchorParagraphRef.current);
+      setCurrentPageIndex(startPage);
+    }
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
-  }, [chapterIndex]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chapterIndex, book.id]);
 
   // Auto-scroll effect in vertical scroll mode
   useEffect(() => {
@@ -396,13 +499,24 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     return () => window.clearInterval(timer);
   }, [settings.readingMode, settings.autoScrollSpeed]);
 
+  const commitPageChange = (nextPageIdx: number, direction: 'next' | 'prev') => {
+    setActiveParaAction(null);
+    setTurnDirection(direction);
+    setTurnTick((t) => t + 1);
+    setCurrentPageIndex(nextPageIdx);
+    const firstChunk = screenPages[nextPageIdx]?.chunks[0];
+    if (firstChunk) {
+      anchorParagraphRef.current = firstChunk.paragraphIndex;
+      syncParagraphPosition(firstChunk.paragraphIndex);
+    }
+    triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
+  };
+
   const goNextPage = () => {
-    if (currentPageIndex < pages.length - 1) {
-      setTurnDirection('next');
-      setTurnTick((t) => t + 1);
-      setCurrentPageIndex((p) => p + 1);
-      triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
+    if (currentPageIndex < screenPages.length - 1) {
+      commitPageChange(currentPageIndex + 1, 'next');
     } else if (chapterIndex < book.chapters.length - 1) {
+      pendingLastPageOnPrevChapterRef.current = false;
       setTurnDirection('next');
       setTurnTick((t) => t + 1);
       goToChapter(chapterIndex + 1);
@@ -412,11 +526,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const goPrevPage = () => {
     if (currentPageIndex > 0) {
-      setTurnDirection('prev');
-      setTurnTick((t) => t + 1);
-      setCurrentPageIndex((p) => p - 1);
-      triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
+      commitPageChange(currentPageIndex - 1, 'prev');
     } else if (chapterIndex > 0) {
+      pendingLastPageOnPrevChapterRef.current = true;
       setTurnDirection('prev');
       setTurnTick((t) => t + 1);
       goToChapter(chapterIndex - 1);
@@ -462,7 +574,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     settings.readingMode,
-    pages.length,
+    screenPages.length,
     currentPageIndex,
     chapterIndex,
     basicSettings.volumeKeyPageTurn,
@@ -615,14 +727,59 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setAutoPlaySignal((s) => s + 1);
   };
 
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressOriginRef.current = null;
+  };
+
+  useEffect(() => {
+    return () => clearLongPressTimer();
+  }, []);
+
+  const startParagraphLongPress = (
+    paraIndex: number,
+    clientX: number,
+    clientY: number
+  ) => {
+    clearLongPressTimer();
+    longPressTriggeredRef.current = false;
+    longPressOriginRef.current = { x: clientX, y: clientY };
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      longPressTimerRef.current = null;
+      syncParagraphPosition(paraIndex);
+      setActiveParaAction({ paragraphIndex: paraIndex });
+      triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
+    }, 450);
+  };
+
+  const handleParagraphPointerMove = (clientX: number, clientY: number) => {
+    const origin = longPressOriginRef.current;
+    if (!origin) return;
+    if (Math.hypot(clientX - origin.x, clientY - origin.y) > 10) {
+      clearLongPressTimer();
+    }
+  };
+
   const handleCanvasTapForPagination = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
+    if (activeParaAction !== null) {
+      setActiveParaAction(null);
+      return;
+    }
     if (settings.readingMode !== 'paginated' || !basicSettings.tapToTurnPage) return;
     if ((e.target as HTMLElement).closest('button, select, input')) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const xRatio = (e.clientX - rect.left) / rect.width;
-    if (xRatio < 0.22) {
+    if (xRatio < 0.28) {
       goPrevPage();
-    } else if (xRatio > 0.78) {
+    } else if (xRatio > 0.72) {
       goNextPage();
     }
   };
@@ -630,19 +787,27 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (settings.readingMode !== 'paginated') return;
     touchStartXRef.current = e.touches[0]?.clientX ?? null;
+    touchStartYRef.current = e.touches[0]?.clientY ?? null;
   };
 
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    clearLongPressTimer();
     if (settings.readingMode !== 'paginated' || touchStartXRef.current === null) return;
     const endX = e.changedTouches[0]?.clientX;
+    const endY = e.changedTouches[0]?.clientY;
     const startX = touchStartXRef.current;
+    const startY = touchStartYRef.current ?? 0;
     touchStartXRef.current = null;
+    touchStartYRef.current = null;
     if (typeof endX !== 'number') return;
     const deltaX = endX - startX;
-    if (deltaX < -45) {
-      goNextPage();
-    } else if (deltaX > 45) {
-      goPrevPage();
+    const deltaY = typeof endY === 'number' ? Math.abs(endY - startY) : 0;
+    if (Math.abs(deltaX) > 40 && Math.abs(deltaX) > deltaY * 1.15) {
+      if (deltaX < 0) {
+        goNextPage();
+      } else {
+        goPrevPage();
+      }
     }
   };
 
@@ -678,16 +843,28 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     });
   };
 
-  const visibleParagraphs =
+  const safePageIndex = Math.min(currentPageIndex, Math.max(0, screenPages.length - 1));
+  const activeScreenPage = screenPages[safePageIndex] || {
+    pageIndex: 0,
+    chunks: [],
+    hasChapterHeader: true,
+  };
+  const visibleChunks: ScreenPageChunk[] =
     settings.readingMode === 'paginated'
-      ? pages[Math.min(currentPageIndex, pages.length - 1)] || []
-      : renderedParagraphs;
+      ? activeScreenPage.chunks
+      : renderedParagraphs.map((p) => ({
+          paragraphIndex: p.index,
+          original: p.original,
+          translated: p.translated,
+          isFirstOfParagraph: true,
+          isContinuation: false,
+        }));
 
+  const isPaginatedMode = settings.readingMode === 'paginated';
   const vintageTexture = getVintagePaperTextureStyles(activeTheme.id);
-  const pageTurnClass =
-    settings.readingMode === 'paginated'
-      ? getPageTurnAnimationClass(settings.pageTurnStyle, turnDirection)
-      : '';
+  const pageTurnClass = isPaginatedMode
+    ? getPageTurnAnimationClass(settings.pageTurnStyle, turnDirection)
+    : '';
   const activeTurnLabel =
     PAGE_TURN_STYLES.find((s) => s.id === (settings.pageTurnStyle || 'curl'))?.label ||
     'Cong mép sách';
@@ -701,7 +878,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         filter: `brightness(${settings.brightness}%) sepia(${settings.warmth}%)`,
         ...vintageTexture,
       }}
-      className="min-h-screen flex flex-col transition-colors duration-200"
+      className={`${
+        isPaginatedMode ? 'h-[100dvh] overflow-hidden' : 'min-h-screen'
+      } w-full flex flex-col transition-colors duration-200`}
     >
       {/* Ultra-slim Distraction-Free Top Bar — all controls collapsed into corner Gear / 3-dot Menu */}
       <div
@@ -1117,223 +1296,189 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         )}
 
       {/* Main Content + Docked Side Drawers */}
-      <div className="flex-1 flex items-start relative">
+      <div className={`flex-1 flex relative min-h-0 ${isPaginatedMode ? 'overflow-hidden' : 'items-start'}`}>
         <div
           ref={scrollContainerRef}
           onClick={handleCanvasTapForPagination}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
-          className="flex-1 overflow-x-hidden px-4 sm:px-8 pt-6 sm:pt-9 pb-10 min-w-0 page-turn-stage"
+          className={`flex-1 min-w-0 page-turn-stage ${
+            isPaginatedMode
+              ? 'h-full flex flex-col overflow-hidden select-none'
+              : 'overflow-x-hidden px-4 sm:px-8 pt-6 sm:pt-9 pb-10'
+          }`}
         >
-          <article
-            key={
-              settings.readingMode === 'paginated'
-                ? `${chapterIndex}-${currentPageIndex}-${turnTick}`
-                : chapterIndex
+          {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page) */}
+          <div
+            ref={pageMeasureBoxRef}
+            className={
+              isPaginatedMode
+                ? 'flex-1 min-h-0 w-full px-4 sm:px-8 pt-3.5 pb-1 overflow-hidden'
+                : 'w-full'
             }
-            className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} transition-all`}
-            style={{
-              fontFamily: settings.fontFamily,
-              fontSize: `${settings.fontSize}px`,
-              lineHeight: settings.lineHeight,
-              letterSpacing: `${settings.letterSpacing}em`,
-              fontWeight: settings.fontWeight,
-              textAlign: settings.textAlign,
-            }}
           >
-            {translateError && (
-              <div className="mb-6 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs font-sans">
-                {translateError}
-              </div>
-            )}
+            <article
+              key={
+                isPaginatedMode
+                  ? `${chapterIndex}-${safePageIndex}-${turnTick}`
+                  : chapterIndex
+              }
+              className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} transition-all`}
+              style={{
+                fontFamily: settings.fontFamily,
+                fontSize: `${settings.fontSize}px`,
+                lineHeight: settings.lineHeight,
+                letterSpacing: `${settings.letterSpacing}em`,
+                fontWeight: settings.fontWeight,
+                textAlign: settings.textAlign,
+              }}
+            >
+              {translateError && (
+                <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs font-sans">
+                  {translateError}
+                </div>
+              )}
 
-            {translateStatusMsg && !isTranslating && !isTranslatingFullEpub && (
-              <div className="mb-6 flex items-center justify-between gap-2 p-3 rounded-lg bg-emerald-600/10 border border-emerald-600/30 text-xs font-sans">
-                <span className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
-                  <span>{translateStatusMsg}</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setTranslateStatusMsg('')}
-                  aria-label="Ẩn thông báo dịch"
-                  className="text-xs opacity-60 hover:opacity-100"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-
-            {(isTranslating || isTranslatingFullEpub) && (
-              <div className="mb-6 p-3 rounded-lg bg-amber-700/10 border border-amber-700/25 text-xs font-sans space-y-2">
-                <div className="flex items-center justify-between gap-2">
+              {translateStatusMsg && !isTranslating && !isTranslatingFullEpub && (
+                <div className="mb-4 flex items-center justify-between gap-2 p-3 rounded-lg bg-emerald-600/10 border border-emerald-600/30 text-xs font-sans">
                   <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                    <span>
-                      {isTranslatingFullEpub && fullEpubProgress
-                        ? fullEpubProgress.message
-                        : `AI đang dịch nhanh sang ${getLanguagePackDefinition(settings.targetLang).label}...`}
-                    </span>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
+                    <span>{translateStatusMsg}</span>
                   </span>
-                  {isTranslatingFullEpub && (
-                    <button
-                      type="button"
-                      onClick={() => fullTranslateAbortRef.current?.abort()}
-                      className="text-[11px] font-semibold text-red-600 underline shrink-0"
-                    >
-                      Hủy
-                    </button>
+                  <button
+                    type="button"
+                    onClick={() => setTranslateStatusMsg('')}
+                    aria-label="Ẩn thông báo dịch"
+                    className="text-xs opacity-60 hover:opacity-100"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {(isTranslating || isTranslatingFullEpub) && (
+                <div className="mb-4 p-3 rounded-lg bg-amber-700/10 border border-amber-700/25 text-xs font-sans space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      <span>
+                        {isTranslatingFullEpub && fullEpubProgress
+                          ? fullEpubProgress.message
+                          : `AI đang dịch nhanh sang ${getLanguagePackDefinition(settings.targetLang).label}...`}
+                      </span>
+                    </span>
+                    {isTranslatingFullEpub && (
+                      <button
+                        type="button"
+                        onClick={() => fullTranslateAbortRef.current?.abort()}
+                        className="text-[11px] font-semibold text-red-600 underline shrink-0"
+                      >
+                        Hủy
+                      </button>
+                    )}
+                  </div>
+                  {isTranslatingFullEpub && fullEpubProgress && (
+                    <div className="h-1.5 w-full rounded-full bg-amber-700/20 overflow-hidden">
+                      <div
+                        className="h-full bg-amber-700 transition-all duration-300"
+                        style={{ width: `${fullEpubProgress.percent}%` }}
+                      />
+                    </div>
                   )}
                 </div>
-                {isTranslatingFullEpub && fullEpubProgress && (
-                  <div className="h-1.5 w-full rounded-full bg-amber-700/20 overflow-hidden">
+              )}
+
+              {/* Chapter Header (shown on Page 1 in paginated mode, or top of scroll mode) */}
+              {(!isPaginatedMode || activeScreenPage.hasChapterHeader) && (
+                <header
+                  className={isPaginatedMode ? 'mb-4 pb-3 border-b' : 'mb-8 pb-6 border-b'}
+                  style={{ borderColor: activeTheme.border }}
+                >
+                  <p className="text-[11px] uppercase tracking-wider opacity-60 font-sans mb-1.5 tabular-nums truncate">
+                    {book.title} · Chương {chapterIndex + 1}/{book.chapters.length}
+                  </p>
+                  <h1 className="text-xl sm:text-2xl font-display font-semibold leading-snug text-left">
+                    {currentChapter?.title}
+                  </h1>
+                </header>
+              )}
+
+              {/* Paragraphs — clean reading view; long-press (ấn giữ) reveals Nghe từ đây / Đánh dấu */}
+              <div
+                className={
+                  isPaginatedMode && settings.columnsInPaginated === 2
+                    ? 'md:columns-2 md:gap-10'
+                    : ''
+                }
+              >
+                {visibleChunks.map((chunk, idx) => {
+                  const highlight = book.highlights.find(
+                    (h) => h.chapterId === currentChapter?.id && h.paragraphIndex === chunk.paragraphIndex
+                  );
+                  const isSpoken = spokenParaIndex === chunk.paragraphIndex;
+                  const isLongPressed = activeParaAction?.paragraphIndex === chunk.paragraphIndex;
+                  const useDropCap =
+                    settings.dropCap &&
+                    chunk.paragraphIndex === 0 &&
+                    chunk.isFirstOfParagraph &&
+                    idx === 0;
+
+                  return (
                     <div
-                      className="h-full bg-amber-700 transition-all duration-300"
-                      style={{ width: `${fullEpubProgress.percent}%` }}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Chapter Header */}
-            <header className="mb-8 pb-6 border-b" style={{ borderColor: activeTheme.border }}>
-              <p className="text-xs uppercase tracking-widest opacity-60 font-sans mb-2 tabular-nums">
-                {book.title} · Chương {chapterIndex + 1}/{book.chapters.length} · Đoạn{' '}
-                {(book.currentParagraphIndex || 0) + 1}/{currentChapter?.paragraphs.length || 1}
-              </p>
-              <h1 className="text-2xl sm:text-3xl font-display font-semibold leading-snug text-left">
-                {currentChapter?.title}
-              </h1>
-            </header>
-
-            {/* Paragraphs */}
-            <div
-              className={
-                settings.readingMode === 'paginated' && settings.columnsInPaginated === 2
-                  ? 'md:columns-2 md:gap-12'
-                  : ''
-              }
-            >
-              {visibleParagraphs.map((pair, idx) => {
-                const highlight = book.highlights.find(
-                  (h) => h.chapterId === currentChapter?.id && h.paragraphIndex === pair.index
-                );
-                const isSpoken = spokenParaIndex === pair.index;
-                const isLastRead =
-                  spokenParaIndex === null && book.currentParagraphIndex === pair.index && pair.index > 0;
-                const useDropCap = settings.dropCap && pair.index === 0 && idx === 0;
-
-                return (
-                  <div
-                    key={pair.index}
-                    ref={(el) => {
-                      if (el) paraRefs.current.set(pair.index, el);
-                      else paraRefs.current.delete(pair.index);
-                    }}
-                    style={{ marginBottom: `${settings.paragraphSpacing}px` }}
-                    className={`relative group rounded-lg px-2 py-1 transition-colors ${
-                      isSpoken
-                        ? 'ring-2 ring-amber-700/70 bg-amber-500/10'
-                        : isLastRead
-                        ? 'border-l-2 border-amber-700/60 pl-3'
-                        : ''
-                    } ${highlight ? HIGHLIGHT_CLASSES[highlight.color] : ''}`}
-                  >
-                    <p
-                      onClick={() => {
-                        syncParagraphPosition(pair.index);
-                        setActiveParaAction(activeParaAction === pair.index ? null : pair.index);
+                      key={`${chunk.paragraphIndex}-${idx}`}
+                      ref={(el) => {
+                        if (el && chunk.isFirstOfParagraph) {
+                          paraRefs.current.set(chunk.paragraphIndex, el);
+                        } else if (!el) {
+                          paraRefs.current.delete(chunk.paragraphIndex);
+                        }
                       }}
-                      className={`${useDropCap ? 'editorial-dropcap' : ''} ${
-                        settings.firstLineIndent && !useDropCap ? 'indent-8' : ''
-                      } cursor-text`}
+                      style={{ marginBottom: `${settings.paragraphSpacing}px` }}
+                      onPointerDown={(e) =>
+                        startParagraphLongPress(chunk.paragraphIndex, e.clientX, e.clientY)
+                      }
+                      onPointerMove={(e) => handleParagraphPointerMove(e.clientX, e.clientY)}
+                      onPointerUp={clearLongPressTimer}
+                      onPointerCancel={clearLongPressTimer}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        syncParagraphPosition(chunk.paragraphIndex);
+                        setActiveParaAction({ paragraphIndex: chunk.paragraphIndex });
+                      }}
+                      className={`relative rounded-lg px-1.5 py-0.5 transition-colors select-none ${
+                        isSpoken
+                          ? 'ring-2 ring-amber-700/70 bg-amber-500/10'
+                          : isLongPressed
+                          ? 'ring-1 ring-amber-700/60 bg-amber-500/10'
+                          : ''
+                      } ${highlight ? HIGHLIGHT_CLASSES[highlight.color] : ''}`}
                     >
-                      {renderIlluminatedText(pair.original, isSpoken)}
-                    </p>
-
-                    {pair.translated && (
-                      <p className="mt-2 pl-4 opacity-75 italic text-[0.92em]">
-                        {pair.translated}
+                      <p
+                        className={`${useDropCap ? 'editorial-dropcap' : ''} ${
+                          settings.firstLineIndent && chunk.isFirstOfParagraph && !useDropCap
+                            ? 'indent-7'
+                            : ''
+                        }`}
+                      >
+                        {renderIlluminatedText(chunk.original, isSpoken)}
                       </p>
-                    )}
 
-                    {activeParaAction === pair.index && (
-                      <div className="mt-2 inline-flex flex-wrap items-center gap-2 p-1.5 rounded-lg bg-stone-900 text-white text-[11px] font-sans shadow-md">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            syncParagraphPosition(pair.index);
-                            setActiveParaAction(null);
-                            handleContinueListenFromHere();
-                          }}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded bg-amber-700 hover:bg-amber-600 text-white font-medium"
-                        >
-                          <Play className="w-3 h-3" />
-                          <span>Nghe từ đây</span>
-                        </button>
-                        <span className="opacity-60">Đánh dấu:</span>
-                        {(['amber', 'emerald', 'rose', 'sky'] as const).map((clr) => (
-                          <button
-                            key={clr}
-                            type="button"
-                            onClick={() => toggleHighlight(pair.index, clr)}
-                            aria-label={`Tô màu ${clr}`}
-                            className={`w-4 h-4 rounded-full border border-white/40 ${
-                              clr === 'amber'
-                                ? 'bg-amber-400'
-                                : clr === 'emerald'
-                                ? 'bg-emerald-400'
-                                : clr === 'rose'
-                                ? 'bg-rose-400'
-                                : 'bg-sky-400'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Chapter / Page Footer Navigation */}
-            <footer
-              style={{ borderColor: activeTheme.border }}
-              className="mt-8 pt-5 border-t flex items-center justify-between gap-4 font-sans text-xs"
-            >
-              {settings.readingMode === 'paginated' ? (
-                <>
-                  <button
-                    type="button"
-                    disabled={currentPageIndex === 0 && chapterIndex === 0}
-                    onClick={goPrevPage}
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-black/15 dark:border-white/15 disabled:opacity-40 min-h-[44px]"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    <span>Trang trước</span>
-                  </button>
-                  <div className="text-center space-y-0.5">
-                    <div className="tabular-nums opacity-80 font-medium">
-                      Trang {currentPageIndex + 1} / {pages.length}
+                      {chunk.translated && (
+                        <p className="mt-2 pl-4 opacity-75 italic text-[0.92em]">
+                          {chunk.translated}
+                        </p>
+                      )}
                     </div>
-                    <div className="text-[10px] opacity-60">{activeTurnLabel}</div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={
-                      currentPageIndex >= pages.length - 1 &&
-                      chapterIndex >= book.chapters.length - 1
-                    }
-                    onClick={goNextPage}
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-black/15 dark:border-white/15 disabled:opacity-40 min-h-[44px]"
-                  >
-                    <span>Trang tiếp</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </>
-              ) : (
-                <>
+                  );
+                })}
+              </div>
+
+              {/* Scroll-mode Chapter Footer */}
+              {!isPaginatedMode && (
+                <footer
+                  style={{ borderColor: activeTheme.border }}
+                  className="mt-8 pt-5 border-t flex items-center justify-between gap-4 font-sans text-xs"
+                >
                   <button
                     type="button"
                     disabled={chapterIndex === 0}
@@ -1355,11 +1500,146 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     <span>Chương tiếp</span>
                     <ChevronRight className="w-4 h-4" />
                   </button>
-                </>
+                </footer>
               )}
+            </article>
+          </div>
+
+          {/* Slim Fixed Bottom Page Bar in Paginated Screen-Fitted Mode */}
+          {isPaginatedMode && (
+            <footer
+              style={{ borderColor: activeTheme.border }}
+              className="shrink-0 h-[44px] px-3 sm:px-6 border-t flex items-center justify-between gap-2 font-sans text-[11px] pb-safe"
+            >
+              <button
+                type="button"
+                disabled={safePageIndex === 0 && chapterIndex === 0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  goPrevPage();
+                }}
+                aria-label="Trang trước"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-35"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Trước</span>
+              </button>
+
+              <div className="min-w-0 text-center tabular-nums opacity-75 truncate">
+                <span className="font-semibold">
+                  Trang {safePageIndex + 1}/{Math.max(1, screenPages.length)}
+                </span>
+                <span className="mx-1.5 opacity-50">·</span>
+                <span>
+                  Ch.{chapterIndex + 1}/{book.chapters.length}
+                </span>
+                <span className="hidden sm:inline opacity-60"> · {activeTurnLabel}</span>
+              </div>
+
+              <button
+                type="button"
+                disabled={
+                  safePageIndex >= screenPages.length - 1 &&
+                  chapterIndex >= book.chapters.length - 1
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  goNextPage();
+                }}
+                aria-label="Trang tiếp"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-35"
+              >
+                <span>Tiếp</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </footer>
-          </article>
+          )}
         </div>
+
+        {/* Long-Press Floating Paragraph Action Menu (Nghe từ đây & Đánh dấu — hidden until long-press) */}
+        {activeParaAction !== null &&
+          typeof document !== 'undefined' &&
+          createPortal(
+            <div
+              className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-black/25 backdrop-blur-[1px] p-4 pb-8"
+              onClick={() => setActiveParaAction(null)}
+            >
+              <div
+                role="dialog"
+                aria-label="Tùy chọn đoạn văn bản"
+                onClick={(e) => e.stopPropagation()}
+                className="ios-sheet-enter w-full max-w-sm rounded-2xl bg-[#1C1917]/95 text-white border border-white/15 shadow-2xl p-3.5 space-y-3 font-sans text-xs"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-[11px] text-stone-300 line-clamp-2 leading-relaxed">
+                    &ldquo;
+                    {currentChapter?.paragraphs[activeParaAction.paragraphIndex]?.slice(0, 110) ||
+                      ''}
+                    &rdquo;
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveParaAction(null)}
+                    aria-label="Đóng bảng tùy chọn đoạn"
+                    className="p-1 rounded-full text-stone-400 hover:text-white shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const pIdx = activeParaAction.paragraphIndex;
+                      syncParagraphPosition(pIdx);
+                      setActiveParaAction(null);
+                      handleContinueListenFromHere();
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-700 hover:bg-amber-600 text-white font-semibold"
+                  >
+                    <Play className="w-3.5 h-3.5 shrink-0" />
+                    <span>Nghe từ đây</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      toggleChapterBookmark();
+                      setActiveParaAction(null);
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-medium"
+                  >
+                    <Bookmark className="w-3.5 h-3.5 shrink-0" />
+                    <span>{isBookmarked ? 'Bỏ lưu dấu' : 'Lưu dấu trang'}</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+                  <span className="text-[11px] text-stone-300">Đánh dấu màu:</span>
+                  <div className="flex items-center gap-2">
+                    {(['amber', 'emerald', 'rose', 'sky'] as const).map((clr) => (
+                      <button
+                        key={clr}
+                        type="button"
+                        onClick={() => toggleHighlight(activeParaAction.paragraphIndex, clr)}
+                        aria-label={`Tô màu ${clr}`}
+                        className={`w-6 h-6 rounded-full border-2 border-white/60 ${
+                          clr === 'amber'
+                            ? 'bg-amber-400'
+                            : clr === 'emerald'
+                            ? 'bg-emerald-400'
+                            : clr === 'rose'
+                            ? 'bg-rose-400'
+                            : 'bg-sky-400'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
 
         {/* Table of Contents & Bookmarks Sidebar (Portaled out of CSS filter container, h-auto tightly hugs chapters) */}
         {showToc &&

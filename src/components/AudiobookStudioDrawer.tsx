@@ -46,7 +46,12 @@ import {
   updateMediaSession,
 } from '../utils/audioFilterEngine';
 import { ambientSoundManager } from '../utils/ambientSoundEngine';
-import { resolveApiUrl } from '../utils/apiClient';
+import { getStoredApiBase, isNativeAndroidApp, resolveApiUrl } from '../utils/apiClient';
+import {
+  getOnDeviceVoiceTone,
+  pickBestDeviceVoice,
+  stopOnDeviceSpeech,
+} from '../utils/deviceTtsEngine';
 import {
   analyzeChapterOnDevice,
   buildAutoVoiceAssignments,
@@ -184,8 +189,12 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     });
   }, []);
 
-  // Playback state
-  const [engineMode, setEngineMode] = useState<'gemini' | 'browser'>('gemini');
+  // Playback state — default to on-device TTS so every phone reads immediately without cloud interruptions
+  const forceOnDeviceDefault =
+    standaloneDeviceMode || (isNativeAndroidApp() && !getStoredApiBase());
+  const [engineMode, setEngineMode] = useState<'gemini' | 'browser'>(() =>
+    forceOnDeviceDefault ? 'browser' : 'gemini'
+  );
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(() => {
     try {
       const saved = localStorage.getItem(PLAYBACK_SPEED_STORAGE_KEY);
@@ -272,9 +281,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       playbackRunIdRef.current += 1;
       filteredPlayerRef.current?.dispose();
       clearMediaSession();
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      stopOnDeviceSpeech();
     };
   }, []);
 
@@ -410,9 +417,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       );
     }
     filteredPlayerRef.current?.stop();
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+    stopOnDeviceSpeech();
     onHighlightParagraph(null, 0);
   };
 
@@ -452,17 +457,18 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
   const narratorAssign = getAssignment('narrator', 'Kore');
   const activeVoiceLabel = (() => {
-    if (engineMode === 'browser' || narratorAssign.source === 'browser') {
-      return 'Giọng Thiết Bị (Đa nhân vật)';
-    }
     if (narratorAssign.source === 'external' && narratorAssign.externalVoiceId) {
       const ext = externalVoices.find((v) => v.id === narratorAssign.externalVoiceId);
       if (ext) return ext.name;
     }
-    return (
-      GEMINI_VOICES.find((v) => v.name === narratorAssign.geminiVoice)?.label ||
-      'Google AI (Giọng gốc)'
-    );
+    if (narratorAssign.source === 'browser') {
+      return 'Giọng đọc trên điện thoại';
+    }
+    const baseLabel = GEMINI_VOICES.find((v) => v.name === narratorAssign.geminiVoice)?.label;
+    if (engineMode === 'browser' || forceOnDeviceDefault) {
+      return baseLabel ? `${baseLabel} (Trên máy)` : 'Giọng đọc trên điện thoại';
+    }
+    return baseLabel || 'Giọng đọc trên điện thoại';
   })();
 
   const handleAnalyzeCloudAI = async () => {
@@ -782,14 +788,22 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         try {
-          window.speechSynthesis.cancel();
+          const synth = window.speechSynthesis;
+          if (synth.speaking || synth.pending) synth.cancel();
+          if (synth.paused) synth.resume();
+
           const utter = new SpeechSynthesisUtterance(text);
-          const viVoice =
-            browserVoices.find((v) => v.voiceURI === voiceURI) ||
-            browserVoices.find((v) => v.lang.toLowerCase().startsWith('vi'));
-          if (viVoice) utter.voice = viVoice;
-          utter.lang = viVoice?.lang || (book.language === 'en' ? 'en-US' : 'vi-VN');
-          utter.pitch = Math.min(1.6, Math.max(0.6, pitch));
+          const liveVoices = synth.getVoices();
+          const pool = liveVoices.length > 0 ? liveVoices : browserVoices;
+          const targetLang = book.language === 'en' ? 'en-US' : 'vi-VN';
+          const chosenVoice = pickBestDeviceVoice(pool, targetLang, voiceURI);
+          if (chosenVoice) {
+            utter.voice = chosenVoice;
+            utter.lang = chosenVoice.lang || targetLang;
+          } else {
+            utter.lang = targetLang;
+          }
+          utter.pitch = Math.min(1.7, Math.max(0.55, pitch));
           utter.rate = finalRate;
 
           utter.onstart = () => {
@@ -806,8 +820,6 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
           utter.onend = () => {
             speechActive = false;
-            // Only finish immediately if speech actually ran for a realistic duration;
-            // otherwise let the smooth visual reading timer finish naturally
             if (Date.now() - startedAt >= Math.min(800, estimatedMs * 0.4)) {
               finish();
             }
@@ -815,10 +827,9 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
           utter.onerror = () => {
             speechActive = false;
-            // Keep smooth reading timer alive instead of skipping the entire chapter in 5ms
           };
 
-          window.speechSynthesis.speak(utter);
+          synth.speak(utter);
         } catch {
           speechActive = false;
         }
@@ -907,7 +918,18 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
     const assign = getAssignment(unit.speakerId);
     const params = resolveTtsParamsForSpeaker(unit.speakerId, unit.emotionStyle);
+    const presetTone = getOnDeviceVoiceTone(params.voiceName as GeminiVoiceName);
+    const devicePitch =
+      assign.source === 'gemini' && Math.abs(params.pitch - 1.0) < 0.01
+        ? presetTone.pitch
+        : params.pitch;
+    const deviceRate =
+      assign.source === 'gemini' && Math.abs(params.rate - 1.0) < 0.01
+        ? presetTone.rate
+        : params.rate;
+
     const shouldUseBrowser =
+      forceOnDeviceDefault ||
       engineModeRef.current === 'browser' ||
       assign.source === 'browser' ||
       quotaExhaustedRef.current;
@@ -916,8 +938,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       setIsLoadingAudio(false);
       await playBrowserBatch(
         unit,
-        params.pitch,
-        params.rate,
+        devicePitch,
+        deviceRate,
         assign.browserVoiceURI,
         runId
       );
@@ -940,8 +962,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         if (firstErr instanceof QuotaExceededError) {
           throw firstErr;
         }
-        // Single transient retry before graceful fallback
-        await new Promise((r) => window.setTimeout(r, 550));
+        await new Promise((r) => window.setTimeout(r, 450));
         if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
         audioSrc = await fetchGeminiTtsUrl(
           unit.combinedText,
@@ -952,7 +973,6 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
       if (!isPlayingRef.current || playbackRunIdRef.current !== runId) return;
 
-      // Kick off multi-page lookahead prefetch (next 4 batched units = ~2-4 full pages)
       void prefetchAheadUnits(index, units, runId);
 
       setIsLoadingAudio(false);
@@ -970,25 +990,17 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       if (isPlayingRef.current && playbackRunIdRef.current === runId) {
         await playBatchAt(index + 1, runId, units);
       }
-    } catch (err) {
+    } catch {
       if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
       setIsLoadingAudio(false);
+      setEngineMode('browser');
+      engineModeRef.current = 'browser';
 
-      if (err instanceof QuotaExceededError) {
-        setEngineMode('browser');
-        engineModeRef.current = 'browser';
-        setInfoNotice(err.message);
-      } else {
-        setInfoNotice(
-          'Kết nối giọng AI đám mây bị gián đoạn — tự động đọc tiếp bằng giọng trên thiết bị (không dừng truyện).'
-        );
-      }
-
-      // Seamlessly continue reading THIS batch via on-device multi-pitch speech so playback NEVER crashes
+      // Seamlessly continue reading on-device without interrupting the user with error alerts
       await playBrowserBatch(
         unit,
-        params.pitch,
-        params.rate,
+        devicePitch,
+        deviceRate,
         assign.browserVoiceURI,
         runId
       );
@@ -1043,11 +1055,17 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         return;
       }
 
-      if (engineMode === 'browser' || assign.source === 'browser' || quotaExhaustedRef.current) {
+      if (
+        forceOnDeviceDefault ||
+        engineMode === 'browser' ||
+        assign.source === 'browser' ||
+        quotaExhaustedRef.current
+      ) {
+        const presetTone = getOnDeviceVoiceTone(params.voiceName as GeminiVoiceName);
         await playBrowserBatch(
           fakeUnit,
-          params.pitch,
-          params.rate,
+          assign.source === 'gemini' ? presetTone.pitch : params.pitch,
+          assign.source === 'gemini' ? presetTone.rate : params.rate,
           assign.browserVoiceURI,
           playbackRunIdRef.current
         );
@@ -1062,20 +1080,16 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       );
       await getPlayer().play(audioSrc, params.tone, playbackSpeed);
       setPreviewingId(null);
-    } catch (err) {
+    } catch {
+      const presetTone = getOnDeviceVoiceTone(params.voiceName as GeminiVoiceName);
+      await playBrowserBatch(
+        fakeUnit,
+        presetTone.pitch,
+        presetTone.rate,
+        assign.browserVoiceURI,
+        playbackRunIdRef.current
+      );
       setPreviewingId(null);
-      if (err instanceof QuotaExceededError) {
-        setInfoNotice(err.message);
-        await playBrowserBatch(
-          fakeUnit,
-          params.pitch,
-          params.rate,
-          assign.browserVoiceURI,
-          playbackRunIdRef.current
-        );
-      } else {
-        setErrorMsg(err instanceof Error ? err.message : 'Không phát thử được giọng.');
-      }
     }
   };
 
@@ -1624,8 +1638,6 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          setEngineMode('gemini');
-                          quotaExhaustedRef.current = false;
                           onUpdateVoiceAssignment('narrator', {
                             ...narratorAssign,
                             source: 'gemini',

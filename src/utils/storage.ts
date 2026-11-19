@@ -35,7 +35,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   customTextColor: '#1C1917',
   brightness: 100,
   warmth: 0,
-  readingMode: 'scroll',
+  readingMode: 'paginated',
   pageTurnStyle: 'curl',
   columnsInPaginated: 1,
   autoScrollSpeed: 0,
