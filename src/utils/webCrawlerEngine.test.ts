@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import JSZip from 'jszip';
 import {
   buildLibraryCollectionZip,
+  buildNativeBrowserHref,
   computePageSignature,
   detectDuplicateOrLoop,
   detectPaywallOrIssue,
@@ -15,6 +16,18 @@ test('detectPaywallOrIssue catches Vietnamese paywall/VIP blocks and empty pages
   ]);
   assert.equal(vipRes.hasIssue, true);
   assert.equal(vipRes.reason, 'paywall');
+
+  const loginRes = detectPaywallOrIssue('Thông báo', [
+    'Vui lòng đăng nhập tài khoản để đọc tiếp chương này.',
+  ]);
+  assert.equal(loginRes.hasIssue, true);
+  assert.equal(loginRes.reason, 'login');
+
+  const captchaRes = detectPaywallOrIssue('Attention Required', [
+    'Cloudflare: Please verify you are human to continue.',
+  ]);
+  assert.equal(captchaRes.hasIssue, true);
+  assert.equal(captchaRes.reason, 'captcha');
 
   const emptyRes = detectPaywallOrIssue('Trống', []);
   assert.equal(emptyRes.hasIssue, true);
@@ -87,6 +100,15 @@ test('buildLibraryCollectionZip organizes books into collection folders inside o
   const loaded = await JSZip.loadAsync(buf);
 
   const keys = Object.keys(loaded.files);
-  assert.ok(keys.some((k) => k.includes('LaziRead-ThuVien-BoSuuTap/hoc-tap/sach-hoc-tap.epub')));
+  assert.ok(keys.some((k) => k.includes('BOOKHAD-ThuVien-BoSuuTap/hoc-tap/sach-hoc-tap.epub')));
   assert.ok(keys.some((k) => k.endsWith('muc-luc-thu-vien.json')));
 });
+
+test('buildNativeBrowserHref falls back to Google when empty and generates Android intent URI', () => {
+  assert.equal(buildNativeBrowserHref('   ', false), 'https://www.google.com');
+  assert.equal(buildNativeBrowserHref('truyenfull.vn/tien-nghich', false), 'https://truyenfull.vn/tien-nghich');
+
+  const intentHref = buildNativeBrowserHref('', true);
+  assert.ok(intentHref.startsWith('intent://www.google.com#Intent;scheme=https;action=android.intent.action.VIEW'));
+});
+

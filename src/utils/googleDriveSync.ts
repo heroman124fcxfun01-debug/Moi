@@ -6,10 +6,11 @@ import type {
 } from '../types/book';
 import { buildEpubBlob, parseEpubBuffer } from './epubBuilder';
 import {
-  buildSyncBackupBundle,
   computeBookFingerprint,
+  mergeProgressBundlesForCloudPush,
   mergeReadingLogs,
   mergeSyncBundleIntoLibrary,
+  normalizeBookMatchKey,
 } from './syncAndStats';
 
 export const DRIVE_ROOT_FOLDER = 'sáchlazy';
@@ -173,9 +174,11 @@ export function mergeDownloadedDriveBooks(
 
   for (const entry of downloadedEntries) {
     const fp = entry.book.fingerprint || computeBookFingerprint(entry.book);
+    const incomingKey = normalizeBookMatchKey(entry.book.title);
     const existingIdx = workingBooks.findIndex(
       (b) =>
         (b.fingerprint || computeBookFingerprint(b)) === fp ||
+        (incomingKey && normalizeBookMatchKey(b.title) === incomingKey) ||
         b.title.trim().toLowerCase() === entry.book.title.trim().toLowerCase()
     );
 
@@ -383,14 +386,30 @@ export async function ensureLaziRootFolder(token: string): Promise<DriveItemRef>
 export async function uploadProgressManifestToDrive(
   token: string,
   books: Book[],
-  readingLogs: ReadingLogEntry[]
+  readingLogs: ReadingLogEntry[],
+  preloadedRemote?: SyncBackupBundle | null
 ): Promise<DriveItemRef> {
   const root = await ensureLaziRootFolder(token);
-  const bundle = buildSyncBackupBundle(books, readingLogs, {
-    includeFullBooks: false,
-    deviceLabel: 'LaziRead Google Drive',
-  });
   const existing = await findDriveItemByName(token, DRIVE_PROGRESS_FILE, root.id);
+  let remoteBundle = preloadedRemote;
+  if (remoteBundle === undefined && existing) {
+    try {
+      const buf = await downloadDriveFileBuffer(token, existing.id);
+      const text = new TextDecoder('utf-8').decode(buf);
+      const parsed = JSON.parse(text) as SyncBackupBundle;
+      if (parsed && Array.isArray(parsed.progressRecords)) {
+        remoteBundle = parsed;
+      }
+    } catch {
+      remoteBundle = null;
+    }
+  }
+  const bundle = mergeProgressBundlesForCloudPush(
+    books,
+    readingLogs,
+    remoteBundle ?? null,
+    'LaziRead Google Drive'
+  );
   const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
   return uploadMultipartDriveFile(token, {
     name: DRIVE_PROGRESS_FILE,
@@ -411,6 +430,45 @@ export async function downloadProgressManifestFromDrive(
   const text = new TextDecoder('utf-8').decode(buf);
   const parsed = JSON.parse(text) as SyncBackupBundle;
   return parsed && Array.isArray(parsed.progressRecords) ? parsed : null;
+}
+
+/**
+ * Bidirectional auto-sync on connect / reconnect / reading update:
+ * 1) Pulls remote manifest -> updates ONLY books already imported on this device (matching by ID, fingerprint, or normalized filename/title).
+ * 2) Pushes merged manifest -> updates Drive without erasing progress of books stored only on other devices.
+ */
+export async function syncProgressTwoWayWithDrive(
+  token: string,
+  localBooks: Book[],
+  localLogs: ReadingLogEntry[]
+): Promise<{
+  mergedBooks: Book[];
+  mergedLogs: ReadingLogEntry[];
+  matchedProgressCount: number;
+}> {
+  const root = await ensureLaziRootFolder(token);
+  const remoteBundle = await downloadProgressManifestFromDrive(token, root.id);
+
+  let workingBooks = localBooks;
+  let workingLogs = localLogs;
+  let matchedProgressCount = 0;
+
+  if (remoteBundle) {
+    const mergeRes = mergeSyncBundleIntoLibrary(localBooks, {
+      ...remoteBundle,
+      fullBooks: undefined,
+    });
+    workingBooks = mergeRes.mergedBooks;
+    workingLogs = mergeReadingLogs(localLogs, remoteBundle.readingLogs || []);
+    matchedProgressCount = mergeRes.matchedProgressCount;
+  }
+
+  await uploadProgressManifestToDrive(token, workingBooks, workingLogs, remoteBundle);
+  return {
+    mergedBooks: workingBooks,
+    mergedLogs: workingLogs,
+    matchedProgressCount,
+  };
 }
 
 /**

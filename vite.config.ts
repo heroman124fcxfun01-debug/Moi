@@ -13,6 +13,7 @@ export default defineConfig(() => {
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
+          'bookhad-icon.jpg',
           'icon.svg',
           'apple-touch-icon.png',
           'pwa-192x192.png',
@@ -21,10 +22,10 @@ export default defineConfig(() => {
         ],
         manifest: {
           id: '/',
-          name: 'LaziRead — Đọc Sách & Phòng Thu AI',
-          short_name: 'LaziRead',
+          name: 'BOOKHAD — Đọc Sách & Phòng Thu AI',
+          short_name: 'BOOKHAD',
           description:
-            'Ứng dụng đọc sách EPUB/PDF, dịch song ngữ, quét web tạo EPUB và nghe sách nói phân vai AI tối ưu cho Android & máy tính.',
+            'Ứng dụng đọc sách EPUB/PDF, quét video/ảnh thành EPUB, dịch song ngữ và nghe sách nói phân vai mượt mà 120Hz.',
           theme_color: '#1C1917',
           background_color: '#F7F4EE',
           display: 'standalone',
@@ -97,8 +98,8 @@ export default defineConfig(() => {
           if (error) {
             return;
           }
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(import.meta.dirname, 'dist');
+          const srcAssets = path.resolve(import.meta.dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
@@ -106,9 +107,30 @@ export default defineConfig(() => {
         },
       },
     ],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
+              return 'vendor-react';
+            }
+            if (id.includes('node_modules/lucide-react/')) {
+              return 'vendor-icons';
+            }
+            if (id.includes('node_modules/jszip/')) {
+              return 'vendor-archive';
+            }
+            if (id.includes('node_modules/pdfjs-dist/')) {
+              return 'vendor-pdf';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

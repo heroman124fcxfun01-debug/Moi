@@ -36,7 +36,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Hướng dẫn cài đặt ứng dụng LaziRead"
+          aria-label="Hướng dẫn cài đặt ứng dụng BOOKHAD"
           className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4"
         >
           <div className="ios-sheet-enter w-full sm:max-w-md rounded-t-[26px] sm:rounded-[26px] bg-[#FBF9F5] dark:bg-[#191B1F] text-stone-900 dark:text-stone-100 border border-white/60 dark:border-stone-800 p-6 shadow-2xl space-y-4">
@@ -68,7 +68,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
                   <ol className="list-decimal pl-4 space-y-1">
                     <li>Mở link ứng dụng sau khi Deploy bằng <strong>Chrome</strong> hoặc <strong>Samsung Internet</strong>.</li>
                     <li>Nhấn menu <strong>⋮ (3 chấm)</strong> góc trên phải → <strong>Cài đặt ứng dụng / Thêm vào Màn hình chính</strong>.</li>
-                    <li>Mở icon <strong>LaziRead</strong> ngoài màn hình để chạy toàn màn hình &amp; đọc offline.</li>
+                    <li>Mở icon <strong>BOOKHAD</strong> ngoài màn hình để chạy toàn màn hình &amp; đọc offline.</li>
                   </ol>
                 </div>
 
@@ -77,7 +77,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
                     2. Tải 1 file .APK duy nhất qua GitHub
                   </div>
                   <p className="leading-relaxed">
-                    Dự án đã tích hợp sẵn <code>capacitor.config.json</code> và quy trình tự đóng gói GitHub Actions. Chỉ cần bấm <strong>Lưu lên GitHub (Export to GitHub)</strong> trong AI Studio → đợi 3–5 phút → vào mục <strong>Releases</strong> của repo GitHub để tải 1 file <code>LaziRead-S24Ultra.apk</code> về cài trên điện thoại.
+                    Dự án đã tích hợp sẵn <code>capacitor.config.json</code> và quy trình tự đóng gói GitHub Actions. Chỉ cần bấm <strong>Lưu lên GitHub (Export to GitHub)</strong> trong AI Studio → đợi 3–5 phút → vào mục <strong>Releases</strong> của repo GitHub để tải 1 file <code>BOOKHAD-Android.apk</code> về cài trên điện thoại.
                   </p>
                 </div>
 

@@ -8,6 +8,8 @@ import {
   Download,
   Loader2,
   Camera,
+  ChevronLeft,
+  Video,
 } from 'lucide-react';
 import type { Book, BookReadingStyle, Chapter, TranslationMode } from '../types/book';
 import { parseEpubBuffer, buildEpubBlob } from '../utils/epubBuilder';
@@ -25,6 +27,11 @@ import {
 import { tryOnDeviceHardwareOcr } from '../utils/deviceHardware';
 import { tryOnDeviceTranslateParagraphs } from '../utils/languagePacks';
 import { resolveApiUrl } from '../utils/apiClient';
+import {
+  assembleScannedPagesToBook,
+  extractDistinctBookFramesFromVideo,
+} from '../utils/videoBookScanner';
+import { GlassSelect } from './GlassSelect';
 
 interface ImportBookModalProps {
   isOpen: boolean;
@@ -35,6 +42,24 @@ interface ImportBookModalProps {
 }
 
 type ImportTab = 'file' | 'image' | 'text';
+
+const READING_STYLE_OPTIONS: Array<{ value: BookReadingStyle; label: string; subtitle: string }> = [
+  { value: 'novel', label: 'Tiểu thuyết', subtitle: 'Diễn cảm đa nhân vật & cảm xúc' },
+  { value: 'selfhelp', label: 'Học tập / Self-help', subtitle: 'Rõ ràng, nhấn ý chính' },
+  { value: 'essay', label: 'Tản văn', subtitle: 'Nhẹ nhàng, tình cảm' },
+  { value: 'research', label: 'Nghiên cứu', subtitle: 'Mạch lạc, chuẩn xác' },
+];
+
+const IMAGE_MODE_OPTIONS: Array<{ value: TranslationMode; label: string }> = [
+  { value: 'bilingual', label: 'Song ngữ (Gốc + Dịch)' },
+  { value: 'override', label: 'Dịch ghi đè hoàn toàn' },
+  { value: 'original', label: 'Chỉ trích xuất văn bản gốc' },
+];
+
+const TARGET_LANG_OPTIONS = TARGET_LANGUAGES.map((l) => ({
+  value: l.code,
+  label: l.label,
+}));
 
 export const ImportBookModal: React.FC<ImportBookModalProps> = ({
   isOpen,
@@ -51,7 +76,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
   const [selectedStyle, setSelectedStyle] = useState<BookReadingStyle>(defaultReadingStyle);
   const [collectionInput, setCollectionInput] = useState('');
 
-  // Image OCR + Translation state
+  // Image OCR + Video Book Scanner state
   const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [imageMode, setImageMode] = useState<TranslationMode>('bilingual');
   const [imageTargetLang, setImageTargetLang] = useState('vi');
@@ -65,6 +90,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -77,7 +103,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
       for (const file of Array.from(files)) {
         const lower = file.name.toLowerCase();
         if (lower.endsWith('.epub')) {
-          setStatusMessage(`Đang giải mã tệp EPUB "${file.name}"...`);
+          setStatusMessage(`Đang giải mã EPUB "${file.name}"...`);
           const buf = await readFileAsArrayBuffer(file);
           const draft = await parseEpubBuffer(buf, file.name);
           const newBook: Book = {
@@ -110,7 +136,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             lastReadAt: Date.now(),
           };
           if (autoExportPdfToEpub) {
-            setStatusMessage(`Đã đọc ${pageCount} trang. Đang tạo file .EPUB chuyển đổi...`);
+            setStatusMessage(`Đã đọc ${pageCount} trang. Đang tạo file .EPUB...`);
             const epubBlob = await buildEpubBlob(newBook);
             downloadBlob(epubBlob, `${slugifyFilename(newBook.title)}.epub`);
           }
@@ -170,7 +196,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
 
   const handleImportImages = async () => {
     if (imageFiles.length === 0) {
-      setErrorMessage('Vui lòng chọn ít nhất 1 ảnh trang sách để nhận dạng và dịch.');
+      setErrorMessage('Vui lòng chọn ít nhất 1 ảnh trang sách để nhận dạng.');
       return;
     }
 
@@ -183,7 +209,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
 
       for (let i = 0; i < imageFiles.length; i++) {
         const file = imageFiles[i];
-        setStatusMessage(`Đang quét chữ & dịch ảnh ${i + 1}/${imageFiles.length} (${file.name})...`);
+        setStatusMessage(`Đang quét ảnh ${i + 1}/${imageFiles.length}...`);
         const dataUrl = await readFileAsDataUrl(file);
         const [prefix, b64] = dataUrl.split(',');
         const mimeMatch = prefix.match(/data:(.*?);/);
@@ -193,7 +219,6 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
         let transParas: string[] = [];
         let pageDetectedTitle = '';
 
-        // Try on-device hardware TextDetector first when in standalone phone mode
         if (standaloneDeviceMode) {
           const hardwareLines = await tryOnDeviceHardwareOcr(dataUrl);
           if (hardwareLines && hardwareLines.length > 0) {
@@ -219,7 +244,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             });
             const data = await resp.json();
             if (!resp.ok) {
-              throw new Error(data.error || 'Lỗi dịch trang ảnh từ máy chủ AI.');
+              throw new Error(data.error || 'Lỗi quét trang ảnh từ máy chủ AI.');
             }
             pageDetectedTitle = data.detectedTitle || '';
             origParas = Array.isArray(data.originalParagraphs) ? data.originalParagraphs : [];
@@ -252,7 +277,8 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             imageFiles.length === 1
               ? pageDetectedTitle || 'Trang sách 1'
               : `Trang ${i + 1} · ${file.name.replace(/\.[^.]+$/, '')}`,
-          paragraphs: finalParagraphs.length > 0 ? finalParagraphs : ['(Không nhận dạng được chữ trên ảnh)'],
+          paragraphs:
+            finalParagraphs.length > 0 ? finalParagraphs : ['(Không nhận dạng được chữ trên ảnh)'],
           translations:
             transParas.length > 0
               ? {
@@ -267,16 +293,22 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
       }
 
       const firstCover = await readFileAsDataUrl(imageFiles[0]);
-      const title = detectedTitle || `Sách dịch từ ảnh (${imageFiles.length} trang)`;
-      const author = 'Dịch trực tiếp AI';
+      const title = detectedTitle || `Sách quét từ ảnh (${imageFiles.length} trang)`;
+      const author = 'BOOKHAD Scan';
       const newBook: Book = {
         id: `book-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         title,
         author,
-        description: `Tổng hợp và dịch ${imageFiles.length} trang ảnh (${imageMode === 'bilingual' ? 'Song ngữ' : imageMode === 'override' ? 'Dịch ghi đè' : 'Nguyên bản'}).`,
+        description: `Tổng hợp ${imageFiles.length} trang ảnh (${
+          imageMode === 'bilingual'
+            ? 'Song ngữ'
+            : imageMode === 'override'
+            ? 'Dịch ghi đè'
+            : 'Nguyên bản'
+        }).`,
         language: imageMode === 'override' ? imageTargetLang : 'auto',
         sourceType: 'image',
-        collection: collectionInput.trim() || 'Sách dịch từ ảnh',
+        collection: collectionInput.trim() || 'Sách quét từ ảnh',
         readingStyle: selectedStyle,
         fingerprint: computeBookFingerprint({ title, author, chapters }),
         coverUrl: firstCover,
@@ -298,6 +330,99 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
     } finally {
       setIsBusy(false);
       setStatusMessage('');
+    }
+  };
+
+  /**
+   * Silent background Video Book Scanner:
+   * Samples distinct book pages from a video file (low-RAM 64x64 frame diffing),
+   * sends batches silently to /api/ai/scan-book-pages, builds & downloads .EPUB,
+   * and imports straight into the BOOKHAD library.
+   */
+  const handleImportBookVideo = async (files: FileList | null) => {
+    const videoFile = files?.[0];
+    if (!videoFile) return;
+
+    setErrorMessage('');
+    setIsBusy(true);
+    setStatusMessage('Đang tách từng trang sách từ video...');
+
+    try {
+      const extractedFrames = await extractDistinctBookFramesFromVideo(videoFile, {
+        maxFrames: 18,
+        onProgress: (pct, kept) => {
+          setStatusMessage(`Đang tách trang video (${pct}% · ${kept} trang)...`);
+        },
+      });
+
+      if (extractedFrames.length === 0) {
+        throw new Error('Không tách được khung hình trang sách rõ nét từ video này.');
+      }
+
+      const allChapters: Array<{ title: string; paragraphs: string[] }> = [];
+      let resolvedTitle = imageBookTitle.trim();
+      let resolvedAuthor = '';
+
+      // Process in compact silent batches of 6 frames to keep mobile RAM & payload low
+      const batchSize = 6;
+      const totalBatches = Math.ceil(extractedFrames.length / batchSize);
+      for (let b = 0; b < totalBatches; b++) {
+        const batch = extractedFrames.slice(b * batchSize, (b + 1) * batchSize);
+        setStatusMessage(
+          `Đang số hóa trang sách (${Math.min((b + 1) * batchSize, extractedFrames.length)}/${extractedFrames.length})...`
+        );
+
+        const resp = await fetch(resolveApiUrl('/api/ai/scan-book-pages'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            frames: batch.map((f) => ({ base64: f.base64, mimeType: f.mimeType })),
+            targetLang: imageTargetLang,
+            translateToTarget: imageMode !== 'original',
+            hintTitle: resolvedTitle || videoFile.name.replace(/\.[^.]+$/, ''),
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.error || 'Không thể nhận dạng chữ từ khung hình video.');
+        }
+        if (!resolvedTitle && data.title) resolvedTitle = String(data.title);
+        if (!resolvedAuthor && data.author) resolvedAuthor = String(data.author);
+        if (Array.isArray(data.chapters)) {
+          for (const ch of data.chapters) {
+            allChapters.push({
+              title: String(ch?.title || `Phần ${allChapters.length + 1}`),
+              paragraphs: Array.isArray(ch?.paragraphs) ? ch.paragraphs.map(String) : [],
+            });
+          }
+        }
+      }
+
+      const coverDataUrl = `data:image/jpeg;base64,${extractedFrames[0].base64}`;
+      const assembledBook = assembleScannedPagesToBook({
+        title: resolvedTitle || videoFile.name.replace(/\.[^.]+$/, '') || 'Sách quét từ video',
+        author: resolvedAuthor || 'BOOKHAD Scan',
+        collection: collectionInput.trim() || 'Sách quét từ video',
+        readingStyle: selectedStyle,
+        chapters: allChapters,
+        coverDataUrl,
+        targetLang: imageTargetLang,
+      });
+
+      setStatusMessage('Đang đóng gói thành sách .EPUB...');
+      const epubBlob = await buildEpubBlob(assembledBook);
+      downloadBlob(epubBlob, `${slugifyFilename(assembledBook.title)}.epub`);
+
+      onImportBook(assembledBook, true);
+      onClose();
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Không thể quét video đọc sách.'
+      );
+    } finally {
+      setIsBusy(false);
+      setStatusMessage('');
+      if (videoInputRef.current) videoInputRef.current.value = '';
     }
   };
 
@@ -324,7 +449,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
       id: `book-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title,
       author,
-      description: 'Tạo trực tiếp từ trình soạn thảo văn bản LaziRead.',
+      description: 'Tạo trực tiếp từ trình soạn thảo văn bản BOOKHAD.',
       language: 'vi',
       sourceType: 'epub',
       collection: collectionInput.trim() || 'Sách tự soạn',
@@ -347,120 +472,136 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-stone-950/55 backdrop-blur-md p-0 sm:p-4"
+      className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center ios-frosted-backdrop ios-backdrop-fade p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="import-modal-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !isBusy) onClose();
+      }}
     >
-      <div className="ios-sheet-enter w-full max-w-2xl bg-[#FBF9F5]/95 dark:bg-[#191B1F]/95 backdrop-blur-xl text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-800 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden">
-        <div className="sm:hidden flex justify-center pt-2.5 pb-1">
-          <span className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />
+      <div className="ios-sheet-enter ios-frosted-surface w-full max-w-xl text-stone-900 dark:text-stone-100 rounded-t-[26px] sm:rounded-[24px] overflow-hidden max-h-[88dvh] flex flex-col">
+        <div className="sm:hidden flex justify-center pt-2 pb-0.5 shrink-0">
+          <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
         </div>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-stone-200/80 dark:border-stone-800">
-          <div>
-            <h2 id="import-modal-title" className="text-xl font-display font-semibold">
-              Thêm sách mới vào tủ
-            </h2>
-            <p className="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
-              Hỗ trợ EPUB, PDF tự chuyển sang EPUB, hoặc quét dịch trực tiếp từ ảnh trang sách
-            </p>
-          </div>
+
+        {/* Compact iPhone Header with explicit ← Quay lại + X */}
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
           <button
             type="button"
+            disabled={isBusy}
+            onClick={onClose}
+            className="inline-flex items-center gap-0.5 px-2 py-1 rounded-full text-[12px] font-medium text-amber-800 dark:text-amber-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors shrink-0 disabled:opacity-40"
+          >
+            <ChevronLeft className="w-4 h-4 -ml-0.5" />
+            <span>Quay lại</span>
+          </button>
+
+          <h2
+            id="import-modal-title"
+            className="text-[14px] sm:text-[15px] font-display font-semibold truncate text-center"
+          >
+            Thêm sách mới
+          </h2>
+
+          <button
+            type="button"
+            disabled={isBusy}
             onClick={onClose}
             aria-label="Đóng hộp thoại thêm sách"
-            className="p-2 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 bg-stone-200/60 dark:bg-stone-800/80 transition-transform active:scale-90"
+            className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0 disabled:opacity-40"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Segmented Tabs */}
-        <div className="px-6 pt-4">
-          <div className="inline-flex p-1 bg-stone-200/70 dark:bg-stone-800/80 rounded-lg gap-1">
+        {/* Compact Half-Size Non-Overflowing Segmented Tabs */}
+        <div className="px-4 pt-3 shrink-0 flex justify-center sm:justify-start">
+          <div className="inline-flex items-center p-0.5 rounded-full bg-black/[0.06] dark:bg-white/[0.08] gap-0.5 max-w-full">
             <button
               type="button"
               onClick={() => setActiveTab('file')}
-              className={`px-3.5 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
                 activeTab === 'file'
-                  ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
+                  ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
               }`}
             >
-              EPUB / PDF → EPUB
+              <FileText className="w-2.5 h-2.5 shrink-0" />
+              <span>EPUB / PDF</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('image')}
-              className={`px-3.5 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
                 activeTab === 'image'
-                  ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
+                  ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
               }`}
             >
-              Quét & Dịch Ảnh Sách
+              <Camera className="w-2.5 h-2.5 shrink-0" />
+              <span>Quét ảnh</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('text')}
-              className={`px-3.5 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
                 activeTab === 'text'
-                  ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
+                  ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
               }`}
             >
-              Dán văn bản
+              <BookOpen className="w-2.5 h-2.5 shrink-0" />
+              <span>Văn bản</span>
             </button>
           </div>
         </div>
 
-        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-3 border-b border-stone-200 dark:border-stone-800">
+        <div className="p-4 sm:p-5 space-y-3.5 overflow-y-auto overscroll-contain">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pb-3 border-b border-stone-300/40 dark:border-white/10">
             <div>
-              <label className="block text-[11px] font-medium text-stone-500 mb-1">
-                Văn phong đọc & AI (chọn trước khi mở)
+              <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
+                Phong cách giọng đọc
               </label>
-              <select
+              <GlassSelect
                 value={selectedStyle}
-                onChange={(e) => setSelectedStyle(e.target.value as BookReadingStyle)}
-                className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-              >
-                <option value="novel">Tiểu thuyết (Diễn cảm nhiều nhân vật)</option>
-                <option value="selfhelp">Văn phong học tập (Nhấn điểm quan trọng)</option>
-                <option value="essay">Tản văn (Nhẹ nhàng, truyền cảm hứng)</option>
-                <option value="research">Nghiên cứu (Mạch lạc, chuẩn xác)</option>
-              </select>
+                onChange={(v) => setSelectedStyle(v as BookReadingStyle)}
+                options={READING_STYLE_OPTIONS}
+                title="Chọn phong cách giọng đọc"
+                ariaLabel="Chọn phong cách giọng đọc"
+                buttonClassName="py-1.5 rounded-xl"
+              />
             </div>
             <div>
-              <label className="block text-[11px] font-medium text-stone-500 mb-1">
-                Bộ sưu tập chủ đề (tùy chọn)
+              <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
+                Bộ sưu tập (tùy chọn)
               </label>
               <input
                 type="text"
                 value={collectionInput}
                 onChange={(e) => setCollectionInput(e.target.value)}
-                placeholder="VD: Văn học Việt Nam, Kỹ năng sống..."
-                className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+                placeholder="VD: Văn học, Kỹ năng..."
+                className="w-full px-3 py-1.5 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
               />
             </div>
           </div>
 
           {errorMessage && (
-            <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300">
+            <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-[11.5px] text-red-700 dark:text-red-300">
               {errorMessage}
             </div>
           )}
 
           {isBusy && (
-            <div className="flex items-center gap-3 p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-xs text-amber-900 dark:text-amber-200">
+            <div className="flex items-center gap-2.5 p-3 rounded-xl bg-amber-800/10 border border-amber-700/30 text-[11.5px] text-amber-900 dark:text-amber-200">
               <Loader2 className="w-4 h-4 animate-spin shrink-0" />
               <span>{statusMessage || 'Đang xử lý...'}</span>
             </div>
           )}
 
           {activeTab === 'file' && (
-            <div className="space-y-4">
-              <label className="flex items-center gap-2.5 text-xs text-stone-700 dark:text-stone-300 cursor-pointer">
+            <div className="space-y-3">
+              <label className="flex items-center gap-2 text-[11.5px] text-stone-700 dark:text-stone-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={autoExportPdfToEpub}
@@ -468,8 +609,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                   className="rounded border-stone-300 accent-amber-800"
                 />
                 <span>
-                  Khi tải tệp <strong>.PDF</strong>, tự động chuyển đổi và tải xuống bản{' '}
-                  <strong>.EPUB</strong> về máy
+                  Tự chuyển <strong>.PDF</strong> sang <strong>.EPUB</strong> &amp; tải về máy
                 </span>
               </label>
 
@@ -479,14 +619,14 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                   e.preventDefault();
                   handleEpubOrPdfFiles(e.dataTransfer.files);
                 }}
-                className="border border-dashed border-stone-300 dark:border-stone-700 rounded-xl p-8 text-center bg-white/60 dark:bg-stone-900/40 hover:border-amber-800 transition-colors"
+                className="border border-dashed border-stone-400/60 dark:border-white/20 rounded-2xl p-6 text-center bg-white/50 dark:bg-white/[0.04] hover:border-amber-800 transition-colors"
               >
-                <Upload className="w-8 h-8 mx-auto text-stone-400 mb-3" />
-                <p className="text-sm font-medium text-stone-800 dark:text-stone-200">
-                  Kéo thả tệp .EPUB, .PDF hoặc .TXT vào đây
+                <Upload className="w-6 h-6 mx-auto text-stone-500 dark:text-stone-400 mb-2" />
+                <p className="text-[13px] font-medium text-stone-800 dark:text-stone-200">
+                  Chọn hoặc kéo thả tệp .EPUB, .PDF, .TXT
                 </p>
-                <p className="text-xs text-stone-500 mt-1">
-                  Hỗ trợ giữ nguyên mục lục EPUB, ảnh bìa và tự tách chương từ PDF
+                <p className="text-[11px] text-stone-500 mt-0.5">
+                  Giữ nguyên mục lục, ảnh bìa và tự tách chương sạch
                 </p>
                 <input
                   ref={fileInputRef}
@@ -499,7 +639,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                   type="button"
                   disabled={isBusy}
                   onClick={() => fileInputRef.current?.click()}
-                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                  className="mt-3.5 inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11.5px] font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
                   <FileText className="w-3.5 h-3.5" />
                   <span>Chọn tệp từ thiết bị</span>
@@ -509,58 +649,58 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
           )}
 
           {activeTab === 'image' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
+                  <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
                     Tên sách (tùy chọn)
                   </label>
                   <input
                     type="text"
                     value={imageBookTitle}
                     onChange={(e) => setImageBookTitle(e.target.value)}
-                    placeholder="Tự động nhận dạng theo trang đầu"
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+                    placeholder="Tự nhận dạng theo trang đầu"
+                    className="w-full px-3 py-1.5 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
-                    Chế độ hiển thị bản dịch
+                  <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
+                    Chế độ bản dịch
                   </label>
-                  <select
+                  <GlassSelect
                     value={imageMode}
-                    onChange={(e) => setImageMode(e.target.value as TranslationMode)}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-                  >
-                    <option value="bilingual">Song ngữ (Gốc + Dịch đối chiếu)</option>
-                    <option value="override">Dịch ghi đè hoàn toàn</option>
-                    <option value="original">Chỉ trích xuất văn bản gốc</option>
-                  </select>
+                    onChange={(v) => setImageMode(v as TranslationMode)}
+                    options={IMAGE_MODE_OPTIONS}
+                    title="Chế độ hiển thị bản dịch"
+                    ariaLabel="Chế độ hiển thị bản dịch"
+                    buttonClassName="py-1.5 rounded-xl"
+                  />
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
+              <div className="sm:w-1/2">
+                <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
                   Ngôn ngữ đích
                 </label>
-                <select
+                <GlassSelect
                   value={imageTargetLang}
-                  onChange={(e) => setImageTargetLang(e.target.value)}
-                  className="w-full sm:w-1/2 px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-                >
-                  {TARGET_LANGUAGES.map((l) => (
-                    <option key={l.code} value={l.code}>
-                      {l.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setImageTargetLang(v)}
+                  options={TARGET_LANG_OPTIONS}
+                  title="Chọn ngôn ngữ đích"
+                  ariaLabel="Chọn ngôn ngữ đích"
+                  buttonClassName="py-1.5 rounded-xl"
+                />
               </div>
 
-              <div className="border border-dashed border-stone-300 dark:border-stone-700 rounded-xl p-6 text-center bg-white/60 dark:bg-stone-900/40">
-                <ImageIcon className="w-7 h-7 mx-auto text-stone-400 mb-2" />
-                <p className="text-xs font-medium text-stone-700 dark:text-stone-300">
-                  Chọn 1 hoặc nhiều ảnh trang sách / truyện tranh (.PNG, .JPG, .WEBP)
+              <div className="border border-dashed border-stone-400/60 dark:border-white/20 rounded-2xl p-4 sm:p-5 text-center bg-white/50 dark:bg-white/[0.04] space-y-3">
+                <div className="flex items-center justify-center gap-2 text-stone-500 dark:text-stone-400">
+                  <ImageIcon className="w-5 h-5" />
+                  <Video className="w-5 h-5 text-amber-800 dark:text-amber-400" />
+                </div>
+                <p className="text-[11.5px] font-medium text-stone-700 dark:text-stone-300">
+                  Chụp ảnh, chọn nhiều ảnh hoặc tải Video lật trang sách (AI tự đóng gói .EPUB)
                 </p>
+
                 <input
                   ref={imageInputRef}
                   type="file"
@@ -582,36 +722,59 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                     }
                   }}
                 />
-                <div className="mt-3 flex flex-wrap items-center justify-center gap-2.5">
+                <input
+                  ref={videoInputRef}
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  onChange={(e) => handleImportBookVideo(e.target.files)}
+                />
+
+                <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
+                    disabled={isBusy}
                     onClick={() => cameraInputRef.current?.click()}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-amber-700/50 bg-amber-50/70 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 text-xs font-medium hover:opacity-90"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-amber-700/50 bg-amber-50/80 dark:bg-amber-950/35 text-amber-900 dark:text-amber-200 text-[11px] font-semibold hover:opacity-90 disabled:opacity-50"
                   >
-                    <Camera className="w-3.5 h-3.5" />
-                    <span>Chụp ảnh (Camera)</span>
+                    <Camera className="w-3 h-3" />
+                    <span>Chụp ảnh</span>
                   </button>
                   <button
                     type="button"
+                    disabled={isBusy}
                     onClick={() => imageInputRef.current?.click()}
-                    className="px-3.5 py-2 rounded-lg border border-stone-300 dark:border-stone-700 text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-stone-300 dark:border-white/20 text-[11px] font-medium hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50"
                   >
-                    Chọn ảnh ({imageFiles.length})
+                    <ImageIcon className="w-3 h-3" />
+                    <span>Chọn ảnh ({imageFiles.length})</span>
                   </button>
                   <button
                     type="button"
-                    disabled={isBusy || imageFiles.length === 0}
-                    onClick={handleImportImages}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-800 text-white text-xs font-medium hover:bg-amber-900 disabled:opacity-50"
+                    disabled={isBusy}
+                    onClick={() => videoInputRef.current?.click()}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold hover:opacity-90 disabled:opacity-50"
                   >
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>Quét &amp; Tạo sách</span>
+                    <Video className="w-3 h-3" />
+                    <span>Video đọc sách</span>
                   </button>
                 </div>
+
                 {imageFiles.length > 0 && (
-                  <p className="text-[11px] text-stone-500 mt-2 truncate">
-                    Đã chọn: {imageFiles.map((f) => f.name).join(', ')}
-                  </p>
+                  <div className="pt-1 space-y-2">
+                    <p className="text-[10.5px] text-stone-500 truncate">
+                      Đã chọn: {imageFiles.map((f) => f.name).join(', ')}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={handleImportImages}
+                      className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-amber-800 text-white text-[11.5px] font-semibold hover:bg-amber-900 disabled:opacity-50"
+                    >
+                      <BookOpen className="w-3.5 h-3.5" />
+                      <span>Quét &amp; Tạo sách</span>
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -619,9 +782,9 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
 
           {activeTab === 'text' && (
             <form onSubmit={handleCreateTextBook} className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
+                  <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
                     Tên sách *
                   </label>
                   <input
@@ -630,11 +793,11 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                     value={textTitle}
                     onChange={(e) => setTextTitle(e.target.value)}
                     placeholder="Ví dụ: Tuyển tập truyện ngắn"
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+                    className="w-full px-3 py-1.5 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
+                  <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
                     Tác giả
                   </label>
                   <input
@@ -642,30 +805,30 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                     value={textAuthor}
                     onChange={(e) => setTextAuthor(e.target.value)}
                     placeholder="Tên tác giả"
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+                    className="w-full px-3 py-1.5 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
                   />
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-stone-600 dark:text-stone-400 mb-1">
+                <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
                   Nội dung sách *
                 </label>
                 <textarea
-                  rows={6}
+                  rows={5}
                   required
                   value={rawTextContent}
                   onChange={(e) => setRawTextContent(e.target.value)}
                   placeholder="Dán nội dung chương truyện hoặc tài liệu tại đây..."
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+                  className="w-full px-3 py-2 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
                 />
               </div>
               <div className="flex justify-end">
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11.5px] font-semibold"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Lưu thành sách & Đọc ngay</span>
+                  <span>Lưu sách &amp; Đọc ngay</span>
                 </button>
               </div>
             </form>

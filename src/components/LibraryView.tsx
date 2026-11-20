@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   BookOpen,
   Check,
+  ChevronDown,
   Clock,
   Download,
   Edit3,
@@ -19,6 +20,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -33,6 +35,7 @@ import { estimateBookStats } from '../utils/textProcessing';
 import { buildEpubBlob } from '../utils/epubBuilder';
 import { buildLibraryCollectionZip } from '../utils/webCrawlerEngine';
 import { downloadBlob, slugifyFilename } from '../utils/fileHelpers';
+import { cleanBookChaptersOnDevice, type BookCleanReport } from '../utils/bookCleaner';
 import { getMonthlyReadingChart, getWeeklyReadingChart } from '../utils/syncAndStats';
 import {
   sortBooksByMode,
@@ -43,6 +46,7 @@ import {
 import { compressWallpaperImageFile } from '../utils/appAppearance';
 import { CollectionModal } from './CollectionModal';
 import { BookShowcase3D } from './BookShowcase3D';
+import { GlassSelect } from './GlassSelect';
 import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
 
 interface LibraryViewProps {
@@ -51,6 +55,7 @@ interface LibraryViewProps {
   readingLogs: ReadingLogEntry[];
   onOpenBook: (bookId: string, openAudioStudio?: boolean) => void;
   onUpdateBook: (book: Book) => void;
+  onDuplicateAsNewBook?: (book: Book) => void;
   onDeleteBook: (bookId: string) => void;
   onUpdateCollections: (collections: UserCollection[]) => void;
   onOpenImportModal: () => void;
@@ -83,6 +88,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   readingLogs,
   onOpenBook,
   onUpdateBook,
+  onDuplicateAsNewBook,
   onDeleteBook,
   onUpdateCollections,
   onOpenImportModal,
@@ -145,18 +151,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     book: Book;
     collectionId?: string;
   } | null>(null);
-  const [menuSubView, setMenuSubView] = useState<'main' | 'collections' | 'rename'>('main');
+  const [menuSubView, setMenuSubView] = useState<'main' | 'collections' | 'rename' | 'clean'>('main');
+  const [cleanReport, setCleanReport] = useState<BookCleanReport | null>(null);
+  const [isSavingCleanedEpub, setIsSavingCleanedEpub] = useState(false);
   const [renameTitleInput, setRenameTitleInput] = useState('');
   const [renameAuthorInput, setRenameAuthorInput] = useState('');
   const [isUpdatingCover, setIsUpdatingCover] = useState(false);
 
-  // User-created Collection Modal state
+  // User-created Collection Modal & Selector state
   const [isColModalOpen, setIsColModalOpen] = useState(false);
   const [editingCollection, setEditingCollection] = useState<UserCollection | null>(null);
   const [preselectBookIds, setPreselectBookIds] = useState<string[]>([]);
+  const [selectedCollectionId, setSelectedCollectionId] = useState<string>('');
+  const [showCollectionPicker, setShowCollectionPicker] = useState(false);
 
   const recentBooks = useMemo(
-    () => [...books].sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, 4),
+    () => [...books].sort((a, b) => b.lastReadAt - a.lastReadAt).slice(0, 1),
     [books]
   );
 
@@ -212,6 +222,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       .filter((col) => !q || col.name.toLowerCase().includes(q) || col.resolvedBooks.length > 0);
   }, [collections, books, searchQuery, collectionSortMode, sortMode]);
 
+  const activeCollection = useMemo(() => {
+    if (sortedCollections.length === 0) return null;
+    return (
+      sortedCollections.find((c) => c.id === selectedCollectionId) || sortedCollections[0]
+    );
+  }, [sortedCollections, selectedCollectionId]);
+
+  useEffect(() => {
+    if (focusCollectionSignal && collections.length > 0) {
+      const matched = collections.find(
+        (c) => c.name.toLowerCase() === focusCollectionSignal.name.toLowerCase()
+      );
+      if (matched) setSelectedCollectionId(matched.id);
+    }
+  }, [focusCollectionSignal, collections]);
+
   const handleExportEpub = async (book: Book, e?: React.MouseEvent) => {
     e?.stopPropagation();
     setExportingId(book.id);
@@ -239,7 +265,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       }));
       const zipBlob = await buildLibraryCollectionZip(booksForZip);
       const dateTag = new Date().toISOString().slice(0, 10);
-      downloadBlob(zipBlob, `LaziRead-ThuVien-BoSuuTap-${dateTag}.zip`);
+      downloadBlob(zipBlob, `BOOKHAD-ThuVien-BoSuuTap-${dateTag}.zip`);
     } finally {
       setIsExportingArchive(false);
     }
@@ -336,7 +362,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           onClick={() => onOpenBook(book.id)}
           className="flex items-center gap-3 min-w-0 flex-1 text-left focus:outline-none"
         >
-          <div className="w-11 h-15 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0">
+          <div className="w-9 h-12 rounded-md overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0">
             {book.coverUrl ? (
               <img
                 src={book.coverUrl}
@@ -345,53 +371,53 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 className="w-full h-full object-cover"
               />
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-[10px] font-display font-bold p-1 text-center">
+              <div className="w-full h-full flex items-center justify-center text-[9px] font-display font-bold p-1 text-center">
                 {book.title.slice(0, 2)}
               </div>
             )}
           </div>
-          <div className="min-w-0 flex-1 space-y-1">
-            <div className="flex items-center gap-2">
-              <h3 className="text-xs sm:text-sm font-semibold text-stone-900 dark:text-stone-100 truncate">
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-[11.5px] sm:text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
                 {book.title}
               </h3>
-              <span className="hidden sm:inline text-[10px] px-1.5 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 shrink-0">
+              <span className="hidden sm:inline text-[9px] px-1.5 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 shrink-0">
                 {SOURCE_LABELS[book.sourceType]}
               </span>
             </div>
-            <p className="text-[11px] text-stone-500 dark:text-stone-400 truncate">
-              {book.author} · {stats.chapterCount} chương
+            <p className="text-[10px] text-stone-500 dark:text-stone-400 truncate">
+              {book.author} · {stats.chapterCount} ch
             </p>
-            <div className="flex items-center gap-2 max-w-xs">
-              <div className="flex-1 h-1.5 bg-stone-200 dark:bg-stone-800 rounded-full overflow-hidden">
+            <div className="flex items-center gap-1.5 max-w-xs">
+              <div className="flex-1 h-1 bg-stone-200 dark:bg-stone-800 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-amber-800 dark:bg-amber-600"
                   style={{ width: `${book.progressPercent}%` }}
                 />
               </div>
-              <span className="text-[10px] text-stone-500 tabular-nums">
+              <span className="text-[9.5px] text-stone-500 tabular-nums">
                 {book.progressPercent}%
               </span>
             </div>
           </div>
         </button>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-0.5 shrink-0">
           <button
             type="button"
             onClick={() => onOpenBook(book.id, true)}
             aria-label={`Nghe sách nói ${book.title}`}
-            className="p-2 rounded-lg text-stone-500 hover:text-amber-800 dark:hover:text-amber-400 hover:bg-stone-100 dark:hover:bg-stone-800"
+            className="p-1.5 rounded-lg text-stone-500 hover:text-amber-800 dark:hover:text-amber-400 hover:bg-stone-100 dark:hover:bg-stone-800"
           >
-            <Headphones className="w-4 h-4" />
+            <Headphones className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
             onClick={(e) => openBookOptionsMenu(book, e, collectionId)}
             aria-label={`Tùy chọn cho ${book.title}`}
-            className="p-2 rounded-lg text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800"
+            className="p-1.5 rounded-lg text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800"
           >
-            <MoreVertical className="w-4 h-4" />
+            <MoreVertical className="w-3.5 h-3.5" />
           </button>
         </div>
       </article>
@@ -421,37 +447,37 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-200"
               />
             ) : (
-              <div className="w-full h-full p-2.5 flex flex-col justify-between bg-gradient-to-br from-[#EDE8DC] to-[#DFD7C5] dark:from-stone-800 dark:to-stone-900 text-stone-900 dark:text-stone-100">
-                <span className="text-[8px] sm:text-[9px] uppercase tracking-wider text-stone-500 dark:text-stone-400 truncate">
+              <div className="w-full h-full p-2 flex flex-col justify-between bg-gradient-to-br from-[#EDE8DC] to-[#DFD7C5] dark:from-stone-800 dark:to-stone-900 text-stone-900 dark:text-stone-100">
+                <span className="text-[8px] uppercase tracking-wider text-stone-500 dark:text-stone-400 truncate">
                   {SOURCE_LABELS[book.sourceType]}
                 </span>
-                <span className="font-display text-[11px] sm:text-xs font-semibold line-clamp-3 leading-snug">
+                <span className="font-display text-[10.5px] font-semibold line-clamp-3 leading-snug">
                   {book.title}
                 </span>
-                <span className="text-[9px] text-stone-600 dark:text-stone-400 truncate">
+                <span className="text-[8.5px] text-stone-600 dark:text-stone-400 truncate">
                   {book.author}
                 </span>
               </div>
             )}
 
             {/* Compact progress badge overlay */}
-            <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-black/65 text-white text-[9px] font-medium tabular-nums backdrop-blur-xs">
+            <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-black/65 text-white text-[8.5px] font-medium tabular-nums backdrop-blur-xs">
               {book.progressPercent}%
             </span>
           </div>
         </button>
 
-        {/* Title + Corner 3-dot Menu Trigger */}
+        {/* Title + Corner 3-dot Menu Trigger (compact typography so mobile cards stay readable) */}
         <div className="px-2 py-2 flex items-start justify-between gap-1">
           <button
             type="button"
             onClick={() => onOpenBook(book.id)}
             className="text-left min-w-0 flex-1 focus:outline-none"
           >
-            <h3 className="text-[11px] sm:text-xs font-semibold text-stone-900 dark:text-stone-100 line-clamp-2 leading-snug">
+            <h3 className="text-[11px] sm:text-[11.5px] font-semibold text-stone-900 dark:text-stone-100 line-clamp-2 leading-snug break-words">
               {book.title}
             </h3>
-            <p className="text-[9.5px] sm:text-[10px] text-stone-500 dark:text-stone-400 truncate mt-0.5 tabular-nums">
+            <p className="text-[9.5px] text-stone-500 dark:text-stone-400 truncate mt-0.5 tabular-nums">
               {stats.chapterCount} ch · {book.author}
             </p>
           </button>
@@ -462,7 +488,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             aria-label={`Tùy chọn cho ${book.title}`}
             className="w-6 h-6 -mr-1 -mt-0.5 rounded-full flex items-center justify-center text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800 shrink-0"
           >
-            <MoreVertical className="w-3.5 h-3.5" />
+            <MoreVertical className="w-3 h-3" />
           </button>
         </div>
       </article>
@@ -470,37 +496,37 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   };
 
   return (
-    <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-5 pb-3 sm:pt-7 sm:pb-4 space-y-7">
-      {/* 1. TRÊN CÙNG: SÁCH MỚI ĐỌC */}
+    <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-3 pb-4 sm:pt-5 sm:pb-6 space-y-4">
+      {/* 1. TRÊN CÙNG: SÁCH MỚI ĐỌC (Hiển thị dạng danh sách bìa trái — tên phải) */}
       {recentBooks.length > 0 && (
-        <section aria-label="Sách mới đọc" className="space-y-3">
+        <section aria-label="Sách mới đọc" className="space-y-2">
           <div className="flex items-center justify-between gap-2 min-w-0">
-            <h1 className="text-base sm:text-lg font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
+            <h1 className="text-[13.5px] sm:text-[15px] font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
               Sách mới đọc
             </h1>
             {featuredBook && (
               <button
                 type="button"
                 onClick={() => onOpenBook(featuredBook.id)}
-                className="text-xs font-medium text-amber-800 dark:text-amber-400 hover:underline whitespace-nowrap shrink-0"
+                className="text-[11px] font-medium text-amber-800 dark:text-amber-400 hover:underline whitespace-nowrap shrink-0"
               >
                 Đọc tiếp →
               </button>
             )}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
+          <div className="flex flex-col gap-1.5" data-testid="recent-books-list">
             {recentBooks.map((b) => (
               <div
                 key={b.id}
-                className="ios-tap-card relative flex items-center gap-2.5 p-2.5 rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] shadow-xs hover:shadow-md hover:border-amber-800"
+                className="ios-tap-card relative flex items-center gap-2.5 p-2 rounded-xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] shadow-xs hover:border-amber-800"
               >
                 <button
                   type="button"
                   onClick={() => onOpenBook(b.id)}
                   className="flex items-center gap-2.5 min-w-0 flex-1 text-left focus:outline-none"
                 >
-                  <div className="w-10 h-14 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0">
+                  <div className="w-9 h-12 rounded-md overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0">
                     {b.coverUrl ? (
                       <img
                         src={b.coverUrl}
@@ -509,24 +535,24 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                         className="w-full h-full object-cover"
                       />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[10px] font-display font-bold p-1 text-center">
+                      <div className="w-full h-full flex items-center justify-center text-[9px] font-display font-bold p-1 text-center">
                         {b.title.slice(0, 2)}
                       </div>
                     )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
+                    <div className="text-[11.5px] sm:text-xs font-semibold text-stone-900 dark:text-stone-100 truncate leading-tight">
                       {b.title}
                     </div>
-                    <div className="text-[10.5px] text-stone-500 truncate">{b.author}</div>
-                    <div className="mt-1.5 flex items-center gap-1.5">
+                    <div className="text-[10px] text-stone-500 truncate mt-0.5">{b.author}</div>
+                    <div className="mt-1 flex items-center gap-1.5">
                       <div className="flex-1 h-1 bg-stone-200 dark:bg-stone-800 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-amber-800 dark:bg-amber-600"
                           style={{ width: `${b.progressPercent}%` }}
                         />
                       </div>
-                      <span className="text-[10px] text-stone-500 tabular-nums">
+                      <span className="text-[9.5px] text-stone-500 tabular-nums">
                         {b.progressPercent}%
                       </span>
                     </div>
@@ -536,7 +562,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   type="button"
                   onClick={(e) => openBookOptionsMenu(b, e)}
                   aria-label={`Tùy chọn cho ${b.title}`}
-                  className="p-1 rounded-full text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800 shrink-0 self-start"
+                  className="p-1 rounded-full text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800 shrink-0"
                 >
                   <MoreVertical className="w-3.5 h-3.5" />
                 </button>
@@ -547,27 +573,27 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       )}
 
       {/* 2. TIẾP THEO: KHO SÁCH RIÊNG & BỘ SƯU TẬP */}
-      <section aria-label="Thư viện riêng và Bộ sưu tập" className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2.5 min-w-0">
-          <h2 className="text-base sm:text-lg font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
+      <section aria-label="Thư viện riêng và Bộ sưu tập" className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+          <h2 className="text-[13.5px] sm:text-[15px] font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
             Kho sách riêng
           </h2>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={onGoToWebScraper}
-              className="ios-liquid-pill inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-xs font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
+              className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
             >
-              <Globe className="w-3.5 h-3.5 shrink-0" />
+              <Globe className="w-3 h-3 shrink-0" />
               <span className="hidden sm:inline">Cộng đồng Web</span>
               <span className="sm:hidden">Web</span>
             </button>
             <button
               type="button"
               onClick={onOpenImportModal}
-              className="ios-liquid-btn inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 whitespace-nowrap"
+              className="ios-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 whitespace-nowrap"
             >
-              <Plus className="w-3.5 h-3.5 shrink-0" />
+              <Plus className="w-3 h-3 shrink-0" />
               <span>Thêm sách</span>
             </button>
           </div>
@@ -614,47 +640,55 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[150px] sm:w-52">
-              <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="relative flex-1 min-w-[130px] sm:w-48">
+              <Search className="w-3 h-3 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={
-                  shelfTab === 'collections' ? 'Tìm bộ sưu tập, sách...' : 'Tìm sách, tác giả...'
+                  shelfTab === 'collections' ? 'Tìm bộ sưu tập...' : 'Tìm sách, tác giả...'
                 }
                 aria-label="Tìm kiếm sách trong tủ"
-                className="w-full pl-9 pr-3.5 py-2 text-xs rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-900 dark:text-stone-100 focus:outline-none min-h-[38px]"
+                className="w-full pl-8 pr-3 py-1.5 text-[11px] rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-900 dark:text-stone-100 focus:outline-none min-h-[34px]"
               />
             </div>
 
             {shelfTab === 'collections' ? (
-              <select
-                aria-label="Sắp xếp bộ sưu tập"
-                value={collectionSortMode}
-                onChange={(e) => setCollectionSortMode(e.target.value as CollectionSortMode)}
-                className="ios-liquid-pill px-3 py-2 text-xs font-medium rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100 min-h-[38px]"
-              >
-                <option value="name_asc">Bộ sưu tập A → Z</option>
-                <option value="recent_read">Mới đọc gần đây</option>
-                <option value="recent_added">Mới thêm gần đây</option>
-                <option value="name_desc">Bộ sưu tập Z → A</option>
-              </select>
+              <div className="w-[162px] shrink-0">
+                <GlassSelect<CollectionSortMode>
+                  ariaLabel="Sắp xếp bộ sưu tập"
+                  title="Sắp xếp bộ sưu tập"
+                  value={collectionSortMode}
+                  onChange={setCollectionSortMode}
+                  buttonClassName="!py-1.5 !px-3 !rounded-full !text-[11px] min-h-[34px]"
+                  options={[
+                    { value: 'name_asc', label: 'Bộ sưu tập A → Z' },
+                    { value: 'recent_read', label: 'Mới đọc gần đây' },
+                    { value: 'recent_added', label: 'Mới thêm gần đây' },
+                    { value: 'name_desc', label: 'Bộ sưu tập Z → A' },
+                  ]}
+                />
+              </div>
             ) : (
-              <select
-                aria-label="Sắp xếp sách"
-                value={sortMode}
-                onChange={(e) => setSortMode(e.target.value as BookSortMode)}
-                className="ios-liquid-pill px-3 py-2 text-xs font-medium rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100 min-h-[38px]"
-              >
-                <option value="recent">Mới đọc gần đây</option>
-                <option value="added_desc">Mới thêm gần đây</option>
-                <option value="title_asc">Tên A → Z</option>
-                <option value="title_desc">Tên Z → A</option>
-                <option value="author_asc">Tác giả A → Z</option>
-                <option value="progress_desc">Tiến độ cao nhất</option>
-              </select>
+              <div className="w-[162px] shrink-0">
+                <GlassSelect<BookSortMode>
+                  ariaLabel="Sắp xếp sách"
+                  title="Sắp xếp sách"
+                  value={sortMode}
+                  onChange={setSortMode}
+                  buttonClassName="!py-1.5 !px-3 !rounded-full !text-[11px] min-h-[34px]"
+                  options={[
+                    { value: 'recent', label: 'Mới đọc gần đây' },
+                    { value: 'added_desc', label: 'Mới thêm gần đây' },
+                    { value: 'title_asc', label: 'Tên A → Z' },
+                    { value: 'title_desc', label: 'Tên Z → A' },
+                    { value: 'author_asc', label: 'Tác giả A → Z' },
+                    { value: 'progress_desc', label: 'Tiến độ cao nhất' },
+                  ]}
+                />
+              </div>
             )}
 
             {/* 4-Mode Library Display Switcher (Grid, List, 3D Circular Carousel, 3D Swipe Stack) */}
@@ -748,85 +782,183 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <span>Tạo bộ sưu tập đầu tiên</span>
                 </button>
               </div>
-            ) : sortedCollections.length === 0 ? (
+            ) : !activeCollection ? (
               <div className="border border-stone-200 dark:border-stone-800 rounded-2xl p-8 text-center text-xs text-stone-500">
                 Không tìm thấy bộ sưu tập hoặc sách nào khớp với từ khóa tìm kiếm.
               </div>
             ) : (
-              <div className="space-y-6">
-                {sortedCollections.map((col) => (
-                  <div
-                    key={col.id}
-                    className="rounded-2xl border border-stone-200 dark:border-stone-800 bg-white/75 dark:bg-[#16181C] p-4 space-y-3.5"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-stone-200/80 dark:border-stone-800">
-                      <div className="flex items-center gap-2 min-w-0">
+              <div className="space-y-4">
+                {/* 1 Compact Collection Selector Card (tapping opens iPhone Frosted-Glass Popover) */}
+                <div className="ios-floating-shadow rounded-[22px] border border-stone-200/90 dark:border-stone-800 bg-white/85 dark:bg-[#16181C]/95 p-3 sm:p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      data-testid="collection-selector-trigger"
+                      onClick={() => setShowCollectionPicker(true)}
+                      aria-haspopup="dialog"
+                      aria-expanded={showCollectionPicker}
+                      className="ios-liquid-pill flex-1 min-w-[180px] px-3 py-2 rounded-2xl ios-liquid-bar border border-white/80 dark:border-zinc-700/60 flex items-center justify-between gap-2 text-left"
+                    >
+                      <span className="flex items-center gap-2 min-w-0">
                         <FolderOpen className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                        <h3 className="text-sm sm:text-base font-display font-semibold text-stone-900 dark:text-stone-100 truncate">
-                          {col.name}
-                        </h3>
-                        <span className="text-[11px] text-stone-500 tabular-nums shrink-0">
-                          ({col.resolvedBooks.length} cuốn)
+                        <span className="text-[13px] font-display font-semibold text-stone-900 dark:text-stone-100 truncate">
+                          {activeCollection.name}
                         </span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingCollection(col);
-                            setPreselectBookIds([]);
-                            setIsColModalOpen(true);
-                          }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 text-[11px] font-medium hover:bg-stone-100 dark:hover:bg-stone-800"
-                        >
-                          <Plus className="w-3 h-3" />
-                          <span>Thêm / Sửa sách</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingCollection(col);
-                            setPreselectBookIds([]);
-                            setIsColModalOpen(true);
-                          }}
-                          aria-label={`Đổi tên bộ sưu tập ${col.name}`}
-                          className="p-1.5 rounded-lg text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCollection(col.id)}
-                          aria-label={`Xóa bộ sưu tập ${col.name}`}
-                          className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
+                        <span className="text-[10.5px] text-stone-500 tabular-nums shrink-0">
+                          ({activeCollection.resolvedBooks.length})
+                        </span>
+                      </span>
+                      <ChevronDown className="w-4 h-4 text-stone-500 shrink-0" />
+                    </button>
 
-                    {col.resolvedBooks.length === 0 ? (
-                      <div className="py-5 text-center text-xs text-stone-500">
-                        Bộ sưu tập này chưa có sách nào. Nhấn &quot;Thêm / Sửa sách&quot; để chọn sách thêm vào.
-                      </div>
-                    ) : viewMode === 'list' ? (
-                      <div className="space-y-2">
-                        {col.resolvedBooks.map((book) => renderListBookRow(book, col.id))}
-                      </div>
-                    ) : viewMode === 'carousel3d' || viewMode === 'stack3d' ? (
-                      <BookShowcase3D
-                        books={col.resolvedBooks}
-                        mode={viewMode}
-                        onOpenBook={onOpenBook}
-                        onOpenMenu={(book, e) => openBookOptionsMenu(book, e, col.id)}
-                      />
-                    ) : (
-                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
-                        {col.resolvedBooks.map((book) => renderCompactBookCard(book, col.id))}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCollection(activeCollection);
+                          setPreselectBookIds([]);
+                          setIsColModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-stone-300 dark:border-stone-700 text-[11px] font-medium hover:bg-stone-100 dark:hover:bg-stone-800"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Thêm / Sửa</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCollection(activeCollection);
+                          setPreselectBookIds([]);
+                          setIsColModalOpen(true);
+                        }}
+                        aria-label={`Đổi tên bộ sưu tập ${activeCollection.name}`}
+                        className="p-1.5 rounded-xl text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteCollection(activeCollection.id)}
+                        aria-label={`Xóa bộ sưu tập ${activeCollection.name}`}
+                        className="p-1.5 rounded-xl text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                ))}
+
+                  {activeCollection.resolvedBooks.length === 0 ? (
+                    <div className="py-5 text-center text-xs text-stone-500">
+                      Bộ sưu tập này chưa có sách nào. Nhấn &quot;Thêm / Sửa&quot; để chọn sách thêm vào.
+                    </div>
+                  ) : viewMode === 'list' ? (
+                    <div className="space-y-2">
+                      {activeCollection.resolvedBooks.map((book) =>
+                        renderListBookRow(book, activeCollection.id)
+                      )}
+                    </div>
+                  ) : viewMode === 'carousel3d' || viewMode === 'stack3d' ? (
+                    <BookShowcase3D
+                      books={activeCollection.resolvedBooks}
+                      mode={viewMode}
+                      onOpenBook={onOpenBook}
+                      onOpenMenu={(book, e) => openBookOptionsMenu(book, e, activeCollection.id)}
+                    />
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 sm:gap-4">
+                      {activeCollection.resolvedBooks.map((book) =>
+                        renderCompactBookCard(book, activeCollection.id)
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* iPhone Frosted-Glass Collection Picker Popover */}
+                {showCollectionPicker &&
+                  typeof document !== 'undefined' &&
+                  createPortal(
+                    <div
+                      className="fixed inset-0 z-[95] ios-frosted-backdrop flex items-end sm:items-center justify-center p-0 sm:p-4"
+                      onClick={(e) => {
+                        if (e.target === e.currentTarget) setShowCollectionPicker(false);
+                      }}
+                    >
+                      <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Chọn bộ sưu tập"
+                        className="ios-sheet-enter ios-frosted-surface w-full sm:max-w-sm rounded-t-[26px] sm:rounded-[24px] text-stone-900 dark:text-stone-100 overflow-hidden max-h-[78dvh] flex flex-col"
+                      >
+                        <div className="sm:hidden flex justify-center pt-2 shrink-0">
+                          <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
+                        </div>
+                        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
+                          <h3 className="text-[13.5px] font-display font-semibold">
+                            Bộ sưu tập ({sortedCollections.length})
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => setShowCollectionPicker(false)}
+                            aria-label="Đóng danh sách bộ sưu tập"
+                            className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="overflow-y-auto overscroll-contain p-2 space-y-1">
+                          {sortedCollections.map((col) => {
+                            const selected = col.id === activeCollection.id;
+                            return (
+                              <button
+                                key={col.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedCollectionId(col.id);
+                                  setShowCollectionPicker(false);
+                                }}
+                                className={`w-full px-3 py-2.5 rounded-[16px] text-left flex items-center justify-between gap-2.5 transition-colors ${
+                                  selected
+                                    ? 'bg-amber-800/12 dark:bg-amber-500/20 text-amber-900 dark:text-amber-200 font-semibold'
+                                    : 'hover:bg-black/5 dark:hover:bg-white/10 text-stone-800 dark:text-stone-200'
+                                }`}
+                              >
+                                <span className="flex items-center gap-2 min-w-0">
+                                  <FolderOpen className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                                  <span className="text-[12.5px] truncate">{col.name}</span>
+                                </span>
+                                <span className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[11px] text-stone-500 tabular-nums">
+                                    {col.resolvedBooks.length} cuốn
+                                  </span>
+                                  {selected && (
+                                    <Check className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                                  )}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="p-3 border-t border-stone-300/40 dark:border-white/10 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowCollectionPicker(false);
+                              setEditingCollection(null);
+                              setPreselectBookIds([]);
+                              setIsColModalOpen(true);
+                            }}
+                            className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-2xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900"
+                          >
+                            <FolderPlus className="w-3.5 h-3.5" />
+                            <span>Tạo bộ sưu tập mới</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>,
+                    document.body
+                  )}
               </div>
             )}
           </div>
@@ -872,193 +1004,110 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         ) : (
           <div
             data-testid="book-grid"
-            className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4"
+            className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 sm:gap-4"
           >
             {filteredAndSortedBooks.map((book) => renderCompactBookCard(book))}
           </div>
         )}
       </section>
 
-      {/* 3. XUỐNG PHÍA DƯỚI: CÁC MỤC CÒN LẠI (ĐỌC TIẾP CHI TIẾT, THỜI GIAN ĐỌC & TRÍCH XUẤT KHO ZIP) */}
+      {/* 3. XUỐNG PHÍA DƯỚI: THỜI GIAN ĐỌC & LƯU TRỮ ZIP GỌN 1 DÒNG */}
       <section
-        aria-label="Thông tin đọc, thời gian đọc và kho lưu trữ"
-        className="pt-6 border-t border-stone-200 dark:border-stone-800 space-y-6"
+        aria-label="Thời gian đọc và kho lưu trữ"
+        className="perf-section pt-4 border-t border-stone-200 dark:border-stone-800 space-y-3"
       >
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {featuredBook && (
-            <div
-              aria-label="Sách đang đọc gần đây"
-              className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-12 gap-5 items-center border border-stone-200 dark:border-stone-800 rounded-2xl bg-white/75 dark:bg-[#16181C] p-5"
-            >
-              <div className="sm:col-span-8 space-y-3">
-                <p className="text-[11px] uppercase tracking-widest text-stone-500 dark:text-stone-400">
-                  Tiếp tục đọc · {SOURCE_LABELS[featuredBook.sourceType]} ·{' '}
-                  {STYLE_LABELS[featuredBook.readingStyle || 'novel']}
-                </p>
-                <h2 className="text-xl sm:text-2xl font-display font-semibold text-stone-900 dark:text-stone-100 leading-tight">
-                  {featuredBook.title}
-                </h2>
-                <p className="text-xs text-stone-600 dark:text-stone-400 line-clamp-2 leading-relaxed">
-                  {featuredBook.description}
-                </p>
-
-                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-stone-500 dark:text-stone-400 tabular-nums">
-                  <span>{featuredBook.author}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    Chương {featuredBook.currentChapterIndex + 1}/{featuredBook.chapters.length}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>Đã đọc {featuredBook.progressPercent}%</span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => onOpenBook(featuredBook.id)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:opacity-90 whitespace-nowrap"
-                  >
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>Đọc tiếp ngay</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenBook(featuredBook.id, true)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-800 text-white text-xs font-medium hover:bg-amber-900 whitespace-nowrap"
-                  >
-                    <Headphones className="w-3.5 h-3.5" />
-                    <span>Nghe tiếp giọng AI</span>
-                  </button>
-                </div>
+        {/* Weekly / Monthly Reading Time Chart */}
+        <div
+          aria-label="Thống kê thời gian đọc sách"
+          className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 flex flex-col justify-between space-y-3"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-800 dark:text-stone-200">
+                <Clock className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
+                <span>Thời gian đọc</span>
               </div>
-
-              <div className="sm:col-span-4 flex justify-start sm:justify-end">
-                <button
-                  type="button"
-                  onClick={() => onOpenBook(featuredBook.id)}
-                  aria-label={`Mở đọc sách ${featuredBook.title}`}
-                  className="group relative w-28 sm:w-full max-w-[140px] aspect-[3/4] rounded-xl overflow-hidden border border-stone-200 dark:border-stone-800 shadow-md"
-                >
-                  {featuredBook.coverUrl ? (
-                    <img
-                      src={featuredBook.coverUrl}
-                      alt={`Bìa sách ${featuredBook.title}`}
-                      referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full bg-gradient-to-br from-stone-200 to-stone-300 dark:from-stone-800 dark:to-stone-900 p-3 flex flex-col justify-between">
-                      <span className="text-[10px] text-stone-500">{featuredBook.author}</span>
-                      <span className="font-display text-sm font-semibold">
-                        {featuredBook.title}
-                      </span>
-                    </div>
-                  )}
-                </button>
+              <div className="text-lg sm:text-xl font-display font-bold text-stone-900 dark:text-stone-100 tabular-nums mt-0.5">
+                {chartData.totalMinutes} phút
               </div>
             </div>
-          )}
 
-          {/* Weekly / Monthly Reading Time Chart */}
-          <div
-            aria-label="Thống kê thời gian đọc sách"
-            className="lg:col-span-5 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-5 flex flex-col justify-between space-y-4"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-stone-800 dark:text-stone-200">
-                  <Clock className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
-                  <span>Thời gian đọc</span>
-                </div>
-                <div className="text-2xl font-display font-bold text-stone-900 dark:text-stone-100 tabular-nums mt-1">
-                  {chartData.totalMinutes} phút
-                </div>
-              </div>
-
-              <div
-                ref={chartToggleRef}
-                className="relative inline-flex p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium gap-1"
+            <div
+              ref={chartToggleRef}
+              className="relative inline-flex p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium gap-1"
+            >
+              <LiquidDropThumb
+                thumb={chartThumb}
+                isGliding={chartGliding}
+                roundedClass="rounded-full"
+              />
+              <button
+                type="button"
+                data-liquid-key="week"
+                onClick={() => setChartPeriod('week')}
+                className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
+                  chartPeriod === 'week'
+                    ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                    : 'text-stone-600 dark:text-stone-300'
+                }`}
               >
-                <LiquidDropThumb
-                  thumb={chartThumb}
-                  isGliding={chartGliding}
-                  roundedClass="rounded-full"
-                />
-                <button
-                  type="button"
-                  data-liquid-key="week"
-                  onClick={() => setChartPeriod('week')}
-                  className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
-                    chartPeriod === 'week'
-                      ? 'text-amber-800 dark:text-amber-300 font-semibold'
-                      : 'text-stone-600 dark:text-stone-300'
-                  }`}
-                >
-                  Tuần
-                </button>
-                <button
-                  type="button"
-                  data-liquid-key="month"
-                  onClick={() => setChartPeriod('month')}
-                  className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
-                    chartPeriod === 'month'
-                      ? 'text-amber-800 dark:text-amber-300 font-semibold'
-                      : 'text-stone-600 dark:text-stone-300'
-                  }`}
-                >
-                  Tháng
-                </button>
-              </div>
+                Tuần
+              </button>
+              <button
+                type="button"
+                data-liquid-key="month"
+                onClick={() => setChartPeriod('month')}
+                className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
+                  chartPeriod === 'month'
+                    ? 'text-amber-800 dark:text-amber-300 font-semibold'
+                    : 'text-stone-600 dark:text-stone-300'
+                }`}
+              >
+                Tháng
+              </button>
             </div>
+          </div>
 
-            <div
-              className="grid items-end gap-2 h-24 pt-2"
-              style={{ gridTemplateColumns: `repeat(${chartData.buckets.length}, minmax(0, 1fr))` }}
-            >
-              {chartData.buckets.map((bucket) => {
-                const pct = Math.max(8, Math.round((bucket.minutes / maxBucketMinutes) * 100));
-                return (
-                  <div key={bucket.label} className="flex flex-col items-center justify-end h-full gap-1">
-                    <span className="text-[10px] text-stone-500 tabular-nums">{bucket.minutes}p</span>
-                    <div className="w-full flex-1 flex items-end">
-                      <div
-                        className="w-full rounded-t-md bg-amber-800/85 dark:bg-amber-600/85 transition-all"
-                        style={{ height: `${pct}%` }}
-                      />
-                    </div>
-                    <span className="text-[10px] text-stone-500 whitespace-nowrap">
-                      {bucket.label === 'Hôm nay' ? 'Nay' : bucket.label}
-                    </span>
+          <div
+            className="grid items-end gap-2 h-24 pt-2"
+            style={{ gridTemplateColumns: `repeat(${chartData.buckets.length}, minmax(0, 1fr))` }}
+          >
+            {chartData.buckets.map((bucket) => {
+              const pct = Math.max(8, Math.round((bucket.minutes / maxBucketMinutes) * 100));
+              return (
+                <div key={bucket.label} className="flex flex-col items-center justify-end h-full gap-1">
+                  <span className="text-[10px] text-stone-500 tabular-nums">{bucket.minutes}p</span>
+                  <div className="w-full flex-1 flex items-end">
+                    <div
+                      className="w-full rounded-t-md bg-amber-800/85 dark:bg-amber-600/85 transition-all"
+                      style={{ height: `${pct}%` }}
+                    />
                   </div>
-                );
-              })}
-            </div>
+                  <span className="text-[10px] text-stone-500 whitespace-nowrap">
+                    {bucket.label === 'Hôm nay' ? 'Nay' : bucket.label}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* Archive Export Footer Banner */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-white/80 dark:bg-[#16181C]">
-          <div className="flex items-start sm:items-center gap-3 min-w-0">
-            <div className="p-2.5 rounded-lg bg-amber-100/80 dark:bg-amber-950/50 text-amber-800 dark:text-amber-400 shrink-0">
-              <FolderOpen className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
-                Kho lưu trữ: Thư viện / Bộ sưu tập sách
-              </div>
-              <div className="text-[11px] text-stone-500 dark:text-stone-400">
-                Xuất toàn bộ {books.length} cuốn sách và {collections.length} bộ sưu tập thành file .ZIP chứa các EPUB
-              </div>
-            </div>
+        {/* Concise 1-Line ZIP Archive Row */}
+        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-stone-200 dark:border-stone-800 bg-white/80 dark:bg-[#16181C]">
+          <div className="flex items-center gap-2 min-w-0">
+            <FolderOpen className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+            <span className="text-[11.5px] font-semibold text-stone-900 dark:text-stone-100 truncate">
+              Lưu trữ kho ({books.length} sách)
+            </span>
           </div>
           <button
             type="button"
             disabled={isExportingArchive || books.length === 0}
             onClick={handleExportLibraryZip}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg border border-amber-800 text-amber-900 dark:text-amber-300 text-xs font-medium hover:bg-amber-50 dark:hover:bg-amber-950/30 whitespace-nowrap disabled:opacity-40 min-h-[40px]"
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-amber-800 text-amber-900 dark:text-amber-300 text-[11px] font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/30 whitespace-nowrap disabled:opacity-40 active:scale-95 transition-transform shrink-0"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>{isExportingArchive ? 'Đang nén kho...' : 'Trích xuất kho (.ZIP)'}</span>
+            <Download className="w-3 h-3 shrink-0" />
+            <span>{isExportingArchive ? 'Đang nén...' : 'Xuất .ZIP'}</span>
           </button>
         </div>
       </section>
@@ -1210,6 +1259,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      const report = cleanBookChaptersOnDevice(menuContext.book);
+                      setCleanReport(report);
+                      setMenuSubView('clean');
+                    }}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                    <span>AI Lọc rác &amp; Chuẩn hóa EPUB</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
                       const b = menuContext.book;
                       setMenuContext(null);
                       handleExportEpub(b);
@@ -1236,6 +1298,89 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <Trash2 className="w-4 h-4" />
                     <span>Xóa sách khỏi tủ</span>
                   </button>
+                </div>
+              ) : menuSubView === 'clean' && cleanReport ? (
+                <div className="p-3.5 pb-5 sm:pb-3.5 space-y-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-stone-800 dark:text-stone-200 inline-flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                      <span>AI Lọc rác &amp; Chuẩn hóa EPUB</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMenuSubView('main')}
+                      className="text-[11px] text-stone-500 hover:text-stone-900 dark:hover:text-stone-200"
+                    >
+                      ← Quay lại
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-800/25 space-y-1.5">
+                    <div className="font-medium text-stone-900 dark:text-stone-100">
+                      Đã phát hiện &amp; lọc{' '}
+                      <strong className="text-amber-800 dark:text-amber-400">
+                        {cleanReport.removedCount}
+                      </strong>{' '}
+                      dòng rác HTML/quảng cáo và chuẩn hóa{' '}
+                      <strong className="text-amber-800 dark:text-amber-400">
+                        {cleanReport.cleanedCount}
+                      </strong>{' '}
+                      đoạn văn.
+                    </div>
+                    {cleanReport.removedSamples.length > 0 ? (
+                      <ul className="max-h-28 overflow-y-auto space-y-1 text-[11px] text-stone-600 dark:text-stone-400 font-mono">
+                        {cleanReport.removedSamples.map((s, idx) => (
+                          <li key={idx} className="truncate">
+                            ✕ {s}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
+                        Cuốn sách này hiện đã sạch mã HTML và quảng cáo web!
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateBook(cleanReport.cleanedBook);
+                        setMenuContext(null);
+                        setMenuSubView('main');
+                      }}
+                      className="w-full py-2.5 px-3 rounded-xl bg-amber-800 text-white font-semibold hover:bg-amber-900"
+                    >
+                      Ghi đè lên file cũ
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingCleanedEpub}
+                      onClick={async () => {
+                        setIsSavingCleanedEpub(true);
+                        try {
+                          const newCopy: Book = {
+                            ...cleanReport.cleanedBook,
+                            id: `book-clean-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                            title: `${cleanReport.cleanedBook.title} (Bản sạch)`,
+                            addedAt: Date.now(),
+                            lastReadAt: Date.now(),
+                          };
+                          onDuplicateAsNewBook?.(newCopy);
+                          const blob = await buildEpubBlob(newCopy);
+                          downloadBlob(blob, `${slugifyFilename(newCopy.title)}.epub`);
+                          setMenuContext(null);
+                          setMenuSubView('main');
+                        } finally {
+                          setIsSavingCleanedEpub(false);
+                        }
+                      }}
+                      className="w-full py-2.5 px-3 rounded-xl border border-stone-300 dark:border-stone-700 font-medium hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-50"
+                    >
+                      {isSavingCleanedEpub ? 'Đang xuất EPUB sạch...' : 'Lưu thành file EPUB mới'}
+                    </button>
+                  </div>
                 </div>
               ) : menuSubView === 'rename' ? (
                 <form onSubmit={handleSaveBookRename} className="p-3.5 pb-5 sm:pb-3.5 space-y-3 text-xs">

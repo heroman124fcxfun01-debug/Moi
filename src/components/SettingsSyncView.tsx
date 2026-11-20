@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Cloud,
   CloudDownload,
   CloudUpload,
+  Copy,
   Download,
   FileCheck2,
   FolderSync,
@@ -15,6 +19,7 @@ import {
   Loader2,
   LogOut,
   Moon,
+  MoreHorizontal,
   PackageCheck,
   RefreshCw,
   Search,
@@ -24,12 +29,13 @@ import {
   Trash2,
   Upload,
   UserCheck,
+  Volume2,
   X,
 } from 'lucide-react';
 import type {
   AppBasicSettings,
   Book,
-  BookReadingStyle,
+  GeminiVoiceName,
   ReadingLogEntry,
   SyncBackupBundle,
   UserCollection,
@@ -40,10 +46,11 @@ import {
   mergeReadingLogs,
   mergeSyncBundleIntoLibrary,
 } from '../utils/syncAndStats';
-import { downloadBlob, readFileAsArrayBuffer, readFileAsText } from '../utils/fileHelpers';
+import { GEMINI_VOICES, downloadBlob, readFileAsArrayBuffer, readFileAsText } from '../utils/fileHelpers';
 import { parseEpubBuffer } from '../utils/epubBuilder';
 import { parsePdfBufferToBook } from '../utils/pdfParser';
 import {
+  extractUnauthorizedDomainError,
   getDriveAccessToken,
   getDriveAuthSnapshot,
   signInWithGoogleDrive,
@@ -62,7 +69,7 @@ import {
   mergeDownloadedDriveBooks,
   scanUploadCollectionsPlan,
   scanUploadSingleBooksPlan,
-  uploadProgressManifestToDrive,
+  syncProgressTwoWayWithDrive,
   type DriveCollectionFolderInfo,
   type DriveItemRef,
   type DuplicateScanResult,
@@ -76,12 +83,8 @@ import {
 } from '../utils/languagePacks';
 import {
   Check,
-  Cpu,
-  HardDrive,
   Image as ImageIcon,
   Palette,
-  ShieldCheck,
-  Vibrate,
 } from 'lucide-react';
 import {
   APP_COLOR_PALETTES,
@@ -89,11 +92,14 @@ import {
   compressWallpaperImageFile,
 } from '../utils/appAppearance';
 import {
-  inspectDeviceHardwareCapabilities,
-  requestPersistentDeviceStorage,
-  triggerDeviceHaptic,
-  type DeviceHardwareSnapshot,
-} from '../utils/deviceHardware';
+  formatPackSize,
+  installAllOfflineVoicePacks,
+  installOfflineVoicePack,
+  listInstalledOfflineVoicePacks,
+  removeOfflineVoicePack,
+  type OfflineVoicePackMetadata,
+} from '../utils/offlineVoicePacks';
+import { triggerDeviceHaptic } from '../utils/deviceHardware';
 import { normalizeSearchText } from '../utils/globalSearch';
 import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
 
@@ -159,20 +165,6 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   );
   const [isUploadingWallpaper, setIsUploadingWallpaper] = useState(false);
   const [wallpaperFeedback, setWallpaperFeedback] = useState('');
-  const [hardwareInfo, setHardwareInfo] = useState<DeviceHardwareSnapshot | null>(null);
-  const [isPersistingStorage, setIsPersistingStorage] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    inspectDeviceHardwareCapabilities()
-      .then((snap) => {
-        if (active) setHardwareInfo(snap);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const handleUploadWallpaperPhoto = async (files: FileList | null) => {
     if (!files || files.length === 0 || !onUpdateCustomWallpaper) return;
@@ -200,18 +192,6 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
       await onUpdateCustomWallpaper(null);
     }
     setWallpaperFeedback('Đã tắt ảnh nền giao diện.');
-  };
-
-  const handleProtectStorage = async () => {
-    setIsPersistingStorage(true);
-    try {
-      await requestPersistentDeviceStorage();
-      const refreshed = await inspectDeviceHardwareCapabilities();
-      setHardwareInfo(refreshed);
-      triggerDeviceHaptic('success', basicSettings.hapticFeedback !== false);
-    } finally {
-      setIsPersistingStorage(false);
-    }
   };
 
   // Google Drive Auth state (in-memory token managed by googleDriveAuth)
@@ -292,8 +272,30 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   // Local offline sync & messages
   const [syncStatus, setSyncStatus] = useState('');
   const [syncError, setSyncError] = useState('');
+  const [authDomainError, setAuthDomainError] = useState<{
+    hostname: string;
+    message: string;
+  } | null>(null);
+  const [copiedHostname, setCopiedHostname] = useState(false);
   const [loadedBundle, setLoadedBundle] = useState<SyncBackupBundle | null>(null);
   const [isMatchingFile, setIsMatchingFile] = useState(false);
+
+  // Single accordion disclosure so opening one description/menu automatically closes others
+  type SettingsDisclosureKey =
+    | 'lang-packs'
+    | 'voice-packs'
+    | 'drive-help'
+    | 'auto-sync-help'
+    | 'upload-help'
+    | 'download-help'
+    | null;
+  const [activeDisclosure, setActiveDisclosure] = useState<SettingsDisclosureKey>(null);
+  const toggleDisclosure = (key: Exclude<SettingsDisclosureKey, null>) => {
+    setActiveDisclosure((prev) => (prev === key ? null : key));
+  };
+
+  const [showColorModal, setShowColorModal] = useState(false);
+  const [showWallpaperModal, setShowWallpaperModal] = useState(false);
 
   // Downloadable In-App Language Packs state
   const [installedPacks, setInstalledPacks] = useState<Record<string, InstalledLanguagePack>>(() =>
@@ -301,6 +303,75 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   );
   const [downloadingPackCode, setDownloadingPackCode] = useState<string | null>(null);
   const [packMessage, setPackMessage] = useState('');
+
+  // Downloadable Offline Voice Packs state (moved from Studio)
+  const [installedVoicePacks, setInstalledVoicePacks] = useState<
+    Record<string, OfflineVoicePackMetadata>
+  >({});
+  const [downloadingVoiceId, setDownloadingVoiceId] = useState<GeminiVoiceName | 'all' | null>(null);
+  const [voicePackMessage, setVoicePackMessage] = useState('');
+
+  useEffect(() => {
+    listInstalledOfflineVoicePacks()
+      .then((list) => {
+        const map: Record<string, OfflineVoicePackMetadata> = {};
+        for (const item of list) map[item.voiceId] = item;
+        setInstalledVoicePacks(map);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleInstallVoicePack = async (voiceId: GeminiVoiceName) => {
+    setDownloadingVoiceId(voiceId);
+    setVoicePackMessage('');
+    try {
+      const pack = await installOfflineVoicePack(voiceId);
+      setInstalledVoicePacks((prev) => ({ ...prev, [pack.voiceId]: pack }));
+      setVoicePackMessage(
+        `Đã tải trọn bộ giọng ${pack.displayName} (${formatPackSize(pack.sizeBytes)}) dùng Offline 100%.`
+      );
+      triggerDeviceHaptic('success', basicSettings.hapticFeedback !== false);
+    } catch (err) {
+      setVoicePackMessage(err instanceof Error ? err.message : 'Lỗi tải gói giọng offline.');
+    } finally {
+      setDownloadingVoiceId(null);
+    }
+  };
+
+  const handleInstallAllVoicePacks = async () => {
+    setDownloadingVoiceId('all');
+    setVoicePackMessage('Đang tải đầy đủ 6 bộ giọng AI Offline vào thiết bị...');
+    try {
+      const list = await installAllOfflineVoicePacks((voice, idx, total) => {
+        setVoicePackMessage(`Đang cài bộ giọng ${voice} (${idx}/${total})...`);
+      });
+      const next: Record<string, OfflineVoicePackMetadata> = { ...installedVoicePacks };
+      let totalBytes = 0;
+      for (const p of list) {
+        next[p.voiceId] = p;
+        totalBytes += p.sizeBytes;
+      }
+      setInstalledVoicePacks(next);
+      setVoicePackMessage(
+        `Đã tải đầy đủ ${list.length}/6 gói giọng đọc Offline (${formatPackSize(totalBytes)})!`
+      );
+      triggerDeviceHaptic('success', basicSettings.hapticFeedback !== false);
+    } catch (err) {
+      setVoicePackMessage(err instanceof Error ? err.message : 'Lỗi khi tải bộ giọng offline.');
+    } finally {
+      setDownloadingVoiceId(null);
+    }
+  };
+
+  const handleRemoveVoicePack = async (voiceId: GeminiVoiceName) => {
+    await removeOfflineVoicePack(voiceId);
+    setInstalledVoicePacks((prev) => {
+      const next = { ...prev };
+      delete next[voiceId];
+      return next;
+    });
+    setVoicePackMessage(`Đã gỡ gói giọng ${voiceId}.`);
+  };
 
   useEffect(() => {
     return subscribeDriveAuth((snap) => setDriveAuth(snap));
@@ -316,6 +387,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   const handleGoogleDriveSignIn = async () => {
     setSyncError('');
     setSyncStatus('');
+    setAuthDomainError(null);
     setIsAuthBusy(true);
     try {
       const { user } = await signInWithGoogleDrive();
@@ -323,15 +395,34 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
         `Đã đăng nhập Google Drive thành công (${user.email || user.displayName || 'Tài khoản Google'}).`
       );
     } catch (err) {
+      const domainInfo = extractUnauthorizedDomainError(err);
+      if (domainInfo.isUnauthorizedDomain) {
+        setAuthDomainError({
+          hostname: domainInfo.hostname,
+          message: domainInfo.message,
+        });
+      }
       setSyncError(err instanceof Error ? err.message : 'Không thể đăng nhập Google Drive.');
     } finally {
       setIsAuthBusy(false);
     }
   };
 
+  const handleCopyHostname = async () => {
+    if (!authDomainError?.hostname) return;
+    try {
+      await navigator.clipboard.writeText(authDomainError.hostname);
+      setCopiedHostname(true);
+      window.setTimeout(() => setCopiedHostname(false), 1800);
+    } catch {
+      // Ignore clipboard failures
+    }
+  };
+
   const handleGoogleDriveSignOut = async () => {
     setSyncError('');
     setSyncStatus('');
+    setAuthDomainError(null);
     setIsAuthBusy(true);
     try {
       await signOutGoogleDrive();
@@ -355,27 +446,29 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
     if (nextVal) {
       if (!driveAuth.isConnected) {
         setSyncStatus(
-          'Đã bật chế độ Tự động đồng bộ Google Drive. Hãy bấm "Đăng nhập với Google Drive" ở trên để bắt đầu tự đồng bộ.'
+          'Đã bật Tự động đồng bộ 2 chiều. Hãy đăng nhập Google Drive ở trên để tự kéo & đẩy tiến độ ngay khi có mạng.'
         );
       } else {
-        // Trigger immediate sync of progress manifest
         try {
           const token = getDriveAccessToken();
           if (token) {
             setIsDriveBusy(true);
-            setDriveProgressText('Đang tự động đồng bộ tiến độ lên thư mục sáchlazy...');
-            await uploadProgressManifestToDrive(token, books, readingLogs);
-            setSyncStatus('Đã bật Tự động đồng bộ & cập nhật tiến độ lên Google Drive (sáchlazy).');
+            setDriveProgressText('Đang đồng bộ tiến độ 2 chiều với Google Drive (sáchlazy)...');
+            const res = await syncProgressTwoWayWithDrive(token, books, readingLogs);
+            await onApplySyncedLibrary(res.mergedBooks, res.mergedLogs);
+            setSyncStatus(
+              `Đã bật Tự động đồng bộ 2 chiều: cập nhật ${res.matchedProgressCount} sách khớp tên trên thiết bị & lưu lên Drive.`
+            );
           }
         } catch (err) {
-          setSyncError(err instanceof Error ? err.message : 'Không thể đồng bộ lên Google Drive.');
+          setSyncError(err instanceof Error ? err.message : 'Không thể đồng bộ với Google Drive.');
         } finally {
           setIsDriveBusy(false);
           setDriveProgressText('');
         }
       }
     } else {
-      setSyncStatus('Đã tắt tự động đồng bộ lên Google Drive.');
+      setSyncStatus('Đã tắt tự động đồng bộ 2 chiều Google Drive.');
     }
   };
 
@@ -607,13 +700,13 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   const handleExportProgressOnly = () => {
     const bundle = buildSyncBackupBundle(books, readingLogs, {
       includeFullBooks: false,
-      deviceLabel: 'LaziRead',
+      deviceLabel: 'BOOKHAD',
     });
     const blob = new Blob([JSON.stringify(bundle, null, 2)], {
       type: 'application/json',
     });
     const dateTag = new Date().toISOString().slice(0, 10);
-    downloadBlob(blob, `laziread-tien-do-${dateTag}.lazisync.json`);
+    downloadBlob(blob, `bookhad-tien-do-${dateTag}.lazisync.json`);
     setSyncError('');
     setSyncStatus(
       `Đã xuất gói tiến độ đọc của ${books.length} cuốn sách (${readingLogs.length} ngày đọc).`
@@ -623,13 +716,13 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   const handleExportFullBackup = () => {
     const bundle = buildSyncBackupBundle(books, readingLogs, {
       includeFullBooks: true,
-      deviceLabel: 'LaziRead Full',
+      deviceLabel: 'BOOKHAD Full',
     });
     const blob = new Blob([JSON.stringify(bundle, null, 2)], {
       type: 'application/json',
     });
     const dateTag = new Date().toISOString().slice(0, 10);
-    downloadBlob(blob, `laziread-full-backup-${dateTag}.lazisync.json`);
+    downloadBlob(blob, `bookhad-full-backup-${dateTag}.lazisync.json`);
     setSyncError('');
     setSyncStatus(
       `Đã xuất bản sao lưu đầy đủ gồm ${books.length} cuốn sách và toàn bộ tiến độ đọc.`
@@ -761,43 +854,37 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
     : null;
 
   return (
-    <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-4 sm:pt-8 sm:pb-5 space-y-6 overflow-x-hidden">
-      <header className="pb-4 border-b border-stone-200 dark:border-stone-800 text-center">
-        <h1 className="text-2xl sm:text-3xl font-display font-semibold tracking-tight text-stone-900 dark:text-stone-100">
-          Cài đặt
-        </h1>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* LEFT COLUMN: Basic E-Reader Settings + In-App Language Packs */}
-        <div className="lg:col-span-5 space-y-6 min-w-0">
+    <main className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-3 pb-4 sm:pt-5 sm:pb-6 space-y-4 overflow-x-hidden">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        {/* LEFT COLUMN: Basic E-Reader Settings + Collapsed Language Packs */}
+        <div className="lg:col-span-5 space-y-4 min-w-0">
           <section
             id="settings-basic"
-            className="scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-5 sm:p-6 space-y-5"
+            className="scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-3"
           >
-            <div className="flex items-center gap-2">
-              <Settings className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-base font-semibold">Đọc sách cơ bản</h2>
+            <div className="flex items-center gap-1.5">
+              <Settings className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+              <h2 className="text-[13px] font-semibold">Đọc sách cơ bản</h2>
             </div>
 
-            <div className="space-y-2">
-              <span className="block text-xs font-medium text-stone-600 dark:text-stone-400">
+            <div className="space-y-1.5">
+              <span className="block text-[11px] font-medium text-stone-600 dark:text-stone-400">
                 Giao diện ứng dụng
               </span>
               <div
                 ref={themeBarRef}
-                className="relative grid grid-cols-3 gap-1.5 p-1 rounded-[22px] ios-liquid-bar border border-white/75 dark:border-zinc-700/60"
+                className="relative grid grid-cols-3 gap-1 p-1 rounded-[16px] ios-liquid-bar border border-white/75 dark:border-zinc-700/60"
               >
                 <LiquidDropThumb
                   thumb={themeThumb}
                   isGliding={themeGliding}
-                  roundedClass="rounded-[18px]"
+                  roundedClass="rounded-[12px]"
                 />
                 {(
                   [
                     { id: 'light', label: 'Sáng giấy', icon: Sun },
                     { id: 'dark', label: 'Tối dịu', icon: Moon },
-                    { id: 'amoled', label: 'AMOLED Đen', icon: Smartphone },
+                    { id: 'amoled', label: 'AMOLED', icon: Smartphone },
                   ] as const
                 ).map((item) => {
                   const Icon = item.icon;
@@ -808,42 +895,22 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                       type="button"
                       data-liquid-key={item.id}
                       onClick={() => onUpdateBasicSettings({ uiTheme: item.id })}
-                      className={`relative z-10 ios-liquid-pill min-w-0 flex flex-col items-center justify-center gap-1 py-2.5 px-1.5 rounded-[18px] text-[11px] font-medium min-h-[54px] text-center leading-tight ${
+                      className={`relative z-10 ios-liquid-pill min-w-0 flex flex-row items-center justify-center gap-1 py-1.5 px-1.5 rounded-[12px] text-[10.5px] font-medium min-h-[34px] text-center leading-none whitespace-nowrap ${
                         active
                           ? 'text-amber-800 dark:text-amber-300 font-semibold'
                           : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
                       }`}
                     >
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span>{item.label}</span>
+                      <Icon className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{item.label}</span>
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-xs font-medium text-stone-600 dark:text-stone-400">
-                Văn phong đọc AI mặc định khi mở sách mới
-              </label>
-              <select
-                value={basicSettings.defaultReadingStyle}
-                onChange={(e) =>
-                  onUpdateBasicSettings({
-                    defaultReadingStyle: e.target.value as BookReadingStyle,
-                  })
-                }
-                className="w-full px-3 py-2.5 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-              >
-                <option value="novel">Tiểu thuyết (Nhân vật đa cảm xúc)</option>
-                <option value="selfhelp">Văn phong học tập (Nhấn nhá điểm quan trọng)</option>
-                <option value="essay">Tản văn (Nhẹ nhàng, truyền cảm hứng)</option>
-                <option value="research">Nghiên cứu (Mạch lạc, chuẩn xác)</option>
-              </select>
-            </div>
-
-            <div className="space-y-3 pt-2 border-t border-stone-100 dark:border-stone-800 text-xs">
-              <label className="flex items-center justify-between gap-3 cursor-pointer py-1">
+            <div className="space-y-2 pt-2 border-t border-stone-100 dark:border-stone-800 text-[11px]">
+              <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
                 <span>Chạm cạnh trái / phải để lật trang</span>
                 <input
                   type="checkbox"
@@ -851,11 +918,11 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   onChange={(e) =>
                     onUpdateBasicSettings({ tapToTurnPage: e.target.checked })
                   }
-                  className="w-4 h-4 accent-amber-800 shrink-0"
+                  className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                 />
               </label>
 
-              <label className="flex items-center justify-between gap-3 cursor-pointer py-1">
+              <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
                 <span>Giữ màn hình luôn sáng khi đọc</span>
                 <input
                   type="checkbox"
@@ -863,11 +930,11 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   onChange={(e) =>
                     onUpdateBasicSettings({ keepScreenAwake: e.target.checked })
                   }
-                  className="w-4 h-4 accent-amber-800 shrink-0"
+                  className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                 />
               </label>
 
-              <label className="flex items-center justify-between gap-3 cursor-pointer py-1">
+              <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
                 <span>Tự mở sách đang đọc dở khi vào app</span>
                 <input
                   type="checkbox"
@@ -875,264 +942,12 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   onChange={(e) =>
                     onUpdateBasicSettings({ autoResumeLastBook: e.target.checked })
                   }
-                  className="w-4 h-4 accent-amber-800 shrink-0"
-                />
-              </label>
-            </div>
-          </section>
-
-          {/* App Theme Color & Non-Reader Background Wallpaper */}
-          <section
-            id="settings-appearance"
-            className="scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-5 sm:p-6 space-y-5"
-          >
-            <div className="flex items-center gap-2">
-              <Palette className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-base font-semibold">Màu giao diện &amp; Ảnh nền</h2>
-            </div>
-
-            {/* Accent Color Swatches + Custom Color Picker */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-stone-600 dark:text-stone-400">
-                  Màu chủ đạo giao diện
-                </span>
-                <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300 cursor-pointer">
-                  <span>Tự chọn màu</span>
-                  <input
-                    type="color"
-                    aria-label="Chọn màu giao diện tùy chỉnh"
-                    value={basicSettings.uiCustomAccentHex || '#0369A1'}
-                    onChange={(e) =>
-                      onUpdateBasicSettings({
-                        uiAccent: 'custom',
-                        uiCustomAccentHex: e.target.value,
-                      })
-                    }
-                    className="w-6 h-6 rounded-md border border-stone-300 dark:border-stone-700 bg-transparent cursor-pointer"
-                  />
-                </label>
-              </div>
-              <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
-                {APP_COLOR_PALETTES.map((palette) => {
-                  const active = (basicSettings.uiAccent || 'amber') === palette.id;
-                  return (
-                    <button
-                      key={palette.id}
-                      type="button"
-                      onClick={() => {
-                        onUpdateBasicSettings({ uiAccent: palette.id });
-                        triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
-                      }}
-                      title={palette.name}
-                      aria-label={`Đổi màu giao diện ${palette.name}`}
-                      className={`flex flex-col items-center gap-1 p-1.5 rounded-xl border transition-all ${
-                        active
-                          ? 'border-amber-800 dark:border-amber-400 bg-stone-100/80 dark:bg-stone-800/80'
-                          : 'border-stone-200 dark:border-stone-800 hover:border-stone-400'
-                      }`}
-                    >
-                      <span
-                        style={{ backgroundColor: palette.swatch }}
-                        className="w-6 h-6 rounded-full flex items-center justify-center text-white shadow-xs"
-                      >
-                        {active && <Check className="w-3.5 h-3.5" />}
-                      </span>
-                      <span className="text-[10px] leading-tight text-center truncate w-full text-stone-700 dark:text-stone-300">
-                        {palette.name.split(' ')[0]}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Wallpaper Selector (Strictly disabled in Reader mode) */}
-            <div className="space-y-3 pt-3 border-t border-stone-100 dark:border-stone-800">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-stone-900 dark:text-stone-100">
-                    <ImageIcon className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-                    <span>Ảnh nền giao diện ứng dụng</span>
-                  </div>
-                  <p className="text-[11px] text-stone-500 mt-0.5 leading-snug">
-                    Chỉ hiển thị ở Thư viện, Cộng đồng, Studio &amp; Cài đặt.{' '}
-                    <strong className="text-stone-700 dark:text-stone-300">
-                      Lúc đọc sách sẽ tự ẩn hoàn toàn
-                    </strong>{' '}
-                    để bảo vệ mắt.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2.5">
-                {APP_WALLPAPER_PRESETS.map((preset) => {
-                  const active = (basicSettings.uiWallpaperPreset || 'none') === preset.id;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => {
-                        onUpdateBasicSettings({ uiWallpaperPreset: preset.id });
-                        triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
-                      }}
-                      className={`group flex flex-col items-center gap-1.5 text-center min-w-0 ${
-                        active ? 'font-semibold' : ''
-                      }`}
-                    >
-                      <span
-                        style={{ background: preset.previewCss }}
-                        className={`relative w-full aspect-[3/4] rounded-xl border-2 overflow-hidden flex items-center justify-center transition-all ${
-                          active
-                            ? 'border-amber-800 dark:border-amber-400 ring-2 ring-amber-800/20'
-                            : 'border-stone-200 dark:border-stone-700 group-hover:border-stone-400'
-                        }`}
-                      >
-                        {preset.dataUrl && (
-                          <img
-                            src={preset.dataUrl}
-                            alt={preset.name}
-                            loading="lazy"
-                            className="absolute inset-0 w-full h-full object-cover scale-110 transition-transform duration-300 group-hover:scale-115"
-                          />
-                        )}
-                        {active && (
-                          <span className="relative z-10 w-5 h-5 rounded-full bg-stone-900/80 text-white flex items-center justify-center shadow-sm">
-                            <Check className="w-3 h-3" />
-                          </span>
-                        )}
-                      </span>
-                      <span className="text-[10px] text-stone-700 dark:text-stone-300 leading-tight line-clamp-2 w-full">
-                        {preset.name}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  ref={wallpaperInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleUploadWallpaperPhoto(e.target.files)}
-                />
-                <button
-                  type="button"
-                  disabled={isUploadingWallpaper}
-                  onClick={() => wallpaperInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:opacity-90 disabled:opacity-50"
-                >
-                  {isUploadingWallpaper ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Upload className="w-3.5 h-3.5" />
-                  )}
-                  <span>Chọn ảnh nền từ điện thoại</span>
-                </button>
-
-                {((basicSettings.uiWallpaperPreset && basicSettings.uiWallpaperPreset !== 'none') ||
-                  customWallpaperDataUrl) && (
-                  <button
-                    type="button"
-                    onClick={handleClearWallpaper}
-                    className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                    <span>Gỡ ảnh nền</span>
-                  </button>
-                )}
-              </div>
-
-              {basicSettings.uiWallpaperPreset && basicSettings.uiWallpaperPreset !== 'none' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-[11px]">
-                  <label className="space-y-1">
-                    <div className="flex justify-between text-stone-600 dark:text-stone-400">
-                      <span>Độ mờ ảnh nền</span>
-                      <span className="tabular-nums font-medium">
-                        {basicSettings.uiWallpaperBlur ?? 3}px
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={20}
-                      step={1}
-                      value={basicSettings.uiWallpaperBlur ?? 3}
-                      onChange={(e) =>
-                        onUpdateBasicSettings({ uiWallpaperBlur: Number(e.target.value) })
-                      }
-                      className="w-full accent-amber-800"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <div className="flex justify-between text-stone-600 dark:text-stone-400">
-                      <span>Độ phủ dịu nền (nhìn xuyên thẻ)</span>
-                      <span className="tabular-nums font-medium">
-                        {basicSettings.uiWallpaperOverlay ?? 28}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={5}
-                      max={80}
-                      step={5}
-                      value={basicSettings.uiWallpaperOverlay ?? 28}
-                      onChange={(e) =>
-                        onUpdateBasicSettings({ uiWallpaperOverlay: Number(e.target.value) })
-                      }
-                      className="w-full accent-amber-800"
-                    />
-                  </label>
-                </div>
-              )}
-
-              {wallpaperFeedback && (
-                <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-                  {wallpaperFeedback}
-                </p>
-              )}
-            </div>
-          </section>
-
-          {/* Standalone On-Device Phone Hardware Controls */}
-          <section
-            id="settings-hardware"
-            className="scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-5 sm:p-6 space-y-4"
-          >
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <Cpu className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                <h2 className="text-base font-semibold truncate">Chạy độc lập &amp; Phần cứng</h2>
-              </div>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 whitespace-nowrap shrink-0">
-                Offline-first
-              </span>
-            </div>
-
-            <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
-              Ưu tiên dùng trực tiếp CPU, Web Audio DSP, bộ nhớ máy, rung xúc giác, phím cứng &amp; giọng đọc hệ thống trên điện thoại để chạy độc lập không cần máy chủ.
-            </p>
-
-            <div className="space-y-2.5 text-xs">
-              <label className="flex items-center justify-between gap-3 cursor-pointer py-1">
-                <span>Chế độ chạy độc lập trên thiết bị (ưu tiên offline)</span>
-                <input
-                  type="checkbox"
-                  checked={basicSettings.standaloneDeviceMode !== false}
-                  onChange={(e) =>
-                    onUpdateBasicSettings({ standaloneDeviceMode: e.target.checked })
-                  }
-                  className="w-4 h-4 accent-amber-800 shrink-0"
+                  className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                 />
               </label>
 
-              <label className="flex items-center justify-between gap-3 cursor-pointer py-1">
-                <span className="inline-flex items-center gap-1.5">
-                  <Vibrate className="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                  <span>Rung xúc giác phần cứng khi lật trang &amp; thao tác</span>
-                </span>
+              <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
+                <span>Rung xúc giác khi lật trang &amp; thao tác</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.hapticFeedback !== false}
@@ -1140,183 +955,357 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                     onUpdateBasicSettings({ hapticFeedback: e.target.checked });
                     if (e.target.checked) triggerDeviceHaptic('tap', true);
                   }}
-                  className="w-4 h-4 accent-amber-800 shrink-0"
+                  className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                 />
               </label>
 
-              <label className="flex items-center justify-between gap-3 cursor-pointer py-1">
-                <span>Dùng phím Âm lượng / PageUp-Down để lật trang</span>
+              <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
+                <span>Dùng phím Âm lượng / PageUp-Down lật trang</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.volumeKeyPageTurn !== false}
                   onChange={(e) =>
                     onUpdateBasicSettings({ volumeKeyPageTurn: e.target.checked })
                   }
-                  className="w-4 h-4 accent-amber-800 shrink-0"
+                  className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                 />
               </label>
             </div>
+          </section>
 
-            {hardwareInfo && (
-              <div className="p-3.5 rounded-xl bg-stone-50 dark:bg-stone-900/60 border border-stone-200 dark:border-stone-800 space-y-2.5 text-[11px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-stone-800 dark:text-stone-200 flex items-center gap-1.5">
-                    <HardDrive className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
-                    <span>Phần cứng thiết bị hiện tại</span>
-                  </span>
+          {/* Compact Appearance Triggers -> Open iPhone Frosted-Glass Floating Modals */}
+          <section
+            id="settings-appearance"
+            className="ios-floating-shadow scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-2.5"
+          >
+            <div className="flex items-center gap-1.5">
+              <Palette className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+              <h2 className="text-[13px] font-semibold">Màu giao diện &amp; Ảnh nền</h2>
+            </div>
+
+            {(() => {
+              const activePalette = APP_COLOR_PALETTES.find(
+                (p) => p.id === (basicSettings.uiAccent || 'amber')
+              );
+              const activeSwatch =
+                basicSettings.uiAccent === 'custom'
+                  ? basicSettings.uiCustomAccentHex || '#0369A1'
+                  : activePalette?.swatch || '#92400E';
+              const activeColorName =
+                basicSettings.uiAccent === 'custom'
+                  ? 'Màu tự chọn'
+                  : activePalette?.name || 'Hổ phách cổ điển';
+
+              const activeWallpaper = APP_WALLPAPER_PRESETS.find(
+                (w) => w.id === (basicSettings.uiWallpaperPreset || 'none')
+              );
+              const activeWallpaperLabel =
+                basicSettings.uiWallpaperPreset === 'custom' && customWallpaperDataUrl
+                  ? 'Ảnh từ điện thoại'
+                  : activeWallpaper?.name || 'Không dùng ảnh nền';
+
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
-                    disabled={isPersistingStorage}
-                    onClick={handleProtectStorage}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-stone-300 dark:border-stone-700 text-[10px] font-medium hover:bg-white dark:hover:bg-stone-800"
+                    data-testid="accent-color-trigger"
+                    onClick={() => setShowColorModal(true)}
+                    className="ios-liquid-pill w-full px-3 py-2 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 flex items-center justify-between gap-2 text-left"
                   >
-                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                    <span>
-                      {hardwareInfo.storagePersisted ? 'Bộ nhớ đã bảo vệ' : 'Bảo vệ bộ nhớ máy'}
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span
+                        style={{ backgroundColor: activeSwatch }}
+                        className="w-5 h-5 rounded-full border border-white shadow-xs shrink-0"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[10px] text-stone-500 leading-none">
+                          Màu chủ đạo
+                        </span>
+                        <span className="block text-[11.5px] font-semibold text-stone-900 dark:text-stone-100 truncate mt-0.5">
+                          {activeColorName}
+                        </span>
+                      </span>
                     </span>
+                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="wallpaper-trigger"
+                    onClick={() => setShowWallpaperModal(true)}
+                    className="ios-liquid-pill w-full px-3 py-2 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 flex items-center justify-between gap-2 text-left"
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span
+                        style={{
+                          background:
+                            basicSettings.uiWallpaperPreset === 'custom' && customWallpaperDataUrl
+                              ? `url(${customWallpaperDataUrl}) center/cover`
+                              : activeWallpaper?.previewCss || '#EDE8DC',
+                        }}
+                        className="w-5 h-5 rounded-lg border border-white/80 shadow-xs shrink-0 overflow-hidden"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[10px] text-stone-500 leading-none">
+                          Ảnh nền ứng dụng
+                        </span>
+                        <span className="block text-[11.5px] font-semibold text-stone-900 dark:text-stone-100 truncate mt-0.5">
+                          {activeWallpaperLabel}
+                        </span>
+                      </span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
                 </div>
+              );
+            })()}
 
-                <div className="grid grid-cols-2 gap-2 text-stone-600 dark:text-stone-400">
-                  <div>
-                    CPU: <strong className="text-stone-900 dark:text-stone-100">{hardwareInfo.cpuCores} nhân</strong>
-                  </div>
-                  <div>
-                    Web Audio DSP:{' '}
-                    <strong className="text-stone-900 dark:text-stone-100">
-                      {hardwareInfo.hasWebAudio ? 'Sẵn sàng' : 'Không hỗ trợ'}
-                    </strong>
-                  </div>
-                  <div>
-                    Giọng TTS máy:{' '}
-                    <strong className="text-stone-900 dark:text-stone-100">
-                      {hardwareInfo.installedSpeechVoices} giọng
-                    </strong>
-                  </div>
-                  <div>
-                    Giữ sáng (WakeLock):{' '}
-                    <strong className="text-stone-900 dark:text-stone-100">
-                      {hardwareInfo.hasWakeLock ? 'Có' : 'Trình duyệt cũ'}
-                    </strong>
-                  </div>
-                  <div className="col-span-2">
-                    Bộ nhớ offline:{' '}
-                    <strong className="text-stone-900 dark:text-stone-100 tabular-nums">
-                      {hardwareInfo.storageUsedMb !== null
-                        ? `${hardwareInfo.storageUsedMb} MB đã dùng`
-                        : 'IndexedDB sẵn sàng'}
-                      {hardwareInfo.storageQuotaMb ? ` / ${hardwareInfo.storageQuotaMb} MB` : ''}
-                    </strong>
-                  </div>
-                </div>
+            {wallpaperFeedback && (
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
+                {wallpaperFeedback}
+              </p>
+            )}
+          </section>
+
+          {/* Single-Row Collapsible In-App Language Packs Manager */}
+          <section
+            id="settings-language-packs"
+            className="ios-floating-shadow scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-2.5"
+          >
+            <button
+              type="button"
+              onClick={() => toggleDisclosure('lang-packs')}
+              aria-expanded={activeDisclosure === 'lang-packs'}
+              aria-label="Mở danh sách gói ngôn ngữ đã tải"
+              className="w-full flex items-center justify-between gap-2 min-w-0 text-left"
+            >
+              <span className="flex items-center gap-1.5 min-w-0">
+                <Languages className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <span className="text-[12.5px] font-semibold truncate">Gói ngôn ngữ</span>
+                <span className="text-[10.5px] font-medium text-stone-500 tabular-nums shrink-0">
+                  ({Object.keys(installedPacks).length}/{LANGUAGE_PACK_CATALOG.length})
+                </span>
+              </span>
+              <ChevronDown
+                className={`w-4 h-4 text-stone-500 transition-transform shrink-0 ${
+                  activeDisclosure === 'lang-packs' ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {activeDisclosure === 'lang-packs' && (
+              <div className="space-y-2 pt-2 border-t border-stone-100 dark:border-stone-800">
+                {LANGUAGE_PACK_CATALOG.map((pack) => {
+                  const installed = Boolean(installedPacks[pack.code]);
+                  const isBusy = downloadingPackCode === pack.code;
+                  return (
+                    <div
+                      key={pack.code}
+                      className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/50"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[11px] font-semibold text-stone-900 dark:text-stone-100">
+                            {pack.label}
+                          </span>
+                          <span className="text-[9.5px] text-stone-500">· {pack.sizeLabel}</span>
+                        </div>
+                        <p className="text-[10px] text-stone-500 line-clamp-1 mt-0.5">
+                          {pack.description}
+                        </p>
+                      </div>
+
+                      {installed ? (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 text-[9.5px] font-semibold">
+                            <PackageCheck className="w-3 h-3" />
+                            <span>Đã tải</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePack(pack.code)}
+                            aria-label={`Gỡ gói ngôn ngữ ${pack.label}`}
+                            className="p-1 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={Boolean(downloadingPackCode)}
+                          onClick={() => handleDownloadPack(pack.code)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[10.5px] font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
+                        >
+                          {isBusy ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Download className="w-3 h-3" />
+                          )}
+                          <span>{isBusy ? 'Đang tải...' : 'Tải'}</span>
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {packMessage && (
+                  <p className="text-[10.5px] text-emerald-700 dark:text-emerald-400 font-medium">
+                    {packMessage}
+                  </p>
+                )}
               </div>
             )}
           </section>
 
-          {/* Downloadable In-App Language Packs Manager */}
+          {/* Single-Row Collapsible Offline Voice Packs Manager (moved from Studio) */}
           <section
-            id="settings-language-packs"
-            className="scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-5 sm:p-6 space-y-4"
+            id="settings-voice-packs"
+            className="ios-floating-shadow scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-2.5"
           >
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <Languages className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                <h2 className="text-base font-semibold truncate">Gói ngôn ngữ dịch</h2>
-              </div>
-              <span className="text-[11px] font-medium text-stone-500 shrink-0 tabular-nums whitespace-nowrap">
-                {Object.keys(installedPacks).length}/{LANGUAGE_PACK_CATALOG.length} gói
+            <button
+              type="button"
+              data-testid="voice-packs-toggle"
+              onClick={() => toggleDisclosure('voice-packs')}
+              aria-expanded={activeDisclosure === 'voice-packs'}
+              aria-label="Mở danh sách gói giọng đọc đã tải"
+              className="w-full flex items-center justify-between gap-2 min-w-0 text-left"
+            >
+              <span className="flex items-center gap-1.5 min-w-0">
+                <Volume2 className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <span className="text-[12.5px] font-semibold truncate">Gói giọng đọc</span>
+                <span className="text-[10.5px] font-medium text-stone-500 tabular-nums shrink-0">
+                  ({Object.keys(installedVoicePacks).length}/{GEMINI_VOICES.length})
+                </span>
               </span>
-            </div>
-            <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
-              Tải sẵn gói ngôn ngữ vào LaziRead để tăng tốc dịch chương &amp; AI dịch toàn bộ sách ghi đè thành tệp <strong>.EPUB</strong> chuẩn văn học.
-            </p>
+              <ChevronDown
+                className={`w-4 h-4 text-stone-500 transition-transform shrink-0 ${
+                  activeDisclosure === 'voice-packs' ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
 
-            <div className="space-y-2">
-              {LANGUAGE_PACK_CATALOG.map((pack) => {
-                const installed = Boolean(installedPacks[pack.code]);
-                const isBusy = downloadingPackCode === pack.code;
-                return (
-                  <div
-                    key={pack.code}
-                    className="flex items-center justify-between gap-3 p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/50"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-semibold text-stone-900 dark:text-stone-100">
-                          {pack.label}
-                        </span>
-                        <span className="text-[10px] text-stone-500">· {pack.sizeLabel}</span>
+            {activeDisclosure === 'voice-packs' && (
+              <div className="space-y-2 pt-2 border-t border-stone-100 dark:border-stone-800">
+                <button
+                  type="button"
+                  disabled={downloadingVoiceId !== null}
+                  onClick={handleInstallAllVoicePacks}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 disabled:opacity-50 min-h-[36px]"
+                >
+                  {downloadingVoiceId === 'all' ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>Tải đầy đủ giọng Offline</span>
+                </button>
+
+                {GEMINI_VOICES.map((gv) => {
+                  const offlinePack = installedVoicePacks[gv.name];
+                  const isBusy = downloadingVoiceId === gv.name || downloadingVoiceId === 'all';
+                  return (
+                    <div
+                      key={gv.name}
+                      className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/50"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[11px] font-semibold text-stone-900 dark:text-stone-100">
+                            {gv.label}
+                          </span>
+                          {offlinePack && (
+                            <span className="text-[9.5px] text-stone-500">
+                              · {formatPackSize(offlinePack.sizeBytes)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-stone-500 line-clamp-1 mt-0.5">
+                          {gv.tone}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-stone-500 line-clamp-2 mt-0.5 leading-snug">
-                        {pack.description}
-                      </p>
-                    </div>
 
-                    {installed ? (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 text-[10px] font-semibold">
-                          <PackageCheck className="w-3 h-3" />
-                          <span>Đã tải</span>
-                        </span>
+                      {offlinePack ? (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 text-[9.5px] font-semibold">
+                            <PackageCheck className="w-3 h-3" />
+                            <span>Đã tải</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveVoicePack(gv.name)}
+                            aria-label={`Gỡ gói giọng ${gv.label}`}
+                            className="p-1 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
                         <button
                           type="button"
-                          onClick={() => handleRemovePack(pack.code)}
-                          aria-label={`Gỡ gói ngôn ngữ ${pack.label}`}
-                          className="p-1.5 rounded-lg text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          disabled={downloadingVoiceId !== null}
+                          onClick={() => handleInstallVoicePack(gv.name)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[10.5px] font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          {isBusy ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Download className="w-3 h-3" />
+                          )}
+                          <span>{isBusy ? 'Đang tải...' : 'Tải'}</span>
                         </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={Boolean(downloadingPackCode)}
-                        onClick={() => handleDownloadPack(pack.code)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
-                      >
-                        {isBusy ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Download className="w-3.5 h-3.5" />
-                        )}
-                        <span>{isBusy ? 'Đang tải...' : 'Tải vào app'}</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      )}
+                    </div>
+                  );
+                })}
 
-            {packMessage && (
-              <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-                {packMessage}
-              </p>
+                {voicePackMessage && (
+                  <p className="text-[10.5px] text-emerald-700 dark:text-emerald-400 font-medium">
+                    {voicePackMessage}
+                  </p>
+                )}
+              </div>
             )}
           </section>
         </div>
 
         {/* RIGHT COLUMN: Google Drive Account + 3 Requested Sync Sections */}
-        <section className="lg:col-span-7 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-5 sm:p-6 space-y-5 min-w-0">
-          <div className="flex items-center gap-2">
-            <RefreshCw className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-            <h2 className="text-base font-semibold">Đồng bộ Google Drive</h2>
+        <section className="ios-floating-shadow lg:col-span-7 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-3 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <RefreshCw className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+            <h2 className="text-[13px] font-semibold">Đồng bộ Google Drive</h2>
           </div>
 
-          {/* 0. GOOGLE DRIVE SIGN-IN CARD (Customer logs into their own Drive independently) */}
+          {/* 0. GOOGLE DRIVE SIGN-IN CARD */}
           <div
             id="sync-google-drive"
-            className="scroll-mt-20 p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-900/60 space-y-3"
+            className="scroll-mt-20 p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-stone-900/60 space-y-2"
           >
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Cloud className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                <span className="text-xs font-semibold text-stone-900 dark:text-stone-100">
+              <div className="flex items-center gap-1">
+                <Cloud className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <span className="text-[11.5px] font-semibold text-stone-900 dark:text-stone-100">
                   Tài khoản Google Drive cá nhân
                 </span>
+                {!driveAuth.isConnected && (
+                  <button
+                    type="button"
+                    onClick={() => toggleDisclosure('drive-help')}
+                    aria-expanded={activeDisclosure === 'drive-help'}
+                    aria-label="Xem hướng dẫn kết nối Google Drive"
+                    className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+                  >
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 transition-transform ${
+                        activeDisclosure === 'drive-help' ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+                )}
               </div>
               {driveAuth.isConnected && (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
-                  <UserCheck className="w-3.5 h-3.5" />
+                <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-emerald-700 dark:text-emerald-400">
+                  <UserCheck className="w-3 h-3" />
                   <span>Đã kết nối</span>
                 </span>
               )}
@@ -1367,15 +1356,17 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="space-y-2.5">
-                <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
-                  Mỗi người dùng tự đăng nhập tài khoản Google Drive riêng của mình để lưu &amp; nhận sách trong thư mục <strong>{DRIVE_ROOT_FOLDER}</strong>. LaziRead chỉ truy cập các tệp do ứng dụng tạo ra.
-                </p>
+              <div className="space-y-2">
+                {activeDisclosure === 'drive-help' && (
+                  <p className="text-[11px] leading-[1.4] text-stone-600 dark:text-stone-400">
+                    Đăng nhập tài khoản Google Drive riêng của bạn để lưu &amp; đồng bộ sách trong thư mục <strong>{DRIVE_ROOT_FOLDER}</strong>.
+                  </p>
+                )}
                 <button
                   type="button"
                   disabled={isAuthBusy}
                   onClick={handleGoogleDriveSignIn}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-4 py-2.5 rounded-xl bg-white hover:bg-stone-50 text-stone-800 border border-stone-300 shadow-xs text-xs font-semibold transition-colors min-h-[42px]"
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-white hover:bg-stone-50 text-stone-800 border border-stone-300 shadow-xs text-[11px] font-semibold transition-colors min-h-[36px]"
                 >
                   {isAuthBusy ? (
                     <Loader2 className="w-4 h-4 animate-spin text-stone-600" />
@@ -1388,56 +1379,98 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 </button>
               </div>
             )}
+
+            {authDomainError && (
+              <div className="p-3 rounded-xl border border-amber-400/70 dark:border-amber-700 bg-amber-50/90 dark:bg-amber-950/40 text-xs space-y-2">
+                <div className="flex items-start gap-2 text-amber-950 dark:text-amber-200 font-semibold">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <span>Tên miền chưa được cấp quyền Firebase (auth/unauthorized-domain)</span>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-white/80 dark:bg-stone-900/80 px-2.5 py-1.5 rounded-lg border border-amber-300/60 dark:border-amber-800">
+                  <code className="text-[11px] font-mono font-semibold text-stone-900 dark:text-stone-100 break-all">
+                    {authDomainError.hostname}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleCopyHostname}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-800 text-white text-[11px] font-semibold shrink-0"
+                  >
+                    {copiedHostname ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedHostname ? 'Đã chép' : 'Chép tên miền'}</span>
+                  </button>
+                </div>
+                <ol className="list-decimal list-inside text-[11px] text-stone-700 dark:text-stone-300 space-y-0.5 leading-snug">
+                  <li>Mở Firebase Console → Authentication → Settings → Authorized domains.</li>
+                  <li>Nhấn Add domain và dán chính xác tên miền trên ({authDomainError.hostname}).</li>
+                  <li>Lưu lại rồi bấm &ldquo;Đăng nhập với Google Drive&rdquo; thêm lần nữa.</li>
+                </ol>
+              </div>
+            )}
           </div>
 
-          {/* MỤC 1: GẠT BẬT / TẮT TỰ ĐỘNG ĐỒNG BỘ LÊN GOOGLE DRIVE */}
+          {/* MỤC 1: GẠT BẬT / TẮT TỰ ĐỘNG ĐỒNG BỘ 2 CHIỀU GOOGLE DRIVE */}
           <div
             id="sync-auto"
-            className="scroll-mt-20 p-4 rounded-xl border border-stone-200 dark:border-stone-800 space-y-2"
+            className="scroll-mt-20 p-3 rounded-xl border border-stone-200 dark:border-stone-800 space-y-2"
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold text-stone-900 dark:text-stone-100">
-                  1. Tự động đồng bộ tiến độ lên Google Drive
-                </div>
-                <p className="text-[11px] text-stone-500 mt-0.5 leading-snug">
-                  Tự động lưu vị trí chương, trang đang đọc, đánh dấu &amp; ghi chú vào{' '}
-                  <strong>{DRIVE_ROOT_FOLDER}</strong> khi bạn đọc sách.
-                </p>
+            <div className="flex items-center justify-between gap-2.5">
+              <div className="min-w-0 flex-1 flex items-center gap-1">
+                <span className="text-[11.5px] font-semibold text-stone-900 dark:text-stone-100">
+                  1. Tự động đồng bộ tiến độ 2 chiều
+                </span>
+                <button
+                  type="button"
+                  onClick={() => toggleDisclosure('auto-sync-help')}
+                  aria-expanded={activeDisclosure === 'auto-sync-help'}
+                  aria-label="Xem mô tả tự động đồng bộ 2 chiều"
+                  className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform ${
+                      activeDisclosure === 'auto-sync-help' ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
               </div>
 
               <button
                 type="button"
                 role="switch"
                 aria-checked={Boolean(basicSettings.autoSyncGoogleDrive)}
-                aria-label="Bật tắt tự động đồng bộ lên Google Drive"
+                aria-label="Bật tắt tự động đồng bộ 2 chiều lên Google Drive"
                 onClick={handleToggleAutoSync}
-                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full transition-colors ${
                   basicSettings.autoSyncGoogleDrive
                     ? 'bg-amber-800 dark:bg-amber-600'
                     : 'bg-stone-300 dark:bg-stone-700'
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
-                    basicSettings.autoSyncGoogleDrive ? 'translate-x-6' : 'translate-x-1'
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform ${
+                    basicSettings.autoSyncGoogleDrive ? 'translate-x-5.5' : 'translate-x-1'
                   }`}
                 />
               </button>
             </div>
 
+            {activeDisclosure === 'auto-sync-help' && (
+              <p className="text-[11px] leading-[1.4] text-stone-500">
+                Tự đẩy tiến độ lên &amp; tự kéo tiến độ mới nhất xuống ngay khi có mạng. Tự động khớp mọi sách cùng tên giữa Thiết bị 1 và Thiết bị 2.
+              </p>
+            )}
+
             {basicSettings.autoSyncGoogleDrive && (
-              <div className="text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-1.5 pt-0.5">
+              <div className="text-[10.5px] text-amber-800 dark:text-amber-300 flex items-center gap-1.5 pt-0.5">
                 {isAutoSyncing ? (
                   <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                    <span>Đang tự động đồng bộ tiến độ lên Google Drive...</span>
+                    <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                    <span>Đang tự động đồng bộ 2 chiều với Google Drive...</span>
                   </>
                 ) : driveAuth.isConnected ? (
                   <>
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
                     <span>
-                      Đang bật tự động đồng bộ
+                      Đang bật đồng bộ 2 chiều
                       {formattedLastAutoSync ? ` · Lần cuối lúc ${formattedLastAutoSync}` : ''}
                     </span>
                   </>
@@ -1451,16 +1484,31 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           {/* MỤC 2: TẢI SÁCH LÊN GOOGLE DRIVE THEO NHU CẦU & XUẤT TỆP */}
           <div
             id="sync-upload"
-            className="scroll-mt-20 p-4 rounded-xl border border-stone-200 dark:border-stone-800 space-y-3.5"
+            className="scroll-mt-20 p-3 rounded-xl border border-stone-200 dark:border-stone-800 space-y-2.5"
           >
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2 text-xs font-semibold text-stone-900 dark:text-stone-100">
-                <CloudUpload className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                <span>2. Tải sách lên Google Drive &amp; Xuất tệp sao lưu</span>
+            <div className="space-y-1">
+              <div className="flex items-center gap-1 text-[11.5px] font-semibold text-stone-900 dark:text-stone-100">
+                <CloudUpload className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <span>2. Tải sách lên Google Drive &amp; Xuất tệp</span>
+                <button
+                  type="button"
+                  onClick={() => toggleDisclosure('upload-help')}
+                  aria-expanded={activeDisclosure === 'upload-help'}
+                  aria-label="Xem mô tả tải sách lên Drive"
+                  className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform ${
+                      activeDisclosure === 'upload-help' ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
               </div>
-              <p className="text-[11px] text-stone-500 leading-snug">
-                Chọn up theo Bộ sưu tập đã tạo trong Thư viện (<strong>{DRIVE_ROOT_FOLDER}/&lt;Tên bộ sưu tập&gt;</strong>) hoặc up từng sách lẻ (<strong>{DRIVE_ROOT_FOLDER}/{DRIVE_SINGLE_BOOKS_FOLDER}</strong>). Tự cảnh báo trước khi ghi đè tệp trùng.
-              </p>
+              {activeDisclosure === 'upload-help' && (
+                <p className="text-[11px] leading-[1.4] text-stone-500">
+                  Chọn up theo Bộ sưu tập (<strong>{DRIVE_ROOT_FOLDER}/&lt;Tên bộ sưu tập&gt;</strong>) hoặc từng sách lẻ (<strong>{DRIVE_ROOT_FOLDER}/{DRIVE_SINGLE_BOOKS_FOLDER}</strong>). Tự cảnh báo trước khi ghi đè tệp trùng.
+                </p>
+              )}
             </div>
 
             {/* Sub-tabs: Up Bộ sưu tập vs Up Sách lẻ */}
@@ -1712,31 +1760,44 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           {/* MỤC 3: NHẬN TỆP SÁCH VÀ TIẾN ĐỘ TỪ GOOGLE DRIVE */}
           <div
             id="sync-download"
-            className="scroll-mt-20 p-4 rounded-xl border border-stone-200 dark:border-stone-800 space-y-3.5"
+            className="scroll-mt-20 p-3 rounded-xl border border-stone-200 dark:border-stone-800 space-y-2"
           >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-stone-900 dark:text-stone-100">
-                  <CloudDownload className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                  <span>3. Nhận tệp sách và tiến độ từ Google Drive</span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex items-center gap-1 text-[11.5px] font-semibold text-stone-900 dark:text-stone-100">
+                  <CloudDownload className="w-2.5 h-2.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                  <span className="truncate">Quét và Tải BST</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleDisclosure('download-help')}
+                    aria-expanded={activeDisclosure === 'download-help'}
+                    aria-label="Xem hướng dẫn quét và tải bộ sưu tập từ Google Drive"
+                    title="Xem mô tả"
+                    className="w-5 h-5 rounded-full bg-stone-100 dark:bg-stone-800 text-stone-500 hover:text-stone-900 dark:hover:text-white inline-flex items-center justify-center shrink-0 active:scale-90 transition-transform"
+                  >
+                    <MoreHorizontal className="w-2.5 h-2.5" />
+                  </button>
                 </div>
-                <p className="text-[11px] text-stone-500 leading-snug">
-                  Tự động tải sách từ <strong>{DRIVE_ROOT_FOLDER}</strong>, khôi phục tiến độ đọc và tự tạo Bộ sưu tập cùng tên trên máy mới.
-                </p>
+                {activeDisclosure === 'download-help' && (
+                  <p className="text-[10.5px] leading-[1.4] text-stone-500">
+                    Bấm <strong>Quét Google Drive</strong> để xem danh sách thư mục bộ sưu tập trong{' '}
+                    <strong>{DRIVE_ROOT_FOLDER}</strong>, sau đó tải xuống, khôi phục tiến độ đọc và tự tạo Bộ sưu tập tương ứng trong Thư viện.
+                  </p>
+                )}
               </div>
 
               <button
                 type="button"
                 disabled={isInspectingDrive || isDriveBusy}
                 onClick={handleInspectDrive}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-amber-800 text-amber-900 dark:text-amber-300 text-[11px] font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/30 shrink-0"
+                className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg border border-amber-800 text-amber-900 dark:text-amber-300 text-[10.5px] font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/30 shrink-0 active:scale-95 transition-transform"
               >
                 {isInspectingDrive ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
                 ) : (
-                  <FolderSync className="w-3.5 h-3.5" />
+                  <FolderSync className="w-2.5 h-2.5" />
                 )}
-                <span>{isInspectingDrive ? 'Đang quét...' : 'Quét Google Drive'}</span>
+                <span>{isInspectingDrive ? 'Đang quét...' : 'Quét Drive'}</span>
               </button>
             </div>
 
@@ -1745,7 +1806,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               <button
                 type="button"
                 onClick={() => setDownloadSubTab('collections')}
-                className={`py-2 px-2.5 rounded-lg text-xs font-medium transition-colors text-center leading-tight ${
+                className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition-colors text-center leading-tight ${
                   downloadSubTab === 'collections'
                     ? 'bg-white dark:bg-stone-800 text-amber-800 dark:text-amber-300 shadow-xs font-semibold'
                     : 'text-stone-600 dark:text-stone-400'
@@ -1756,7 +1817,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               <button
                 type="button"
                 onClick={() => setDownloadSubTab('single')}
-                className={`py-2 px-2.5 rounded-lg text-xs font-medium transition-colors text-center leading-tight ${
+                className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition-colors text-center leading-tight ${
                   downloadSubTab === 'single'
                     ? 'bg-white dark:bg-stone-800 text-amber-800 dark:text-amber-300 shadow-xs font-semibold'
                     : 'text-stone-600 dark:text-stone-400'
@@ -1767,40 +1828,35 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
             </div>
 
             {downloadSubTab === 'collections' ? (
-              <div className="space-y-2.5">
+              <div className="space-y-2">
                 <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <Search className="w-2.5 h-2.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="search"
                     value={downloadColQuery}
                     onChange={(e) => setDownloadColQuery(e.target.value)}
-                    placeholder="Tìm kiếm bộ sưu tập trên Google Drive..."
+                    placeholder="Tìm bộ sưu tập trên Drive..."
                     aria-label="Tìm kiếm bộ sưu tập tải từ Drive"
-                    className="w-full pl-8 pr-3 py-2 text-xs rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/60 focus:outline-none focus:border-amber-700"
+                    className="w-full pl-7 pr-3 py-1.5 text-[11px] rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/60 focus:outline-none focus:border-amber-700"
                   />
                 </div>
 
-                {!hasInspectedOnce ? (
-                  <p className="text-xs text-stone-500 p-3 rounded-lg bg-stone-50 dark:bg-stone-900/50 leading-relaxed">
-                    Bấm <strong>Quét Google Drive</strong> để xem danh sách thư mục bộ sưu tập trong{' '}
-                    <strong>{DRIVE_ROOT_FOLDER}</strong>, sau đó tải xuống và tự tạo Bộ sưu tập tương ứng trong Thư viện.
-                  </p>
-                ) : driveCollections.length === 0 ? (
-                  <p className="text-xs text-stone-500 p-3 rounded-lg bg-stone-50 dark:bg-stone-900/50">
-                    Chưa có thư mục bộ sưu tập nào trong <strong>{DRIVE_ROOT_FOLDER}</strong> trên Google Drive.
+                {!hasInspectedOnce ? null : driveCollections.length === 0 ? (
+                  <p className="text-[11px] text-stone-500 p-2.5 rounded-lg bg-stone-50 dark:bg-stone-900/50">
+                    Chưa có thư mục bộ sưu tập nào trong <strong>{DRIVE_ROOT_FOLDER}</strong>.
                   </p>
                 ) : filteredDriveCollections.length === 0 ? (
-                  <p className="text-xs text-stone-500 p-3 rounded-lg bg-stone-50 dark:bg-stone-900/50">
-                    Không tìm thấy bộ sưu tập nào khớp với &ldquo;{downloadColQuery}&rdquo;.
+                  <p className="text-[11px] text-stone-500 p-2.5 rounded-lg bg-stone-50 dark:bg-stone-900/50">
+                    Không tìm thấy bộ sưu tập khớp với &ldquo;{downloadColQuery}&rdquo;.
                   </p>
                 ) : (
-                  <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+                  <div className="max-h-44 overflow-y-auto space-y-1 pr-1">
                     {filteredDriveCollections.map((folder) => {
                       const checked = selectedDriveColIds.includes(folder.folderId);
                       return (
                         <label
                           key={folder.folderId}
-                          className="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-stone-200 dark:border-stone-800 cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-900/50 text-xs"
+                          className="perf-list-item flex items-center justify-between gap-2 p-2 rounded-lg border border-stone-200 dark:border-stone-800 cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-900/50 text-[11px]"
                         >
                           <span className="flex items-center gap-2 min-w-0">
                             <input
@@ -1815,12 +1871,12 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                                   );
                                 }
                               }}
-                              className="w-4 h-4 accent-amber-800 shrink-0"
+                              className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                             />
                             <span className="font-medium truncate">{folder.name}</span>
                           </span>
-                          <span className="text-[11px] text-stone-500 shrink-0">
-                            {folder.files.length} sách .epub
+                          <span className="text-[10.5px] text-stone-500 shrink-0">
+                            {folder.files.length} sách
                           </span>
                         </label>
                       );
@@ -1832,58 +1888,53 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   type="button"
                   disabled={isDriveBusy || isInspectingDrive}
                   onClick={handleDownloadDriveCollections}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-90 disabled:opacity-50 min-h-[42px]"
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold hover:opacity-90 disabled:opacity-50 active:scale-[0.98] transition-transform"
                 >
                   {isDriveBusy ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
                   ) : (
-                    <CloudDownload className="w-4 h-4" />
+                    <CloudDownload className="w-2.5 h-2.5" />
                   )}
                   <span>
                     {hasInspectedOnce
-                      ? 'Tải xuống Bộ sưu tập & tự tạo thư mục'
-                      : 'Quét & Đồng bộ tải xuống Bộ sưu tập'}
+                      ? 'Tải Bộ sưu tập & tạo thư mục'
+                      : 'Quét & Tải Bộ sưu tập'}
                   </span>
                 </button>
               </div>
             ) : (
-              <div className="space-y-2.5">
+              <div className="space-y-2">
                 <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <Search className="w-2.5 h-2.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="search"
                     value={downloadSingleQuery}
                     onChange={(e) => setDownloadSingleQuery(e.target.value)}
-                    placeholder="Tìm kiếm sách lẻ trên Google Drive..."
+                    placeholder="Tìm sách lẻ trên Drive..."
                     aria-label="Tìm kiếm sách lẻ tải từ Drive"
-                    className="w-full pl-8 pr-3 py-2 text-xs rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/60 focus:outline-none focus:border-amber-700"
+                    className="w-full pl-7 pr-3 py-1.5 text-[11px] rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/60 focus:outline-none focus:border-amber-700"
                   />
                 </div>
 
-                {!hasInspectedOnce ? (
-                  <p className="text-xs text-stone-500 p-3 rounded-lg bg-stone-50 dark:bg-stone-900/50 leading-relaxed">
-                    Bấm <strong>Quét Google Drive</strong> để xem danh sách sách trong{' '}
-                    <strong>{DRIVE_ROOT_FOLDER}/{DRIVE_SINGLE_BOOKS_FOLDER}</strong> và tải về máy.
-                  </p>
-                ) : driveSingleBooks.length === 0 ? (
-                  <p className="text-xs text-stone-500 p-3 rounded-lg bg-stone-50 dark:bg-stone-900/50">
+                {!hasInspectedOnce ? null : driveSingleBooks.length === 0 ? (
+                  <p className="text-[11px] text-stone-500 p-2.5 rounded-lg bg-stone-50 dark:bg-stone-900/50">
                     Chưa có file sách .epub nào trong{' '}
                     <strong>{DRIVE_ROOT_FOLDER}/{DRIVE_SINGLE_BOOKS_FOLDER}</strong>.
                   </p>
                 ) : filteredDriveSingleBooks.length === 0 ? (
-                  <p className="text-xs text-stone-500 p-3 rounded-lg bg-stone-50 dark:bg-stone-900/50">
-                    Không tìm thấy sách lẻ nào khớp với &ldquo;{downloadSingleQuery}&rdquo;.
+                  <p className="text-[11px] text-stone-500 p-2.5 rounded-lg bg-stone-50 dark:bg-stone-900/50">
+                    Không tìm thấy sách lẻ khớp với &ldquo;{downloadSingleQuery}&rdquo;.
                   </p>
                 ) : (
-                  <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+                  <div className="max-h-44 overflow-y-auto space-y-1 pr-1">
                     {filteredDriveSingleBooks.map((file) => {
                       const checked = selectedDriveFileIds.includes(file.id);
                       return (
                         <label
                           key={file.id}
-                          className="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-stone-200 dark:border-stone-800 cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-900/50 text-xs"
+                          className="perf-list-item flex items-center justify-between gap-2 p-2 rounded-lg border border-stone-200 dark:border-stone-800 cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-900/50 text-[11px]"
                         >
-                          <span className="flex items-center gap-2 min-w-0">
+                          <span className="flex items-center gap-1.5 min-w-0">
                             <input
                               type="checkbox"
                               checked={checked}
@@ -1896,9 +1947,9 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                                   );
                                 }
                               }}
-                              className="w-4 h-4 accent-amber-800 shrink-0"
+                              className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                             />
-                            <BookOpen className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                            <BookOpen className="w-2.5 h-2.5 text-amber-800 dark:text-amber-400 shrink-0" />
                             <span className="truncate font-medium">{file.name}</span>
                           </span>
                         </label>
@@ -1911,32 +1962,32 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   type="button"
                   disabled={isDriveBusy || isInspectingDrive}
                   onClick={handleDownloadDriveSingleBooks}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-90 disabled:opacity-50 min-h-[42px]"
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold hover:opacity-90 disabled:opacity-50 active:scale-[0.98] transition-transform"
                 >
                   {isDriveBusy ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
                   ) : (
-                    <Download className="w-4 h-4" />
+                    <Download className="w-2.5 h-2.5" />
                   )}
                   <span>
                     {hasInspectedOnce
-                      ? `Tải xuống ${selectedDriveFileIds.length} sách lẻ & Tiến độ`
-                      : 'Quét & Tải xuống Sách lẻ từ Drive'}
+                      ? `Tải ${selectedDriveFileIds.length} sách lẻ & Tiến độ`
+                      : 'Quét & Tải Sách lẻ từ Drive'}
                   </span>
                 </button>
               </div>
             )}
 
             {hasDriveProgressFile && (
-              <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
-                ✓ Đã phát hiện tệp tiến độ đọc trên Google Drive — sẽ tự động khớp trang đang đọc dở khi tải về.
+              <p className="text-[10.5px] text-emerald-700 dark:text-emerald-400">
+                ✓ Đã phát hiện tệp tiến độ đọc trên Drive — sẽ tự khớp trang khi tải về.
               </p>
             )}
 
             {/* Offline .lazisync.json import */}
-            <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-[11px] text-stone-500">Hoặc nhập tệp đồng bộ offline:</span>
-              <div>
+            <div className="pt-2.5 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between gap-2">
+              <span className="text-[10.5px] text-stone-500 truncate">Nhập tệp đồng bộ offline:</span>
+              <div className="shrink-0">
                 <input
                   ref={syncFileInputRef}
                   type="file"
@@ -1947,9 +1998,9 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 <button
                   type="button"
                   onClick={() => syncFileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 text-[11px] font-medium hover:border-amber-700"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-stone-300 dark:border-stone-700 text-[10.5px] font-medium hover:border-amber-700 active:scale-95 transition-transform"
                 >
-                  <Upload className="w-3.5 h-3.5" />
+                  <Upload className="w-2.5 h-2.5" />
                   <span>Nhập .lazisync.json</span>
                 </button>
               </div>
@@ -1983,7 +2034,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
       {/* Custom React Confirmation Dialog for Duplicate Files on Google Drive */}
       {pendingUploadPlan && (
         <div
-          className="fixed inset-0 z-[80] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-[80] ios-frosted-backdrop flex items-center justify-center p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) setPendingUploadPlan(null);
           }}
@@ -1992,9 +2043,9 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
             role="dialog"
             aria-modal="true"
             aria-label="Cảnh báo trùng lặp tệp trên Google Drive"
-            className="w-full max-w-md rounded-2xl bg-white dark:bg-[#191B1F] border border-stone-200 dark:border-stone-800 shadow-2xl overflow-hidden"
+            className="ios-sheet-enter ios-frosted-surface w-full max-w-md rounded-[24px] overflow-hidden"
           >
-            <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-stone-200 dark:border-stone-800">
+            <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-stone-300/40 dark:border-white/10">
               <div className="flex items-center gap-2 text-amber-800 dark:text-amber-400">
                 <AlertTriangle className="w-5 h-5 shrink-0" />
                 <h3 className="text-sm font-semibold">Cảnh báo trùng lặp trên Google Drive</h3>
@@ -2015,7 +2066,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 <strong>{pendingUploadPlan.freshItems.length}</strong> tệp mới). Bạn muốn xử lý các tệp trùng như thế nào?
               </p>
 
-              <ul className="max-h-40 overflow-y-auto space-y-1.5 rounded-xl bg-stone-50 dark:bg-stone-900/70 p-3 border border-stone-200 dark:border-stone-800">
+              <ul className="max-h-40 overflow-y-auto space-y-1.5 rounded-xl bg-white/60 dark:bg-stone-900/70 p-3 border border-stone-200 dark:border-stone-800">
                 {pendingUploadPlan.duplicates.map((dup) => (
                   <li
                     key={`${dup.targetFolderId}-${dup.fileName}`}
@@ -2056,6 +2107,272 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* iPhone Frosted-Glass Floating Modal for Accent Color Selection */}
+      {showColorModal &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[95] ios-frosted-backdrop flex items-end sm:items-center justify-center p-0 sm:p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowColorModal(false);
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Màu chủ đạo giao diện"
+              className="ios-sheet-enter ios-frosted-surface w-full sm:max-w-md rounded-t-[26px] sm:rounded-[24px] text-stone-900 dark:text-stone-100 overflow-hidden max-h-[82dvh] flex flex-col"
+            >
+              <div className="sm:hidden flex justify-center pt-2 shrink-0">
+                <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
+              </div>
+              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <Palette className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                  <h3 className="text-[13.5px] font-display font-semibold">
+                    Màu chủ đạo giao diện
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowColorModal(false)}
+                  aria-label="Đóng bảng chọn màu"
+                  className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="p-4 space-y-4 overflow-y-auto overscroll-contain">
+                <div className="grid grid-cols-4 gap-2">
+                  {APP_COLOR_PALETTES.map((palette) => {
+                    const active = (basicSettings.uiAccent || 'amber') === palette.id;
+                    return (
+                      <button
+                        key={palette.id}
+                        type="button"
+                        onClick={() => {
+                          onUpdateBasicSettings({ uiAccent: palette.id });
+                          triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
+                        }}
+                        title={palette.name}
+                        aria-label={`Đổi màu giao diện ${palette.name}`}
+                        className={`flex flex-col items-center gap-1.5 p-2 rounded-2xl border transition-all ${
+                          active
+                            ? 'border-amber-800 dark:border-amber-400 bg-amber-800/10 dark:bg-amber-500/20'
+                            : 'border-stone-300/60 dark:border-white/10 hover:border-stone-400'
+                        }`}
+                      >
+                        <span
+                          style={{ backgroundColor: palette.swatch }}
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-white shadow-sm"
+                        >
+                          {active && <Check className="w-4 h-4" />}
+                        </span>
+                        <span className="text-[10.5px] leading-tight text-center truncate w-full text-stone-800 dark:text-stone-200 font-medium">
+                          {palette.name.split(' ')[0]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center justify-between gap-3 p-3 rounded-2xl border border-stone-300/50 dark:border-white/10 bg-white/50 dark:bg-white/5">
+                  <span className="text-xs font-medium text-stone-700 dark:text-stone-300">
+                    Tự chọn màu tùy ý
+                  </span>
+                  <input
+                    type="color"
+                    aria-label="Chọn màu giao diện tùy chỉnh"
+                    value={basicSettings.uiCustomAccentHex || '#0369A1'}
+                    onChange={(e) =>
+                      onUpdateBasicSettings({
+                        uiAccent: 'custom',
+                        uiCustomAccentHex: e.target.value,
+                      })
+                    }
+                    className="w-8 h-8 rounded-xl border border-stone-300 dark:border-stone-700 bg-transparent cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* iPhone Frosted-Glass Floating Modal for App Wallpaper Selection */}
+      {showWallpaperModal &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[95] ios-frosted-backdrop flex items-end sm:items-center justify-center p-0 sm:p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowWallpaperModal(false);
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Ảnh nền giao diện ứng dụng"
+              className="ios-sheet-enter ios-frosted-surface w-full sm:max-w-lg rounded-t-[26px] sm:rounded-[24px] text-stone-900 dark:text-stone-100 overflow-hidden max-h-[84dvh] flex flex-col"
+            >
+              <div className="sm:hidden flex justify-center pt-2 shrink-0">
+                <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
+              </div>
+              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <ImageIcon className="w-4 h-4 text-amber-800 dark:text-amber-400" />
+                  <h3 className="text-[13.5px] font-display font-semibold">
+                    Ảnh nền giao diện ứng dụng
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowWallpaperModal(false)}
+                  aria-label="Đóng bảng chọn ảnh nền"
+                  className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="p-4 space-y-3.5 overflow-y-auto overscroll-contain">
+                <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-snug">
+                  Chỉ hiển thị ở Thư viện, Cộng đồng, Studio &amp; Cài đặt.{' '}
+                  <strong className="text-stone-800 dark:text-stone-200">
+                    Lúc đọc sách sẽ tự ẩn hoàn toàn
+                  </strong>{' '}
+                  để bảo vệ mắt.
+                </p>
+
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+                  {APP_WALLPAPER_PRESETS.map((preset) => {
+                    const active = (basicSettings.uiWallpaperPreset || 'none') === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          onUpdateBasicSettings({ uiWallpaperPreset: preset.id });
+                          triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
+                        }}
+                        className={`group flex flex-col items-center gap-1.5 text-center min-w-0 ${
+                          active ? 'font-semibold' : ''
+                        }`}
+                      >
+                        <span
+                          style={{ background: preset.previewCss }}
+                          className={`relative w-full aspect-[3/4] rounded-xl border-2 overflow-hidden flex items-center justify-center transition-all ${
+                            active
+                              ? 'border-amber-800 dark:border-amber-400 ring-2 ring-amber-800/20'
+                              : 'border-stone-300/70 dark:border-stone-700 group-hover:border-stone-400'
+                          }`}
+                        >
+                          {preset.dataUrl && (
+                            <img
+                              src={preset.dataUrl}
+                              alt={preset.name}
+                              loading="lazy"
+                              className="absolute inset-0 w-full h-full object-cover scale-110 transition-transform duration-300 group-hover:scale-115"
+                            />
+                          )}
+                          {active && (
+                            <span className="relative z-10 w-5 h-5 rounded-full bg-stone-900/80 text-white flex items-center justify-center shadow-sm">
+                              <Check className="w-3 h-3" />
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[10px] text-stone-700 dark:text-stone-300 leading-tight line-clamp-2 w-full">
+                          {preset.name}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={wallpaperInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => handleUploadWallpaperPhoto(e.target.files)}
+                  />
+                  <button
+                    type="button"
+                    disabled={isUploadingWallpaper}
+                    onClick={() => wallpaperInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:opacity-90 disabled:opacity-50"
+                  >
+                    {isUploadingWallpaper ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5" />
+                    )}
+                    <span>Chọn ảnh nền từ điện thoại</span>
+                  </button>
+
+                  {((basicSettings.uiWallpaperPreset && basicSettings.uiWallpaperPreset !== 'none') ||
+                    customWallpaperDataUrl) && (
+                    <button
+                      type="button"
+                      onClick={handleClearWallpaper}
+                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Gỡ ảnh nền</span>
+                    </button>
+                  )}
+                </div>
+
+                {basicSettings.uiWallpaperPreset && basicSettings.uiWallpaperPreset !== 'none' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-[11px]">
+                    <label className="space-y-1">
+                      <div className="flex justify-between text-stone-600 dark:text-stone-400">
+                        <span>Độ mờ ảnh nền</span>
+                        <span className="tabular-nums font-medium">
+                          {basicSettings.uiWallpaperBlur ?? 3}px
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={20}
+                        step={1}
+                        value={basicSettings.uiWallpaperBlur ?? 3}
+                        onChange={(e) =>
+                          onUpdateBasicSettings({ uiWallpaperBlur: Number(e.target.value) })
+                        }
+                        className="w-full accent-amber-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="flex justify-between text-stone-600 dark:text-stone-400">
+                        <span>Độ phủ dịu nền (nhìn xuyên thẻ)</span>
+                        <span className="tabular-nums font-medium">
+                          {basicSettings.uiWallpaperOverlay ?? 28}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={5}
+                        max={80}
+                        step={5}
+                        value={basicSettings.uiWallpaperOverlay ?? 28}
+                        onChange={(e) =>
+                          onUpdateBasicSettings({ uiWallpaperOverlay: Number(e.target.value) })
+                        }
+                        className="w-full accent-amber-800"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </main>
   );
 };

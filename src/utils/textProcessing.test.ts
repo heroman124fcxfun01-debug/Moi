@@ -7,6 +7,8 @@ import {
   paginateParagraphs,
   computeReadingProgress,
   estimateBookStats,
+  isPageBookmarked,
+  togglePageBookmark,
 } from './textProcessing';
 import type { Chapter } from '../types/book';
 
@@ -85,3 +87,50 @@ test('computeReadingProgress and estimateBookStats calculate accurately', () => 
   assert.equal(stats.totalWords, 10);
   assert.equal(stats.chapterCount, 2);
 });
+
+test('togglePageBookmark marks and unmarks individual pages independently', () => {
+  // Bookmark Page 1 (pageIndex 0)
+  const step1 = togglePageBookmark([], {
+    chapterId: 'ch1',
+    chapterTitle: 'Chương 1',
+    pageIndex: 0,
+    isPaginated: true,
+    paragraphIndex: 0,
+    excerpt: 'Trang 1',
+    now: 100,
+  });
+  assert.equal(step1.added, true);
+  assert.equal(isPageBookmarked(step1.nextBookmarks, 'ch1', 0, true, 0), true);
+  // Flipping to Page 2 (pageIndex 1) must NOT appear already bookmarked
+  assert.equal(isPageBookmarked(step1.nextBookmarks, 'ch1', 1, true, 0), false);
+
+  // Tap Bookmark on Page 2 adds Page 2 independently
+  const step2 = togglePageBookmark(step1.nextBookmarks, {
+    chapterId: 'ch1',
+    chapterTitle: 'Chương 1',
+    pageIndex: 1,
+    isPaginated: true,
+    paragraphIndex: 0,
+    excerpt: 'Trang 2',
+    now: 200,
+  });
+  assert.equal(step2.added, true);
+  assert.equal(step2.nextBookmarks.length, 2);
+  assert.equal(isPageBookmarked(step2.nextBookmarks, 'ch1', 1, true, 0), true);
+
+  // Tap Bookmark again on Page 2 removes ONLY Page 2 while preserving Page 1
+  const step3 = togglePageBookmark(step2.nextBookmarks, {
+    chapterId: 'ch1',
+    chapterTitle: 'Chương 1',
+    pageIndex: 1,
+    isPaginated: true,
+    paragraphIndex: 0,
+    excerpt: 'Trang 2',
+    now: 300,
+  });
+  assert.equal(step3.added, false);
+  assert.equal(step3.nextBookmarks.length, 1);
+  assert.equal(isPageBookmarked(step3.nextBookmarks, 'ch1', 0, true, 0), true);
+  assert.equal(isPageBookmarked(step3.nextBookmarks, 'ch1', 1, true, 0), false);
+});
+

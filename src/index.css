@@ -97,21 +97,21 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 .app-wallpaper-active main .bg-white,
 .app-wallpaper-active main [class*="bg-white/"],
 .app-wallpaper-active main .bg-\[\#FBF9F5\] {
-  background-color: rgba(255, 255, 255, 0.5) !important;
-  backdrop-filter: blur(18px) saturate(165%) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(165%) !important;
+  background-color: rgba(255, 255, 255, 0.56) !important;
+  backdrop-filter: blur(12px) saturate(155%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(155%) !important;
   border-color: rgba(255, 255, 255, 0.56) !important;
   box-shadow:
-    0 10px 28px rgba(24, 20, 16, 0.08),
+    0 8px 22px rgba(24, 20, 16, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
 }
 
 .app-wallpaper-active main .bg-stone-50,
 .app-wallpaper-active main [class*="bg-stone-50/"],
 .app-wallpaper-active main [class*="bg-amber-50/"] {
-  background-color: rgba(255, 255, 255, 0.38) !important;
-  backdrop-filter: blur(14px) saturate(150%) !important;
-  -webkit-backdrop-filter: blur(14px) saturate(150%) !important;
+  background-color: rgba(255, 255, 255, 0.44) !important;
+  backdrop-filter: blur(10px) saturate(145%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(145%) !important;
 }
 
 .dark .app-wallpaper-active main section.bg-white,
@@ -120,19 +120,19 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 .dark .app-wallpaper-active main [class*="dark:bg-[#16181C]"],
 .dark .app-wallpaper-active main [class*="dark:bg-stone-900"],
 .dark .app-wallpaper-active main [class*="dark:bg-zinc-900"] {
-  background-color: rgba(18, 20, 26, 0.48) !important;
-  backdrop-filter: blur(18px) saturate(160%) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(160%) !important;
+  background-color: rgba(18, 20, 26, 0.54) !important;
+  backdrop-filter: blur(12px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(150%) !important;
   border-color: rgba(255, 255, 255, 0.16) !important;
   box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.34),
+    0 10px 26px rgba(0, 0, 0, 0.34),
     inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
 }
 
 .dark .app-wallpaper-active main [class*="dark:bg-amber-950/"] {
-  background-color: rgba(40, 26, 14, 0.42) !important;
-  backdrop-filter: blur(14px) !important;
-  -webkit-backdrop-filter: blur(14px) !important;
+  background-color: rgba(40, 26, 14, 0.46) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
 }
 
 /* Keep interactive inputs legible inside frosted cards */
@@ -344,59 +344,90 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
   animation: pageFadeTurn 260ms ease-out both;
 }
 
-/* iPhone-style Spring Transitions, Raised Glass Dock & LaziBook Vinyl Disc */
+/* iPhone-style 120fps GPU-Composited Spring Transitions (transform + opacity only) */
 @keyframes iosViewEnter {
   0% {
     opacity: 0;
-    transform: translateY(10px) scale(0.985);
+    transform: translate3d(0, 10px, 0) scale(0.988);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes iosTabSlideLeft {
+  0% {
+    opacity: 0.35;
+    transform: translate3d(24px, 0, 0) scale(0.992);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes iosTabSlideRight {
+  0% {
+    opacity: 0.35;
+    transform: translate3d(-24px, 0, 0) scale(0.992);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 @keyframes iosReaderPush {
   0% {
-    opacity: 0;
-    transform: scale(0.96) translateY(16px);
+    opacity: 0.55;
+    transform: translate3d(26px, 0, 0) scale(0.985);
   }
   100% {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes iosBackdropFade {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
   }
 }
 
 @keyframes iosSheetUp {
   0% {
-    opacity: 0.92;
-    transform: translateY(18px);
+    opacity: 0.88;
+    transform: translate3d(0, 22px, 0) scale(0.985);
   }
   100% {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 @keyframes iosDrawerSlideRight {
   0% {
     opacity: 0.92;
-    transform: translateX(20px);
+    transform: translate3d(22px, 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 @keyframes iosDrawerSlideLeft {
   0% {
     opacity: 0.92;
-    transform: translateX(-20px);
+    transform: translate3d(-22px, 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0);
   }
 }
 
@@ -410,28 +441,61 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 }
 
 .ios-view-enter {
-  animation: iosViewEnter 280ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosViewEnter 240ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+
+.ios-tab-forward {
+  animation: iosTabSlideLeft 260ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+
+.ios-tab-backward {
+  animation: iosTabSlideRight 260ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 
 .ios-reader-enter {
-  animation: iosReaderPush 300ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosReaderPush 280ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+
+.ios-backdrop-fade {
+  animation: iosBackdropFade 180ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
 }
 
 .ios-sheet-enter {
-  animation: iosSheetUp 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: iosSheetUp 240ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
 }
 
 .ios-drawer-right {
-  animation: iosDrawerSlideRight 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: iosDrawerSlideRight 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
 }
 
 .ios-drawer-left {
-  animation: iosDrawerSlideLeft 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: iosDrawerSlideLeft 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* Pause all decorative/disc animations immediately when app is backgrounded (zero heat/battery drain) */
+html[data-app-hidden='true'] *,
+html[data-app-hidden='true'] *::before,
+html[data-app-hidden='true'] *::after {
+  animation-play-state: paused !important;
+}
+
+/* Low-RAM offscreen list virtualization for smooth 120Hz scrolling on both S24 Ultra & budget phones */
+.perf-list-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 58px;
+  contain: layout style paint;
+}
+
+.perf-section {
+  contain: layout style;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .ios-view-enter,
+  .ios-tab-forward,
+  .ios-tab-backward,
   .ios-reader-enter,
+  .ios-backdrop-fade,
   .ios-sheet-enter,
   .ios-drawer-right,
   .ios-drawer-left {
@@ -453,36 +517,35 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 }
 
 .ios-glass-dock {
-  background: rgba(251, 249, 245, 0.54);
-  backdrop-filter: blur(22px) saturate(190%);
-  -webkit-backdrop-filter: blur(22px) saturate(190%);
+  background: rgba(251, 249, 245, 0.66);
+  backdrop-filter: blur(16px) saturate(175%);
+  -webkit-backdrop-filter: blur(16px) saturate(175%);
   box-shadow:
-    0 14px 36px rgba(28, 22, 16, 0.16),
-    0 2px 8px rgba(28, 22, 16, 0.08),
+    0 12px 30px rgba(28, 22, 16, 0.14),
+    0 2px 6px rgba(28, 22, 16, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .dark .ios-glass-dock {
-  background: rgba(24, 26, 32, 0.56);
+  background: rgba(24, 26, 32, 0.68);
   box-shadow:
-    0 16px 40px rgba(0, 0, 0, 0.55),
-    0 2px 8px rgba(0, 0, 0, 0.35),
+    0 14px 34px rgba(0, 0, 0, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.32),
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .ios-dock-pill {
   transition:
-    transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
-    box-shadow 220ms cubic-bezier(0.32, 0.72, 0, 1),
-    background-color 220ms ease;
+    transform 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 180ms ease;
   box-shadow:
-    0 3px 10px rgba(28, 22, 16, 0.07),
+    0 3px 8px rgba(28, 22, 16, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .dark .ios-dock-pill {
   box-shadow:
-    0 3px 10px rgba(0, 0, 0, 0.35),
+    0 3px 8px rgba(0, 0, 0, 0.32),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
@@ -492,51 +555,50 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 
 .ios-dock-pill-active {
   box-shadow:
-    0 8px 20px rgba(146, 64, 14, 0.24),
+    0 8px 18px rgba(146, 64, 14, 0.22),
     0 2px 6px rgba(0, 0, 0, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .dark .ios-dock-pill-active {
   box-shadow:
-    0 8px 20px rgba(217, 119, 6, 0.22),
-    0 2px 8px rgba(0, 0, 0, 0.45),
+    0 8px 18px rgba(217, 119, 6, 0.2),
+    0 2px 8px rgba(0, 0, 0, 0.42),
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .vinyl-spin-playing {
-  animation: spinVinylDisc 6.5s linear infinite;
+  animation: spinVinylDisc 7s linear infinite;
 }
 
 .vinyl-spin-reading {
-  animation: spinVinylDisc 20s linear infinite;
+  animation: spinVinylDisc 22s linear infinite;
 }
 
 /* iPhone Liquid-Glass Rounded Selection Bars & Sliding Transparent Water-Drop */
 .ios-liquid-bar {
-  background: rgba(248, 245, 239, 0.48);
-  backdrop-filter: blur(22px) saturate(190%);
-  -webkit-backdrop-filter: blur(22px) saturate(190%);
+  background: rgba(248, 245, 239, 0.56);
+  backdrop-filter: blur(14px) saturate(175%);
+  -webkit-backdrop-filter: blur(14px) saturate(175%);
   box-shadow:
-    0 8px 24px rgba(24, 20, 16, 0.08),
+    0 6px 20px rgba(24, 20, 16, 0.07),
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
     inset 0 -1px 0 rgba(24, 20, 16, 0.06);
 }
 
 .dark .ios-liquid-bar {
-  background: rgba(26, 29, 36, 0.48);
+  background: rgba(26, 29, 36, 0.56);
   box-shadow:
-    0 10px 28px rgba(0, 0, 0, 0.42),
+    0 8px 24px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.16),
     inset 0 -1px 0 rgba(0, 0, 0, 0.28);
 }
 
 .ios-liquid-pill {
   transition:
-    transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
-    box-shadow 220ms cubic-bezier(0.32, 0.72, 0, 1),
-    background-color 220ms ease,
-    color 180ms ease;
+    transform 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 180ms ease,
+    color 160ms ease;
 }
 
 .ios-liquid-pill:active {
@@ -544,79 +606,66 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 }
 
 .ios-liquid-pill-active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.62) 0%, rgba(255, 255, 255, 0.36) 100%);
-  backdrop-filter: blur(14px) saturate(200%);
-  -webkit-backdrop-filter: blur(14px) saturate(200%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.66) 0%, rgba(255, 255, 255, 0.42) 100%);
   box-shadow:
-    0 6px 18px rgba(var(--app-accent-rgb), 0.16),
-    0 1px 4px rgba(28, 22, 16, 0.08),
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.96),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.45);
+    0 5px 14px rgba(var(--app-accent-rgb), 0.15),
+    0 1px 3px rgba(28, 22, 16, 0.08),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.96);
 }
 
 .dark .ios-liquid-pill-active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.08) 100%);
-  backdrop-filter: blur(14px) saturate(200%);
-  -webkit-backdrop-filter: blur(14px) saturate(200%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.1) 100%);
   box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.42),
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.34),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.08);
+    0 5px 14px rgba(0, 0, 0, 0.38),
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.3);
 }
 
-/* Sliding Transparent Glass Water-Drop Indicator (iOS Liquid Glass spring glide) */
+/* Sliding Transparent Glass Water-Drop Indicator (120fps iOS Liquid Glass spring glide) */
 .liquid-waterdrop-thumb {
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.66) 0%,
-    rgba(255, 255, 255, 0.34) 55%,
-    rgba(255, 255, 255, 0.48) 100%
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(255, 255, 255, 0.42) 55%,
+    rgba(255, 255, 255, 0.56) 100%
   );
-  backdrop-filter: blur(14px) saturate(210%) brightness(1.06);
-  -webkit-backdrop-filter: blur(14px) saturate(210%) brightness(1.06);
   border: 1px solid rgba(255, 255, 255, 0.85);
   box-shadow:
-    0 6px 18px rgba(var(--app-accent-rgb), 0.16),
-    0 2px 6px rgba(20, 18, 16, 0.08),
-    inset 0 1.5px 2px rgba(255, 255, 255, 0.98),
-    inset 0 -1.5px 3px rgba(var(--app-accent-rgb), 0.12);
+    0 5px 14px rgba(var(--app-accent-rgb), 0.15),
+    0 2px 5px rgba(20, 18, 16, 0.07),
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.98);
   transition:
-    transform 340ms cubic-bezier(0.32, 0.72, 0, 1),
-    width 340ms cubic-bezier(0.32, 0.72, 0, 1),
-    height 340ms cubic-bezier(0.32, 0.72, 0, 1),
-    box-shadow 260ms ease;
-  will-change: transform, width, height;
+    transform 300ms cubic-bezier(0.32, 0.72, 0, 1),
+    width 300ms cubic-bezier(0.32, 0.72, 0, 1),
+    height 300ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
 }
 
 .dark .liquid-waterdrop-thumb {
   background: linear-gradient(
     180deg,
     rgba(255, 255, 255, 0.24) 0%,
-    rgba(255, 255, 255, 0.1) 55%,
-    rgba(255, 255, 255, 0.16) 100%
+    rgba(255, 255, 255, 0.11) 55%,
+    rgba(255, 255, 255, 0.18) 100%
   );
   border: 1px solid rgba(255, 255, 255, 0.28);
   box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.45),
-    inset 0 1.5px 2px rgba(255, 255, 255, 0.4),
-    inset 0 -1.5px 3px rgba(var(--app-accent-rgb), 0.22);
+    0 6px 18px rgba(0, 0, 0, 0.42),
+    inset 0 1.5px 2px rgba(255, 255, 255, 0.36);
 }
 
 .liquid-waterdrop-gliding {
   box-shadow:
-    0 10px 24px rgba(var(--app-accent-rgb), 0.22),
-    0 3px 10px rgba(20, 18, 16, 0.12),
-    inset 0 2px 3px rgba(255, 255, 255, 1),
-    inset 0 -2px 4px rgba(var(--app-accent-rgb), 0.18);
+    0 8px 20px rgba(var(--app-accent-rgb), 0.2),
+    0 2px 8px rgba(20, 18, 16, 0.1),
+    inset 0 2px 3px rgba(255, 255, 255, 1);
 }
 
 .ios-liquid-btn {
   transition:
-    transform 200ms cubic-bezier(0.32, 0.72, 0, 1),
-    box-shadow 200ms cubic-bezier(0.32, 0.72, 0, 1),
-    opacity 180ms ease;
+    transform 180ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 160ms ease;
   box-shadow:
-    0 6px 16px rgba(28, 22, 16, 0.14),
+    0 5px 14px rgba(28, 22, 16, 0.13),
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
@@ -624,3 +673,41 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
   transform: scale(0.95);
 }
 
+/* iPhone Frosted-Glass Translucent Floating Overlay & Popover Surface (Thermal-Friendly 16px Blur) */
+.ios-frosted-backdrop {
+  background: rgba(15, 16, 20, 0.3);
+  backdrop-filter: blur(5px) saturate(130%);
+  -webkit-backdrop-filter: blur(5px) saturate(130%);
+}
+
+.ios-frosted-surface {
+  background: rgba(250, 248, 244, 0.86);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  box-shadow:
+    0 20px 50px rgba(20, 16, 12, 0.22),
+    0 5px 14px rgba(20, 16, 12, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.dark .ios-frosted-surface {
+  background: rgba(24, 26, 32, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 22px 54px rgba(0, 0, 0, 0.56),
+    0 5px 16px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.ios-floating-shadow {
+  box-shadow:
+    0 12px 32px rgba(24, 20, 16, 0.08),
+    0 2px 8px rgba(24, 20, 16, 0.04);
+}
+
+.dark .ios-floating-shadow {
+  box-shadow:
+    0 14px 36px rgba(0, 0, 0, 0.38),
+    0 2px 8px rgba(0, 0, 0, 0.24);
+}

@@ -1,4 +1,5 @@
 import type { GeminiVoiceName } from '../types/book';
+import { cleanParagraphText, isJunkScrapedText } from './bookCleaner';
 
 export interface OnDeviceVoiceProfile {
   description: string;
@@ -250,26 +251,20 @@ export function extractWebChapterClientSide(
     };
   }
 
-  // Strip scripts/styles/navigation noise safely via regex (works in Node tests & browsers)
+  // Strip <head>, scripts/styles/navigation noise safely via regex (works in Node tests & browsers)
+  const h1Match = trimmed.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const titleMatch = trimmed.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+
   const cleaned = trimmed
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<(meta|link|base)\b[^>]*\/?>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-    .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, ' ');
+    .replace(/<(nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, ' ');
 
-  const h1Match = cleaned.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  const titleMatch = cleaned.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const stripTags = (s: string) =>
-    s
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
-      .replace(/\s+/g, ' ')
-      .trim();
+  const stripTags = (s: string) => cleanParagraphText(s);
 
   const title = stripTags(h1Match?.[1] || titleMatch?.[1] || '') || 'Chương tải từ Web';
 
@@ -279,7 +274,7 @@ export function extractWebChapterClientSide(
   let m: RegExpExecArray | null;
   while ((m = pRegex.exec(cleaned)) !== null) {
     const text = stripTags(m[1]);
-    if (text.length >= 18) {
+    if (text.length >= 18 && !isJunkScrapedText(text)) {
       paragraphs.push(text);
     }
   }
@@ -289,7 +284,7 @@ export function extractWebChapterClientSide(
       .replace(/<(br|\/div|\/p|\/li|\/h[1-6])[^>]*>/gi, '\n')
       .split('\n')
       .map(stripTags)
-      .filter((line) => line.length >= 24);
+      .filter((line) => line.length >= 24 && !isJunkScrapedText(line));
     if (fallbackBlocks.length > paragraphs.length) {
       paragraphs.length = 0;
       paragraphs.push(...fallbackBlocks);

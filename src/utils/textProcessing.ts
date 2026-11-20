@@ -224,3 +224,96 @@ export function computeReadingProgress(
   const pct = Math.round(((readBefore + clampedPara + 1) / totalParagraphs) * 100);
   return Math.min(100, Math.max(1, pct));
 }
+
+export function doesBookmarkMatchPage(
+  bm: { chapterId: string; paragraphIndex: number; pageIndex?: number },
+  chapterId: string,
+  pageIndex: number,
+  isPaginated: boolean,
+  paragraphIndex: number
+): boolean {
+  if (bm.chapterId !== chapterId) return false;
+  if (isPaginated) {
+    if (typeof bm.pageIndex === 'number') {
+      return bm.pageIndex === pageIndex;
+    }
+    return pageIndex === 0 && bm.paragraphIndex === paragraphIndex;
+  }
+  return bm.paragraphIndex === paragraphIndex;
+}
+
+export function isPageBookmarked(
+  bookmarks: Array<{ chapterId: string; paragraphIndex: number; pageIndex?: number }>,
+  chapterId: string | undefined,
+  pageIndex: number,
+  isPaginated: boolean,
+  paragraphIndex: number
+): boolean {
+  if (!chapterId) return false;
+  return bookmarks.some((bm) =>
+    doesBookmarkMatchPage(bm, chapterId, pageIndex, isPaginated, paragraphIndex)
+  );
+}
+
+export function togglePageBookmark<
+  T extends {
+    id: string;
+    chapterId: string;
+    chapterTitle: string;
+    paragraphIndex: number;
+    pageIndex?: number;
+    excerpt: string;
+    createdAt: number;
+  },
+>(
+  bookmarks: T[],
+  params: {
+    chapterId: string;
+    chapterTitle: string;
+    pageIndex: number;
+    isPaginated: boolean;
+    paragraphIndex: number;
+    excerpt: string;
+    now?: number;
+  }
+): { nextBookmarks: T[]; added: boolean } {
+  const exists = isPageBookmarked(
+    bookmarks,
+    params.chapterId,
+    params.pageIndex,
+    params.isPaginated,
+    params.paragraphIndex
+  );
+
+  if (exists) {
+    return {
+      added: false,
+      nextBookmarks: bookmarks.filter(
+        (bm) =>
+          !doesBookmarkMatchPage(
+            bm,
+            params.chapterId,
+            params.pageIndex,
+            params.isPaginated,
+            params.paragraphIndex
+          )
+      ),
+    };
+  }
+
+  const created = {
+    id: `bm-${params.now ?? Date.now()}-${params.pageIndex}`,
+    chapterId: params.chapterId,
+    chapterTitle: params.chapterTitle,
+    paragraphIndex: params.paragraphIndex,
+    pageIndex: params.isPaginated ? params.pageIndex : undefined,
+    excerpt: params.excerpt,
+    createdAt: params.now ?? Date.now(),
+  } as T;
+
+  return {
+    added: true,
+    nextBookmarks: [...bookmarks, created],
+  };
+}
+

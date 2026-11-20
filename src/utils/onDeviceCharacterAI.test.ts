@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHARACTER_VOICE_POOL,
+  READING_VOICE_STYLES,
   analyzeChapterOnDevice,
+  applyNarratorVoiceToCharacters,
   buildAutoVoiceAssignments,
+  computeReadingStyleModulation,
   detectEmotionFromLine,
 } from './onDeviceCharacterAI.ts';
 
@@ -74,8 +77,62 @@ test('buildAutoVoiceAssignments assigns distinct voices without overriding exist
   }
 });
 
-test('detectEmotionFromLine detects Vietnamese emotional tones accurately', () => {
+test('detectEmotionFromLine detects rich Vietnamese situational emotions accurately', () => {
   assert.match(detectEmotionFromLine('Cút ngay!', 'hắn quát lớn'), /Mạnh mẽ|giận dữ/);
+  assert.match(detectEmotionFromLine('Liệu hồn đấy!', 'hắn đe nẹt'), /Dọa nạt/);
+  assert.match(detectEmotionFromLine('Ta thề quyết chí tiến lên!', 'chàng hô hào'), /Hùng hồn|quyết chí/);
+  assert.match(detectEmotionFromLine('Chạy mau!', 'nàng hoảng sợ run rẩy'), /Hoảng sợ/);
+  assert.match(detectEmotionFromLine('Không thể nào!', 'cô sửng sốt bất ngờ'), /Bất ngờ/);
+  assert.match(detectEmotionFromLine('Ta sẽ không lùi bước.', 'chàng kiên định đĩnh đạc đáp'), /Kiên định|đĩnh đạc/);
   assert.match(detectEmotionFromLine('Đi chậm thôi...', 'cô thì thầm'), /Thì thầm/);
   assert.match(detectEmotionFromLine('Con tìm gì thế?', ''), /Tò mò|nghi vấn/);
 });
+
+test('computeReadingStyleModulation differentiates novel, essay, and selfhelp and narrator voice propagates silently', () => {
+  assert.ok(READING_VOICE_STYLES.some((s) => s.id === 'novel'));
+  assert.ok(READING_VOICE_STYLES.some((s) => s.id === 'essay'));
+  assert.ok(READING_VOICE_STYLES.some((s) => s.id === 'selfhelp'));
+
+  const panicNovel = computeReadingStyleModulation('novel', 'Hoảng sợ, dồn dập', 1.0, 1.0);
+  const griefNovel = computeReadingStyleModulation('novel', 'Đau thương, buồn khổ, khóc', 1.0, 1.0);
+  const essayTone = computeReadingStyleModulation('essay', 'Tự nhiên', 1.0, 1.0);
+  const selfhelpTone = computeReadingStyleModulation('selfhelp', 'Tự nhiên', 1.0, 1.0);
+
+  assert.ok(panicNovel.rate > griefNovel.rate);
+  assert.ok(panicNovel.pitch > griefNovel.pitch);
+  assert.ok(essayTone.rate < selfhelpTone.rate);
+
+  const analysis = analyzeChapterOnDevice('Ch1', ['"Nào!" — Hắn quát.', '"Vâng." — Cô đáp.'], 'novel');
+  const inherited = buildAutoVoiceAssignments(
+    analysis.characters,
+    {
+      narrator: {
+        characterId: 'narrator',
+        source: 'gemini',
+        geminiVoice: 'Charon',
+        stylePrompt: 'Narrator',
+        browserPitch: 0.85,
+        browserRate: 0.95,
+      },
+    },
+    { inheritNarratorVoice: true }
+  );
+  const charKeys = Object.keys(inherited).filter((k) => k !== 'narrator');
+  assert.ok(charKeys.length > 0);
+  for (const k of charKeys) {
+    assert.equal(inherited[k].geminiVoice, 'Charon');
+  }
+
+  const updated = applyNarratorVoiceToCharacters(inherited, {
+    characterId: 'narrator',
+    source: 'gemini',
+    geminiVoice: 'Aoede',
+    stylePrompt: 'Narrator updated',
+    browserPitch: 1.1,
+    browserRate: 1.0,
+  });
+  for (const k of charKeys) {
+    assert.equal(updated[k].geminiVoice, 'Aoede');
+  }
+});
+

@@ -50,13 +50,15 @@ import {
   buildUnifiedFontCatalog,
 } from '../utils/studioCatalog';
 import { AmbientSoundPanel } from './AmbientSoundPanel';
-import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
+import { GlassSelect } from './GlassSelect';
 import { resolveApiUrl } from '../utils/apiClient';
 import {
   getOnDeviceVoiceTone,
   speakOnDevice,
   stopOnDeviceSpeech,
+  unlockAudioPlaybackSync,
 } from '../utils/deviceTtsEngine';
+import { installOfflineVoicePack } from '../utils/offlineVoicePacks';
 
 interface VoiceStudioViewProps {
   customFonts: CustomFontAsset[];
@@ -83,6 +85,8 @@ interface BuilderImportedVoiceDraft {
   analyzedProfile: OnDeviceVoiceProfile;
 }
 
+type StudioDisclosureKey = 'builder-help' | 'voice-help' | 'font-help' | 'ambient-help' | null;
+
 export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   customFonts,
   onAddCustomFont,
@@ -100,12 +104,9 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   standaloneDeviceMode = true,
 }) => {
   const fontInputRef = useRef<HTMLInputElement>(null);
-  const voiceInputRef = useRef<HTMLInputElement>(null);
   const builderVoiceInputRef = useRef<HTMLInputElement>(null);
-  const presetBarRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<FilteredAudioPlayer | null>(null);
 
-  const [isUploadingVoice, setIsUploadingVoice] = useState(false);
   const [isAnalyzingBuilderVoice, setIsAnalyzingBuilderVoice] = useState(false);
   const [builderImportedVoice, setBuilderImportedVoice] =
     useState<BuilderImportedVoiceDraft | null>(null);
@@ -114,10 +115,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   // Voice Studio Builder State
   const [studioName, setStudioName] = useState('Giọng Kể Chuyện Ấm Trầm');
   const [selectedPresetId, setSelectedPresetId] = useState<string>(VOICE_TONE_PRESETS[0].id);
-  const { thumb: presetThumb, isGliding: presetGliding } = useLiquidDropIndicator(
-    selectedPresetId,
-    presetBarRef
-  );
   const [baseGeminiVoice, setBaseGeminiVoice] = useState<GeminiVoiceName>('Kore');
   const [tone, setTone] = useState<VoiceToneSettings>(VOICE_TONE_PRESETS[0].tone);
   const [sampleText, setSampleText] = useState(
@@ -129,6 +126,12 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   const [expandedFontIds, setExpandedFontIds] = useState<Record<string, boolean>>({});
   const [expandedVoiceIds, setExpandedVoiceIds] = useState<Record<string, boolean>>({});
   const [deviceVoices, setDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voicePreviewNotice, setVoicePreviewNotice] = useState('');
+  const [activeDisclosure, setActiveDisclosure] = useState<StudioDisclosureKey>(null);
+
+  const toggleDisclosure = (key: Exclude<StudioDisclosureKey, null>) => {
+    setActiveDisclosure((prev) => (prev === key ? null : key));
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
@@ -241,56 +244,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     }
   };
 
-  const handleUploadVoices = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setIsUploadingVoice(true);
-    try {
-      for (const file of Array.from(files)) {
-        const asset = await createExternalVoiceFromFile(file);
-        asset.toneSettings = { ...DEFAULT_VOICE_TONE };
-        asset.originType = 'imported';
-        asset.originLabel = 'File voice gốc import';
-
-        // Always profile immediately on-device via Web Audio DSP hardware
-        const onDeviceProfile = await analyzeVoiceSampleOnDevice(asset.dataUrl, asset.fileName);
-        asset.durationSec = onDeviceProfile.durationSec;
-        asset.analyzedProfile = {
-          ...onDeviceProfile,
-          description: `File voice gốc import · ${onDeviceProfile.description}`,
-        };
-
-        if (!standaloneDeviceMode) {
-          const [, b64] = asset.dataUrl.split(',');
-          try {
-            const resp = await fetch(resolveApiUrl('/api/ai/analyze-voice-sample'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                audioBase64: b64,
-                mimeType: asset.mimeType,
-                fileName: asset.fileName,
-              }),
-            });
-            if (resp.ok) {
-              const cloudProfile = await resp.json();
-              asset.analyzedProfile = {
-                ...asset.analyzedProfile,
-                ...cloudProfile,
-                description: `File voice gốc import · ${cloudProfile.description || onDeviceProfile.description}`,
-              };
-            }
-          } catch {
-            // Keep on-device DSP profile cleanly
-          }
-        }
-        await onAddExternalVoice(asset);
-      }
-    } finally {
-      setIsUploadingVoice(false);
-      if (voiceInputRef.current) voiceInputRef.current.value = '';
-    }
-  };
-
   const stopAnyPreview = () => {
     getPlayer().stop();
     stopOnDeviceSpeech();
@@ -298,6 +251,9 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   };
 
   const togglePreviewVoice = async (voice: ExternalVoiceAsset) => {
+    // Synchronous audio unlock inside user tap gesture before any await
+    unlockAudioPlaybackSync();
+    setVoicePreviewNotice('');
     const key = `external:${voice.id}`;
     if (playingVoiceId === key) {
       stopAnyPreview();
@@ -309,19 +265,34 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       if (voice.dataUrl) {
         await getPlayer().play(voice.dataUrl, voice.toneSettings || DEFAULT_VOICE_TONE, 1.0);
       } else {
-        await speakOnDevice({
+        const ok = await speakOnDevice({
           text: sampleText,
           lang: 'vi-VN',
           pitch: voice.toneSettings?.pitch ?? 1.0,
           rate: voice.toneSettings?.rate ?? 1.0,
         });
+        if (!ok) {
+          const baseVoice = voice.analyzedProfile?.recommendedBaseVoice || 'Kore';
+          const pack = await installOfflineVoicePack(baseVoice);
+          await getPlayer().play(
+            pack.calibrationWavBase64,
+            voice.toneSettings || DEFAULT_VOICE_TONE,
+            1.0
+          );
+          setVoicePreviewNotice('Đang phát mẫu âm sắc nội bộ cho cấu hình giọng đã import.');
+        }
       }
+    } catch (err) {
+      setVoicePreviewNotice(err instanceof Error ? err.message : 'Không thể phát thử âm thanh.');
     } finally {
       setPlayingVoiceId((curr) => (curr === key ? null : curr));
     }
   };
 
   const togglePreviewBuiltinVoice = async (voiceName: GeminiVoiceName) => {
+    // Synchronous audio unlock inside user tap gesture before any await
+    unlockAudioPlaybackSync();
+    setVoicePreviewNotice('');
     const key = `gemini:${voiceName}`;
     if (playingVoiceId === key) {
       stopAnyPreview();
@@ -353,19 +324,40 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           // Fall through seamlessly to on-device speech
         }
       }
-      await speakOnDevice({
+      const spoke = await speakOnDevice({
         text: sampleText,
         lang: 'vi-VN',
         pitch: presetTone.pitch,
         rate: presetTone.rate,
         preferGender: presetTone.preferGender,
       });
+      if (!spoke) {
+        const pack = await installOfflineVoicePack(voiceName);
+        await getPlayer().play(
+          pack.calibrationWavBase64,
+          {
+            warmthDb: pack.phonemeProfile.warmthDb,
+            clarityDb: pack.phonemeProfile.clarityDb,
+            pitch: presetTone.pitch,
+            rate: presetTone.rate,
+            styleDirection: pack.displayName,
+          },
+          1.0
+        );
+        setVoicePreviewNotice(
+          `Đã phát âm sắc mẫu offline (${pack.displayName}). Để đọc toàn văn trên trình duyệt web không có TTS, hãy mở bằng app APK Android.`
+        );
+      }
+    } catch (err) {
+      setVoicePreviewNotice(err instanceof Error ? err.message : 'Không thể phát thử âm thanh.');
     } finally {
       setPlayingVoiceId((curr) => (curr === key ? null : curr));
     }
   };
 
   const togglePreviewDeviceVoice = async (voice: SpeechSynthesisVoice) => {
+    unlockAudioPlaybackSync();
+    setVoicePreviewNotice('');
     const key = `browser:${voice.voiceURI}`;
     if (playingVoiceId === key) {
       stopAnyPreview();
@@ -374,19 +366,23 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     stopAnyPreview();
     setPlayingVoiceId(key);
     try {
-      await speakOnDevice({
+      const ok = await speakOnDevice({
         text: sampleText,
         lang: voice.lang || 'vi-VN',
         voiceURI: voice.voiceURI,
         pitch: 1.0,
         rate: 1.0,
       });
+      if (!ok) {
+        setVoicePreviewNotice('Trình duyệt không phản hồi bộ đọc TTS mặc định của hệ điều hành.');
+      }
     } finally {
       setPlayingVoiceId((curr) => (curr === key ? null : curr));
     }
   };
 
   const handleTestStudioEq = async () => {
+    unlockAudioPlaybackSync();
     const player = getPlayer();
     if (isTestingEq) {
       player.stop();
@@ -434,7 +430,11 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
         preferGender: presetTone.preferGender,
       });
       if (!ok) {
-        setStudioFeedback('Thiết bị chưa bật giọng đọc văn bản (TTS) trong Cài đặt hệ thống.');
+        const pack = await installOfflineVoicePack(baseGeminiVoice);
+        await player.play(pack.calibrationWavBase64, tone, 1.0);
+        setStudioFeedback(
+          'Đang phát thử âm sắc EQ qua gói giọng nội bộ.'
+        );
       }
     } catch (err) {
       setStudioFeedback(err instanceof Error ? err.message : 'Không thể phát thử âm thanh.');
@@ -522,69 +522,77 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   };
 
   return (
-    <main className="w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-4 pb-4 sm:pt-6 sm:pb-6 space-y-5 sm:space-y-7 overflow-x-clip">
+    <main className="w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3.5 pb-4 sm:pt-5 sm:pb-6 space-y-4 sm:space-y-6 overflow-x-clip">
 
       {/* Studio Voice Equalizer & Custom Profile Builder */}
       <section
         aria-label="Phòng chỉnh giọng đọc và âm sắc"
-        className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-4 sm:p-6 space-y-5 min-w-0 overflow-hidden"
+        className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-5 space-y-3.5 min-w-0 overflow-hidden"
       >
-        <div className="space-y-3 min-w-0">
+        <div className="space-y-2.5 min-w-0">
           <div className="space-y-1 min-w-0">
-            <h2 className="text-base font-semibold flex items-center gap-2 text-stone-900 dark:text-stone-100">
-              <Sliders className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-              <span>Chế tác Giọng Đọc</span>
-            </h2>
-            <p className="text-xs text-stone-500 leading-relaxed">
-              Chọn mẫu âm sắc có sẵn hoặc kéo thanh Equalizer để tạo bộ giọng mới dùng cho sách nói.
-            </p>
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Sliders className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <h2 className="text-[13px] font-semibold text-stone-900 dark:text-stone-100 truncate">
+                  Chế tác Giọng Đọc
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => toggleDisclosure('builder-help')}
+                aria-expanded={activeDisclosure === 'builder-help'}
+                aria-label="Xem mô tả chế tác giọng đọc"
+                className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+              >
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform ${
+                    activeDisclosure === 'builder-help' ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+            </div>
+            {activeDisclosure === 'builder-help' && (
+              <p className="text-[11px] leading-snug text-stone-500">
+                Chọn mẫu âm sắc có sẵn hoặc kéo thanh Equalizer để tạo bộ giọng mới dùng cho sách nói.
+              </p>
+            )}
           </div>
 
-          <div
-            ref={presetBarRef}
-            className="relative grid grid-cols-2 sm:flex sm:flex-wrap gap-1.5 p-1.5 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 w-full"
-          >
-            <LiquidDropThumb
-              thumb={presetThumb}
-              isGliding={presetGliding}
-              roundedClass="rounded-xl"
+          <div>
+            <label className="block text-[10.5px] font-medium text-stone-500 mb-1">
+              Mẫu âm sắc sẵn có
+            </label>
+            <GlassSelect
+              ariaLabel="Chọn mẫu âm sắc"
+              title="Mẫu âm sắc sẵn có"
+              value={selectedPresetId}
+              onChange={(val) => {
+                const preset = VOICE_TONE_PRESETS.find((p) => p.id === val);
+                if (!preset) return;
+                setSelectedPresetId(preset.id);
+                setTone({ ...preset.tone });
+                setStudioName(preset.label);
+              }}
+              options={VOICE_TONE_PRESETS.map((preset) => ({
+                value: preset.id,
+                label: preset.label,
+              }))}
             />
-            {VOICE_TONE_PRESETS.map((preset) => {
-              const isSelected = selectedPresetId === preset.id;
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  data-liquid-key={preset.id}
-                  onClick={() => {
-                    setSelectedPresetId(preset.id);
-                    setTone({ ...preset.tone });
-                    setStudioName(preset.label);
-                  }}
-                  className={`relative z-10 ios-liquid-pill px-3 py-2 rounded-xl text-[11px] font-medium text-center min-h-[36px] ${
-                    isSelected
-                      ? 'text-amber-800 dark:text-amber-300 font-semibold'
-                      : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
-                  }`}
-                >
-                  {preset.label}
-                </button>
-              );
-            })}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
-          <div className="lg:col-span-6 space-y-4 min-w-0">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start min-w-0">
+          <div className="lg:col-span-6 space-y-3 min-w-0">
             {/* Step 1: Optional Import Original Voice File BEFORE Adjusting & Saving */}
-            <div className="p-4 rounded-xl border border-dashed border-amber-800/40 dark:border-amber-500/35 bg-amber-50/45 dark:bg-amber-950/15 space-y-3 min-w-0">
-              <div className="space-y-1 min-w-0">
-                <div className="flex items-center gap-2 text-xs font-semibold text-stone-900 dark:text-stone-100">
-                  <FileAudio className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+            <div className="p-3 rounded-xl border border-dashed border-amber-800/40 dark:border-amber-500/35 bg-amber-50/45 dark:bg-amber-950/15 space-y-2 min-w-0">
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-900 dark:text-stone-100">
+                  <FileAudio className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
                   <span>Bước 1 · Import voice gốc để tinh chỉnh (tùy chọn)</span>
                 </div>
-                <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
-                  Chọn file .MP3/.WAV/.M4A từ máy, điều chỉnh EQ, Cao độ và Tốc độ, nghe thử rồi bấm Lưu thành Voice mới.
+                <p className="text-[10px] text-stone-600 dark:text-stone-400 leading-snug">
+                  Chọn file .MP3/.WAV/.M4A từ máy, chỉnh EQ rồi bấm Lưu thành Voice mới.
                 </p>
               </div>
               <input
@@ -653,17 +661,17 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                 <label className="block text-[11px] font-medium text-stone-500 mb-1">
                   Chất giọng AI nền
                 </label>
-                <select
+                <GlassSelect<GeminiVoiceName>
+                  ariaLabel="Chọn chất giọng AI nền"
+                  title="Chất giọng AI nền"
                   value={baseGeminiVoice}
-                  onChange={(e) => setBaseGeminiVoice(e.target.value as GeminiVoiceName)}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-                >
-                  {GEMINI_VOICES.map((gv) => (
-                    <option key={gv.name} value={gv.name}>
-                      {gv.label} — {gv.tone}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setBaseGeminiVoice}
+                  options={GEMINI_VOICES.map((gv) => ({
+                    value: gv.name,
+                    label: gv.label,
+                    subtitle: gv.tone,
+                  }))}
+                />
               </div>
             </div>
 
@@ -864,49 +872,47 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
         </div>
       </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8 min-w-0">
-        {/* Unified All Voices Section (Global Default Reading Voice for All Books) */}
-        <section className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-4 sm:p-6 space-y-4 min-w-0 overflow-hidden">
-          <div className="space-y-3 min-w-0">
-            <div className="space-y-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-base font-semibold flex items-center gap-2 min-w-0">
-                  <Volume2 className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                  <span className="truncate">Tất cả Voice</span>
-                </h2>
-                <span className="text-xs font-medium text-stone-500 tabular-nums shrink-0">
-                  {externalVoices.length + GEMINI_VOICES.length + deviceVoices.length} giọng
-                </span>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 min-w-0">
+        {/* Unified All Voices Section (Global Default Reading Voice) */}
+        <section className="ios-floating-shadow border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-2.5 min-w-0 overflow-hidden">
+          <div className="space-y-1.5 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Volume2 className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <h2 className="text-[13px] font-semibold truncate">Tất cả Voice</h2>
+                <button
+                  type="button"
+                  onClick={() => toggleDisclosure('voice-help')}
+                  aria-expanded={activeDisclosure === 'voice-help'}
+                  aria-label="Xem mô tả Tất cả Voice"
+                  className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform ${
+                      activeDisclosure === 'voice-help' ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
               </div>
-              <p className="text-xs text-stone-500 leading-relaxed">
-                Chọn 1 giọng đọc mặc định dùng chung cho tất cả sách. Voice nhân vật sẽ tự vào từng cuốn sách để quét và gán sau.
-              </p>
+              <span className="text-[10.5px] font-medium text-stone-500 tabular-nums shrink-0">
+                {externalVoices.length + GEMINI_VOICES.length + deviceVoices.length} giọng
+              </span>
             </div>
-            <input
-              ref={voiceInputRef}
-              type="file"
-              accept="audio/*,.mp3,.wav,.ogg,.m4a"
-              multiple
-              className="hidden"
-              onChange={(e) => handleUploadVoices(e.target.files)}
-            />
-            <button
-              type="button"
-              disabled={isUploadingVoice}
-              onClick={() => voiceInputRef.current?.click()}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 disabled:opacity-50 min-h-[42px]"
-            >
-              {isUploadingVoice ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-              ) : (
-                <Upload className="w-3.5 h-3.5 shrink-0" />
-              )}
-              <span>Import file voice</span>
-            </button>
+            {activeDisclosure === 'voice-help' && (
+              <p className="text-[11px] leading-snug text-stone-500">
+                Chọn 1 giọng đọc mặc định cho toàn bộ sách. Để tải các gói giọng Offline, hãy mở mục Gói giọng đọc trong Cài đặt.
+              </p>
+            )}
+
+            {voicePreviewNotice && (
+              <div className="text-[11px] text-amber-800 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-700/25 rounded-lg px-2.5 py-1.5 leading-snug">
+                {voicePreviewNotice}
+              </div>
+            )}
           </div>
 
-          {/* Single Unified Scrollable List: Imported/Studio + Built-in AI + Device Voices */}
-          <div className="space-y-2 max-h-[460px] overflow-y-auto pr-0.5 min-w-0">
+          {/* Single Unified Scrollable Compact List: Imported/Studio + Built-in AI + Device Voices */}
+          <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-0.5 min-w-0">
             {externalVoices.map((voice) => {
               const key = `external:${voice.id}`;
               const isSelected = activeDefaultVoice.id === key;
@@ -915,91 +921,77 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
               return (
                 <div
                   key={key}
-                  className={`rounded-xl border transition-colors overflow-hidden ${
+                  className={`perf-list-item rounded-xl border transition-colors overflow-hidden ${
                     isSelected
                       ? 'border-amber-700 bg-amber-50/60 dark:bg-amber-950/25 dark:border-amber-500'
                       : 'border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/30'
                   }`}
                 >
-                  <div className="px-3 py-2.5 flex flex-col gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold leading-snug text-stone-900 dark:text-stone-100 break-words">
+                  <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
+                    <div className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1">
                       {voice.name}
                     </div>
-                    <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-stone-200/60 dark:border-stone-800/60">
-                      <div>
-                        {onSelectDefaultVoice && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onSelectDefaultVoice({
-                                source: 'external',
-                                id: key,
-                                label: voice.name,
-                                externalVoiceId: voice.id,
-                                geminiVoice: voice.analyzedProfile?.recommendedBaseVoice || 'Kore',
-                              })
-                            }
-                            className={`touch-manipulation inline-flex items-center gap-1 px-2.5 min-h-[34px] rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
-                              isSelected
-                                ? 'bg-amber-800 text-white'
-                                : 'bg-white dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-800 dark:text-stone-200 hover:border-amber-700'
-                            }`}
-                          >
-                            {isSelected ? (
-                              <>
-                                <Check className="w-3 h-3 shrink-0" />
-                                <span>Đang chọn</span>
-                              </>
-                            ) : (
-                              <span>Mặc định</span>
-                            )}
-                          </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {onSelectDefaultVoice && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSelectDefaultVoice({
+                              source: 'external',
+                              id: key,
+                              label: voice.name,
+                              externalVoiceId: voice.id,
+                              geminiVoice: voice.analyzedProfile?.recommendedBaseVoice || 'Kore',
+                            })
+                          }
+                          aria-label={isSelected ? `Đang chọn ${voice.name}` : `Chọn mặc định ${voice.name}`}
+                          title={isSelected ? 'Đang chọn mặc định' : 'Đặt làm mặc định'}
+                          className={`touch-manipulation w-7 h-7 rounded-lg inline-flex items-center justify-center transition-transform active:scale-90 shrink-0 ${
+                            isSelected
+                              ? 'bg-amber-800 text-white shadow-xs'
+                              : 'bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-400 dark:text-stone-500 hover:text-amber-800 hover:border-amber-700'
+                          }`}
+                        >
+                          <Check className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePreviewVoice(voice);
+                        }}
+                        aria-label={`Nghe thử ${voice.name}`}
+                        title={playingVoiceId === key ? 'Dừng nghe thử' : 'Nghe thử giọng'}
+                        className="touch-manipulation w-7 h-7 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 inline-flex items-center justify-center text-stone-700 dark:text-stone-200 hover:text-amber-800 active:scale-90 transition-transform shrink-0"
+                      >
+                        {playingVoiceId === key ? (
+                          <Square className="w-3 h-3 text-red-600 fill-red-600 shrink-0" />
+                        ) : (
+                          <Play className="w-3 h-3 fill-current shrink-0 ml-0.5" />
                         )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            togglePreviewVoice(voice);
-                          }}
-                          aria-label={`Nghe thử ${voice.name}`}
-                          className="touch-manipulation inline-flex items-center justify-center gap-1 px-2.5 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 active:scale-95 shrink-0"
-                        >
-                          {playingVoiceId === key ? (
-                            <>
-                              <Square className="w-3 h-3 text-red-600 fill-red-600 shrink-0" />
-                              <span>Dừng</span>
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3 h-3 fill-current shrink-0" />
-                              <span>Thử</span>
-                            </>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleVoiceExpand(key);
-                          }}
-                          aria-expanded={isExpanded}
-                          aria-label={`Xem chi tiết voice ${voice.name}`}
-                          className="touch-manipulation w-9 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-95 shrink-0"
-                        >
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleVoiceExpand(key);
+                        }}
+                        aria-expanded={isExpanded}
+                        aria-label={`Xem chi tiết voice ${voice.name}`}
+                        className="touch-manipulation w-7 h-7 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-90 transition-transform shrink-0"
+                      >
+                        {isExpanded ? (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        )}
+                      </button>
                     </div>
                   </div>
 
                   {isExpanded && (
-                    <div className="px-3.5 pb-3.5 pt-2.5 border-t border-stone-200/70 dark:border-stone-800/80 space-y-2.5">
+                    <div className="px-3 pb-3 pt-2 border-t border-stone-200/70 dark:border-stone-800/80 space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300">
                           {voice.originLabel ||
@@ -1102,94 +1094,80 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
               return (
                 <div
                   key={key}
-                  className={`rounded-xl border transition-colors overflow-hidden ${
+                  className={`perf-list-item rounded-xl border transition-colors overflow-hidden ${
                     isSelected
                       ? 'border-amber-700 bg-amber-50/60 dark:bg-amber-950/25 dark:border-amber-500'
                       : 'border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/30'
                   }`}
                 >
-                  <div className="px-3 py-2.5 flex flex-col gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold leading-snug text-stone-900 dark:text-stone-100 break-words">
+                  <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
+                    <div className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1">
                       {gv.label}
                     </div>
-                    <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-stone-200/60 dark:border-stone-800/60">
-                      <div>
-                        {onSelectDefaultVoice && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onSelectDefaultVoice({
-                                source: 'gemini',
-                                id: key,
-                                label: gv.label,
-                                geminiVoice: gv.name,
-                              })
-                            }
-                            className={`touch-manipulation inline-flex items-center gap-1 px-2.5 min-h-[34px] rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
-                              isSelected
-                                ? 'bg-amber-800 text-white'
-                                : 'bg-white dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-800 dark:text-stone-200 hover:border-amber-700'
-                            }`}
-                          >
-                            {isSelected ? (
-                              <>
-                                <Check className="w-3 h-3 shrink-0" />
-                                <span>Đang chọn</span>
-                              </>
-                            ) : (
-                              <span>Mặc định</span>
-                            )}
-                          </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {onSelectDefaultVoice && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSelectDefaultVoice({
+                              source: 'gemini',
+                              id: key,
+                              label: gv.label,
+                              geminiVoice: gv.name,
+                            })
+                          }
+                          aria-label={isSelected ? `Đang chọn ${gv.label}` : `Chọn mặc định ${gv.label}`}
+                          title={isSelected ? 'Đang chọn mặc định' : 'Đặt làm mặc định'}
+                          className={`touch-manipulation w-7 h-7 rounded-lg inline-flex items-center justify-center transition-transform active:scale-90 shrink-0 ${
+                            isSelected
+                              ? 'bg-amber-800 text-white shadow-xs'
+                              : 'bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-400 dark:text-stone-500 hover:text-amber-800 hover:border-amber-700'
+                          }`}
+                        >
+                          <Check className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePreviewBuiltinVoice(gv.name);
+                        }}
+                        aria-label={`Nghe thử ${gv.label}`}
+                        title={playingVoiceId === key ? 'Dừng nghe thử' : 'Nghe thử giọng'}
+                        className="touch-manipulation w-7 h-7 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 inline-flex items-center justify-center text-stone-800 dark:text-stone-100 hover:text-amber-800 active:scale-90 transition-transform shrink-0"
+                      >
+                        {playingVoiceId === key ? (
+                          <Square className="w-3 h-3 text-red-600 fill-red-600 shrink-0" />
+                        ) : (
+                          <Play className="w-3 h-3 fill-current shrink-0 ml-0.5" />
                         )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            togglePreviewBuiltinVoice(gv.name);
-                          }}
-                          aria-label={`Nghe thử ${gv.label}`}
-                          className="touch-manipulation inline-flex items-center justify-center gap-1 px-2.5 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 active:scale-95 shrink-0"
-                        >
-                          {playingVoiceId === key ? (
-                            <>
-                              <Square className="w-3 h-3 text-red-600 fill-red-600 shrink-0" />
-                              <span>Dừng</span>
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3 h-3 fill-current shrink-0" />
-                              <span>Thử</span>
-                            </>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleVoiceExpand(key);
-                          }}
-                          aria-expanded={isExpanded}
-                          aria-label={`Xem mô tả voice ${gv.label}`}
-                          className="touch-manipulation w-9 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-95 shrink-0"
-                        >
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleVoiceExpand(key);
+                        }}
+                        aria-expanded={isExpanded}
+                        aria-label={`Xem mô tả voice ${gv.label}`}
+                        className="touch-manipulation w-7 h-7 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-90 transition-transform shrink-0"
+                      >
+                        {isExpanded ? (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        )}
+                      </button>
                     </div>
                   </div>
 
                   {isExpanded && (
-                    <div className="px-3.5 pb-3 pt-2 border-t border-stone-200/70 dark:border-stone-800/80 space-y-1.5">
+                    <div className="px-3 pb-2.5 pt-2 border-t border-stone-200/70 dark:border-stone-800/80 space-y-1">
                       <span className="inline-flex text-[10px] font-medium px-2 py-0.5 rounded-md bg-stone-200/80 dark:bg-stone-800 text-stone-700 dark:text-stone-300">
                         {gv.isDefault ? 'Giọng AI mặc định hệ thống' : 'Giọng AI có sẵn'} · {gv.name}
                       </span>
-                      <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
+                      <p className="text-[11px] leading-snug text-stone-600 dark:text-stone-400">
                         {gv.tone}
                       </p>
                     </div>
@@ -1205,94 +1183,80 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
               return (
                 <div
                   key={key}
-                  className={`rounded-xl border transition-colors overflow-hidden ${
+                  className={`perf-list-item rounded-xl border transition-colors overflow-hidden ${
                     isSelected
                       ? 'border-amber-700 bg-amber-50/60 dark:bg-amber-950/25 dark:border-amber-500'
                       : 'border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/30'
                   }`}
                 >
-                  <div className="px-3 py-2.5 flex flex-col gap-2 min-w-0">
-                    <div className="text-[13px] font-semibold leading-snug text-stone-900 dark:text-stone-100 break-words">
+                  <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
+                    <div className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1">
                       {dv.name}
                     </div>
-                    <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-stone-200/60 dark:border-stone-800/60">
-                      <div>
-                        {onSelectDefaultVoice && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onSelectDefaultVoice({
-                                source: 'browser',
-                                id: key,
-                                label: dv.name,
-                                browserVoiceURI: dv.voiceURI,
-                              })
-                            }
-                            className={`touch-manipulation inline-flex items-center gap-1 px-2.5 min-h-[34px] rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
-                              isSelected
-                                ? 'bg-amber-800 text-white'
-                                : 'bg-white dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-800 dark:text-stone-200 hover:border-amber-700'
-                            }`}
-                          >
-                            {isSelected ? (
-                              <>
-                                <Check className="w-3 h-3 shrink-0" />
-                                <span>Đang chọn</span>
-                              </>
-                            ) : (
-                              <span>Mặc định</span>
-                            )}
-                          </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {onSelectDefaultVoice && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSelectDefaultVoice({
+                              source: 'browser',
+                              id: key,
+                              label: dv.name,
+                              browserVoiceURI: dv.voiceURI,
+                            })
+                          }
+                          aria-label={isSelected ? `Đang chọn ${dv.name}` : `Chọn mặc định ${dv.name}`}
+                          title={isSelected ? 'Đang chọn mặc định' : 'Đặt làm mặc định'}
+                          className={`touch-manipulation w-7 h-7 rounded-lg inline-flex items-center justify-center transition-transform active:scale-90 shrink-0 ${
+                            isSelected
+                              ? 'bg-amber-800 text-white shadow-xs'
+                              : 'bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-400 dark:text-stone-500 hover:text-amber-800 hover:border-amber-700'
+                          }`}
+                        >
+                          <Check className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePreviewDeviceVoice(dv);
+                        }}
+                        aria-label={`Nghe thử ${dv.name}`}
+                        title={playingVoiceId === key ? 'Dừng nghe thử' : 'Nghe thử giọng'}
+                        className="touch-manipulation w-7 h-7 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 inline-flex items-center justify-center text-stone-700 dark:text-stone-200 hover:text-amber-800 active:scale-90 transition-transform shrink-0"
+                      >
+                        {playingVoiceId === key ? (
+                          <Square className="w-3 h-3 text-red-600 fill-red-600 shrink-0" />
+                        ) : (
+                          <Play className="w-3 h-3 fill-current shrink-0 ml-0.5" />
                         )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            togglePreviewDeviceVoice(dv);
-                          }}
-                          aria-label={`Nghe thử ${dv.name}`}
-                          className="touch-manipulation inline-flex items-center justify-center gap-1 px-2.5 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 active:scale-95 shrink-0"
-                        >
-                          {playingVoiceId === key ? (
-                            <>
-                              <Square className="w-3 h-3 text-red-600 fill-red-600 shrink-0" />
-                              <span>Dừng</span>
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3 h-3 fill-current shrink-0" />
-                              <span>Thử</span>
-                            </>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleVoiceExpand(key);
-                          }}
-                          aria-expanded={isExpanded}
-                          aria-label={`Xem mô tả voice ${dv.name}`}
-                          className="touch-manipulation w-9 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-95 shrink-0"
-                        >
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleVoiceExpand(key);
+                        }}
+                        aria-expanded={isExpanded}
+                        aria-label={`Xem mô tả voice ${dv.name}`}
+                        className="touch-manipulation w-7 h-7 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-90 transition-transform shrink-0"
+                      >
+                        {isExpanded ? (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        )}
+                      </button>
                     </div>
                   </div>
 
                   {isExpanded && (
-                    <div className="px-3.5 pb-3 pt-2 border-t border-stone-200/70 dark:border-stone-800/80 space-y-1.5">
+                    <div className="px-3 pb-2.5 pt-2 border-t border-stone-200/70 dark:border-stone-800/80 space-y-1">
                       <span className="inline-flex text-[10px] font-medium px-2 py-0.5 rounded-md bg-stone-200/80 dark:bg-stone-800 text-stone-700 dark:text-stone-300">
                         Giọng gốc của máy (Offline) · {dv.lang}
                       </span>
-                      <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
+                      <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
                         Giọng đọc tích hợp sẵn trên thiết bị, phát ngay không cần mạng.
                       </p>
                     </div>
@@ -1303,25 +1267,40 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           </div>
         </section>
 
-        {/* Unified All Fonts Section (Community E-Reader Fonts + Device Native Fonts + User Imported) */}
+        {/* Unified All Fonts Section (Compact Rows) */}
         <section
           id="studio-ereader-fonts"
-          className="scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-4 sm:p-6 space-y-4 min-w-0 overflow-hidden"
+          className="ios-floating-shadow scroll-mt-20 border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 space-y-2.5 min-w-0 overflow-hidden"
         >
-          <div className="space-y-3 min-w-0">
+          <div className="space-y-2 min-w-0">
             <div className="space-y-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-base font-semibold flex items-center gap-2 min-w-0">
-                  <Type className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                  <span className="truncate">Tất cả phông chữ</span>
-                </h2>
-                <span className="text-xs font-medium text-stone-500 tabular-nums shrink-0">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Type className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                  <h2 className="text-[13px] font-semibold truncate">Tất cả phông chữ</h2>
+                  <button
+                    type="button"
+                    onClick={() => toggleDisclosure('font-help')}
+                    aria-expanded={activeDisclosure === 'font-help'}
+                    aria-label="Xem mô tả Tất cả phông chữ"
+                    className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+                  >
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 transition-transform ${
+                        activeDisclosure === 'font-help' ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+                <span className="text-[10.5px] font-medium text-stone-500 tabular-nums shrink-0">
                   {unifiedFonts.length} phông
                 </span>
               </div>
-              <p className="text-xs text-stone-500 leading-relaxed">
-                Gồm phông cộng đồng máy đọc sách, phông gốc của máy và phông .TTF/.OTF/.WOFF bạn import thêm.
-              </p>
+              {activeDisclosure === 'font-help' && (
+                <p className="text-[11px] leading-snug text-stone-500">
+                  Gồm phông cộng đồng máy đọc sách, phông gốc của máy và phông .TTF/.OTF/.WOFF bạn import thêm.
+                </p>
+              )}
             </div>
             <input
               ref={fontInputRef}
@@ -1334,15 +1313,15 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
             <button
               type="button"
               onClick={() => fontInputRef.current?.click()}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-90 min-h-[42px]"
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold hover:opacity-90 min-h-[34px]"
             >
               <Upload className="w-3.5 h-3.5 shrink-0" />
               <span>Import phông (.TTF/.OTF/.WOFF)</span>
             </button>
           </div>
 
-          {/* Single Unified Font List: 9 Community E-Reader Fonts first, then Device/Classic, then Imported */}
-          <div className="space-y-2 max-h-[460px] overflow-y-auto pr-0.5 min-w-0">
+          {/* Compact Scrollable Font List */}
+          <div className="space-y-1.5 max-h-[370px] overflow-y-auto pr-0.5 min-w-0">
             {unifiedFonts.map((font) => {
               const isSelected = activeFontFamily === font.cssValue;
               const isExpanded = Boolean(expandedFontIds[font.id]);
@@ -1355,37 +1334,35 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                       : 'border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/30'
                   }`}
                 >
-                  <div className="px-3 py-2.5 flex flex-col gap-2 min-w-0">
+                  <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 min-w-0">
                     <div
                       style={{ fontFamily: font.cssValue }}
-                      className="text-[13px] font-semibold leading-snug text-stone-900 dark:text-stone-100 break-words"
+                      className="text-[12px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1"
                     >
                       {font.name}
                     </div>
 
-                    <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-stone-200/60 dark:border-stone-800/60">
-                      <div>
-                        {onSelectFontFamily && (
-                          <button
-                            type="button"
-                            onClick={() => onSelectFontFamily(font.cssValue)}
-                            className={`touch-manipulation inline-flex items-center gap-1 px-3 min-h-[34px] rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
-                              isSelected
-                                ? 'bg-amber-800 text-white'
-                                : 'bg-white dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-800 dark:text-stone-200 hover:border-amber-700'
-                            }`}
-                          >
-                            {isSelected ? (
-                              <>
-                                <Check className="w-3 h-3 shrink-0" />
-                                <span>Đang dùng</span>
-                              </>
-                            ) : (
-                              <span>Dùng</span>
-                            )}
-                          </button>
-                        )}
-                      </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {onSelectFontFamily && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectFontFamily(font.cssValue)}
+                          className={`touch-manipulation inline-flex items-center gap-1 px-2.5 min-h-[28px] rounded-lg text-[10.5px] font-semibold transition-colors whitespace-nowrap ${
+                            isSelected
+                              ? 'bg-amber-800 text-white'
+                              : 'bg-white dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-800 dark:text-stone-200 hover:border-amber-700'
+                          }`}
+                        >
+                          {isSelected ? (
+                            <>
+                              <Check className="w-2.5 h-2.5 shrink-0" />
+                              <span>Đang dùng</span>
+                            </>
+                          ) : (
+                            <span>Dùng</span>
+                          )}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={(e) => {
@@ -1394,9 +1371,8 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                         }}
                         aria-expanded={isExpanded}
                         aria-label={`Xem mô tả phông ${font.name}`}
-                        className="touch-manipulation inline-flex items-center justify-center gap-1 px-2.5 min-h-[34px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-[11px] font-medium text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-95 shrink-0"
+                        className="touch-manipulation w-7 min-h-[28px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white active:scale-95 shrink-0"
                       >
-                        <span>Chi tiết</span>
                         {isExpanded ? (
                           <ChevronUp className="w-3.5 h-3.5" />
                         ) : (
@@ -1407,7 +1383,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                   </div>
 
                   {isExpanded && (
-                    <div className="px-3.5 pb-3.5 pt-2.5 border-t border-stone-200/70 dark:border-stone-800/80 space-y-2">
+                    <div className="px-3 pb-3 pt-2 border-t border-stone-200/70 dark:border-stone-800/80 space-y-1.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-stone-200/80 dark:bg-stone-800 text-stone-700 dark:text-stone-300">
                           {font.origin}
@@ -1423,12 +1399,12 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                           </button>
                         )}
                       </div>
-                      <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
+                      <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
                         {font.description}
                       </p>
                       <p
                         style={{ fontFamily: font.cssValue }}
-                        className="text-[15px] leading-relaxed text-stone-800 dark:text-stone-200 pt-2 border-t border-stone-200/60 dark:border-stone-800/60"
+                        className="text-[14px] leading-relaxed text-stone-800 dark:text-stone-200 pt-1.5 border-t border-stone-200/60 dark:border-stone-800/60"
                       >
                         {font.sample}
                       </p>
@@ -1444,16 +1420,35 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       {/* Ambient Sound & Chill Music Mixer Section */}
       <section
         aria-label="Kho âm thanh nền và nhạc chill khi đọc nghe"
-        className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-4 sm:p-6 space-y-4 min-w-0 overflow-hidden"
+        className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-5 space-y-3 min-w-0 overflow-hidden"
       >
         <div className="space-y-1 min-w-0">
-          <h2 className="text-base sm:text-lg font-display font-semibold flex items-center gap-2 text-stone-900 dark:text-stone-100">
-            <Music className="w-5 h-5 text-amber-800 dark:text-amber-400 shrink-0" />
-            <span>Âm thanh nền &amp; Nhạc Chill (20+)</span>
-          </h2>
-          <p className="text-xs text-stone-500 leading-relaxed">
-            Chọn tiếng mưa, lửa trại, sóng biển, nhạc lo-fi chill hoặc import file nhạc MP3/WAV từ thiết bị để phát nền cùng lúc.
-          </p>
+          <div className="flex items-center justify-between gap-2 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Music className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+              <h2 className="text-[13px] font-display font-semibold text-stone-900 dark:text-stone-100 truncate">
+                Âm thanh nền &amp; Nhạc Chill (20+)
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => toggleDisclosure('ambient-help')}
+              aria-expanded={activeDisclosure === 'ambient-help'}
+              aria-label="Xem mô tả Âm thanh nền"
+              className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+            >
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform ${
+                  activeDisclosure === 'ambient-help' ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+          </div>
+          {activeDisclosure === 'ambient-help' && (
+            <p className="text-[11px] leading-snug text-stone-500">
+              Chọn tiếng mưa, lửa trại, sóng biển, nhạc lo-fi chill hoặc import file nhạc MP3/WAV từ thiết bị để phát nền cùng lúc.
+            </p>
+          )}
         </div>
 
         <AmbientSoundPanel

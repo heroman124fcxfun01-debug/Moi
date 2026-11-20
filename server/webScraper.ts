@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import { cleanParagraphText, isJunkScrapedText } from '../src/utils/bookCleaner';
 
 export interface WebInteractiveTarget {
   label: string;
@@ -104,15 +105,24 @@ export function extractWebChapterFromHtml(
     for (const el of anchors) {
       const anchor = $(el);
       const text = anchor.text().replace(/\s+/g, ' ').trim();
-      const cls = (anchor.attr('class') || '') + ' ' + (anchor.attr('id') || '');
+      const cls =
+        (anchor.attr('class') || '') +
+        ' ' +
+        (anchor.attr('id') || '') +
+        ' ' +
+        (anchor.attr('aria-label') || '') +
+        ' ' +
+        (anchor.attr('title') || '');
       if (
         NEXT_TEXT_PATTERNS.some((rx) => rx.test(text)) ||
-        /\b(next|next-chap|next-chapter|btn-next)\b/i.test(cls)
+        /\b(next|next-chap|next-chapter|btn-next|next-page|right-nav|nav-right|arrow-right|turn-right|page-next)\b/i.test(
+          cls
+        )
       ) {
         const resolved = resolveHref(pageUrl, anchor.attr('href'));
         if (resolved && resolved !== pageUrl) {
           nextUrl = resolved;
-          nextLabel = text || 'Chương tiếp';
+          nextLabel = text || anchor.attr('aria-label') || 'Trang tiếp';
           break;
         }
       }
@@ -138,10 +148,15 @@ export function extractWebChapterFromHtml(
   const docTitle = $('title').first().text().replace(/\s+/g, ' ').trim();
   const title = h1Text || docTitle || 'Trang web chưa có tiêu đề';
 
-  const paywallNotice = $('.paywall-notice, .vip-lock, [data-paywall]').text().replace(/\s+/g, ' ').trim();
+  const paywallNotice = $(
+    '.paywall-notice, .vip-lock, [data-paywall], .login-required, .auth-wall, #login-form, .cf-challenge, .g-recaptcha'
+  )
+    .text()
+    .replace(/\s+/g, ' ')
+    .trim();
 
-  // Remove chrome & non-content blocks
-  $('script, style, noscript, iframe, svg, nav, header, footer, aside, form, .ads, .advertisement, .sidebar, .comments, .menu, .breadcrumb').remove();
+  // Remove chrome & non-content blocks including head/meta/link
+  $('head, meta, link, script, style, noscript, iframe, svg, nav, header, footer, aside, form, .ads, .advertisement, .sidebar, .comments, .menu, .breadcrumb').remove();
 
   // Locate main prose container
   const contentSelectors = [
@@ -170,8 +185,8 @@ export function extractWebChapterFromHtml(
   const pTags = container.find('p').toArray();
   if (pTags.length >= 2) {
     paragraphs = pTags
-      .map((el) => $(el).text().replace(/\s+/g, ' ').trim())
-      .filter((t) => t.length > 1);
+      .map((el) => cleanParagraphText($(el).text()))
+      .filter((t) => t.length > 1 && !isJunkScrapedText(t));
   } else {
     // Handle <br>-separated content common on web novel sites
     const htmlFrag = container.html() || '';
@@ -181,13 +196,15 @@ export function extractWebChapterFromHtml(
     const textOnly = cheerio.load(`<div>${withNewlines}</div>`)('div').text();
     paragraphs = textOnly
       .split('\n')
-      .map((l) => l.replace(/\s+/g, ' ').trim())
-      .filter((l) => l.length > 1 && l !== h1Text);
+      .map((l) => cleanParagraphText(l))
+      .filter((l) => l.length > 1 && l !== h1Text && !isJunkScrapedText(l));
   }
 
-  // Filter out stray nav strings at start/end
+  // Filter out stray nav strings & duplicate watermarks
   paragraphs = paragraphs.filter(
-    (p) => !/^((chương|trang)\s*(tiếp|trước|sau)|next chapter|previous)$/i.test(p)
+    (p) =>
+      !isJunkScrapedText(p) &&
+      !/^((chương|trang)\s*(tiếp|trước|sau)|next chapter|previous)$/i.test(p)
   );
 
   const wordCount = paragraphs.reduce(

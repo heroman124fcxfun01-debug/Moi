@@ -48,3 +48,25 @@ test('extractWebChapterClientSide parses HTML chapter title, paragraphs, and nex
   assert.equal(parsed.nextLabel, 'Chương sau →');
   assert.ok(parsed.wordCount > 25);
 });
+
+test('extractWebChapterClientSide strips head meta/link viewport and DTV-EBOOK scraper noise', () => {
+  const noisyHtml = `
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora">
+      </head>
+      <body>
+        <p>scale=1.0, maximum-scale=1.0, href="https://fonts.googleapis.com"</p>
+        <p>DTV-EBOOK - Kho truyện hay</p>
+        <p>Đêm khuya thanh vắng, tiếng gió rít qua mái ngói rêu phong nghe thật não nề.</p>
+      </body>
+    </html>
+  `;
+  const parsed = extractWebChapterClientSide(noisyHtml, 'https://example.com/ch1');
+  assert.equal(parsed.paragraphs.length, 1);
+  assert.equal(
+    parsed.paragraphs[0],
+    'Đêm khuya thanh vắng, tiếng gió rít qua mái ngói rêu phong nghe thật não nề.'
+  );
+});

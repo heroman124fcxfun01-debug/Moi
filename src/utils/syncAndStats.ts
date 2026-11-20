@@ -68,9 +68,74 @@ export interface SyncMergeResult {
 }
 
 /**
+ * Normalizes a book title or filename (stripping .epub/.pdf/.txt extensions and excess spacing)
+ * so books uploaded separately on two devices with the same filename/title always match for auto-sync.
+ */
+export function normalizeBookMatchKey(titleOrFileName: string): string {
+  return (titleOrFileName || '')
+    .normalize('NFC')
+    .replace(/\.(epub|pdf|txt|mobi|azw3)$/i, '')
+    .replace(/[_\-]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Merges local progress with an existing remote SyncBackupBundle before pushing to cloud,
+ * preserving progress records for books that exist on other devices but are not present locally.
+ */
+export function mergeProgressBundlesForCloudPush(
+  localBooks: Book[],
+  localLogs: ReadingLogEntry[],
+  remoteBundle: SyncBackupBundle | null,
+  deviceLabel = 'LaziRead Google Drive'
+): SyncBackupBundle {
+  const localRecords = localBooks.map(createProgressSnapshot);
+  if (!remoteBundle) {
+    return {
+      version: 1,
+      exportedAt: Date.now(),
+      deviceLabel,
+      progressRecords: localRecords,
+      readingLogs: localLogs,
+    };
+  }
+
+  const recordMap = new Map<string, BookProgressSnapshot>();
+  const keyFor = (snap: BookProgressSnapshot) =>
+    snap.fingerprint || normalizeBookMatchKey(snap.title) || snap.id;
+
+  for (const remote of remoteBundle.progressRecords || []) {
+    recordMap.set(keyFor(remote), remote);
+  }
+  for (const local of localRecords) {
+    const k = keyFor(local);
+    const existing = recordMap.get(k);
+    if (
+      !existing ||
+      local.lastReadAt >= existing.lastReadAt ||
+      local.progressPercent > existing.progressPercent
+    ) {
+      recordMap.set(k, local);
+    }
+  }
+
+  return {
+    version: 1,
+    exportedAt: Date.now(),
+    deviceLabel,
+    progressRecords: Array.from(recordMap.values()),
+    readingLogs: mergeReadingLogs(remoteBundle.readingLogs || [], localLogs),
+  };
+}
+
+/**
  * Merges a SyncBackupBundle into the current device library:
- * - Matches existing books by `id` OR content `fingerprint` (so re-uploading the same EPUB/PDF on a new device syncs progress automatically!)
- * - Adds missing books if `fullBooks` is included in the bundle.
+ * - Matches existing books by `id`, content `fingerprint`, OR normalized filename/title
+ *   (so Device 2 downloading/importing Book A gets Device 1's exact reading progress!)
+ * - Adds missing books ONLY if `fullBooks` is explicitly included in the bundle.
  * - Merges reading logs taking max seconds per date.
  */
 export function mergeSyncBundleIntoLibrary(
@@ -82,15 +147,27 @@ export function mergeSyncBundleIntoLibrary(
 
   const snapById = new Map<string, BookProgressSnapshot>();
   const snapByFp = new Map<string, BookProgressSnapshot>();
+  const snapByTitleKey = new Map<string, BookProgressSnapshot>();
 
   for (const snap of bundle.progressRecords || []) {
     snapById.set(snap.id, snap);
     if (snap.fingerprint) snapByFp.set(snap.fingerprint, snap);
+    const titleKey = normalizeBookMatchKey(snap.title);
+    if (titleKey) {
+      const prev = snapByTitleKey.get(titleKey);
+      if (!prev || snap.lastReadAt >= prev.lastReadAt) {
+        snapByTitleKey.set(titleKey, snap);
+      }
+    }
   }
 
   const updatedBooks = existingBooks.map((book) => {
     const fp = book.fingerprint || computeBookFingerprint(book);
-    const snap = snapById.get(book.id) || snapByFp.get(fp);
+    const titleKey = normalizeBookMatchKey(book.title);
+    const snap =
+      snapById.get(book.id) ||
+      snapByFp.get(fp) ||
+      (titleKey ? snapByTitleKey.get(titleKey) : undefined);
     if (!snap) return book;
 
     // Apply incoming progress if newer OR further ahead when timestamps match closely
@@ -130,19 +207,28 @@ export function mergeSyncBundleIntoLibrary(
     };
   });
 
-  // Add full books from bundle if not already present by id or fingerprint
+  // Add full books from bundle if not already present by id, fingerprint, or normalized title
   if (Array.isArray(bundle.fullBooks)) {
     const existingIds = new Set(updatedBooks.map((b) => b.id));
     const existingFps = new Set(
       updatedBooks.map((b) => b.fingerprint || computeBookFingerprint(b))
     );
+    const existingTitleKeys = new Set(
+      updatedBooks.map((b) => normalizeBookMatchKey(b.title)).filter(Boolean)
+    );
 
     for (const incoming of bundle.fullBooks) {
       const fp = incoming.fingerprint || computeBookFingerprint(incoming);
-      if (!existingIds.has(incoming.id) && !existingFps.has(fp)) {
+      const tKey = normalizeBookMatchKey(incoming.title);
+      if (
+        !existingIds.has(incoming.id) &&
+        !existingFps.has(fp) &&
+        (!tKey || !existingTitleKeys.has(tKey))
+      ) {
         updatedBooks.push({ ...incoming, fingerprint: fp });
         existingIds.add(incoming.id);
         existingFps.add(fp);
+        if (tKey) existingTitleKeys.add(tKey);
         importedNewBooksCount += 1;
       }
     }

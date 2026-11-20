@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertCircle,
   AlertTriangle,
   BookOpen,
   Download,
@@ -14,6 +15,7 @@ import {
   Search,
   Settings,
   Sun,
+  X,
 } from 'lucide-react';
 import type {
   AppBasicSettings,
@@ -59,19 +61,41 @@ import {
   shouldRenderAppWallpaper,
 } from './utils/appAppearance';
 import { requestPersistentDeviceStorage } from './utils/deviceHardware';
-import { addReadingSecondsToLogs, formatIsoDateLocal } from './utils/syncAndStats';
+import {
+  addReadingSecondsToLogs,
+  computeBookFingerprint,
+  formatIsoDateLocal,
+  normalizeBookMatchKey,
+} from './utils/syncAndStats';
 import { LibraryView } from './components/LibraryView';
-import { ReaderView } from './components/ReaderView';
-import { WebScraperView } from './components/WebScraperView';
-import { VoiceStudioView } from './components/VoiceStudioView';
-import { SettingsSyncView } from './components/SettingsSyncView';
-import { ImportBookModal } from './components/ImportBookModal';
-import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { OfflineIndicator } from './components/PWAInstallUI';
 import { FloatingBookDisc } from './components/FloatingBookDisc';
 import { LiquidDropThumb, useLiquidDropIndicator } from './components/LiquidGlassBar';
 import { useWebCrawler } from './hooks/useWebCrawler';
 import type { GlobalSearchAction } from './utils/globalSearch';
+
+// Lazy-load secondary views & heavy modals so initial boot RAM stays minimal on budget & flagship Android phones
+const ReaderView = lazy(() =>
+  import('./components/ReaderView').then((m) => ({ default: m.ReaderView }))
+);
+const WebScraperView = lazy(() =>
+  import('./components/WebScraperView').then((m) => ({ default: m.WebScraperView }))
+);
+const VoiceStudioView = lazy(() =>
+  import('./components/VoiceStudioView').then((m) => ({ default: m.VoiceStudioView }))
+);
+const SettingsSyncView = lazy(() =>
+  import('./components/SettingsSyncView').then((m) => ({ default: m.SettingsSyncView }))
+);
+const ImportBookModal = lazy(() =>
+  import('./components/ImportBookModal').then((m) => ({ default: m.ImportBookModal }))
+);
+const GlobalSearchModal = lazy(() =>
+  import('./components/GlobalSearchModal').then((m) => ({ default: m.GlobalSearchModal }))
+);
+const AppInfoModal = lazy(() =>
+  import('./components/AppInfoModal').then((m) => ({ default: m.AppInfoModal }))
+);
 import {
   getDriveAccessToken,
   getDriveAuthSnapshot,
@@ -79,12 +103,17 @@ import {
   subscribeDriveAuth,
   type DriveAuthSnapshot,
 } from './utils/googleDriveAuth';
-import { uploadProgressManifestToDrive } from './utils/googleDriveSync';
+import {
+  syncProgressTwoWayWithDrive,
+  uploadProgressManifestToDrive,
+} from './utils/googleDriveSync';
 
 type AppTab = 'library' | 'reader' | 'web' | 'studio' | 'settings';
+const PRIMARY_TAB_ORDER: AppTab[] = ['library', 'web', 'studio', 'settings'];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('library');
+  const [activeTab, setActiveTabState] = useState<AppTab>('library');
+  const [tabDirection, setTabDirection] = useState<'forward' | 'backward' | 'none'>('none');
   const [books, setBooks] = useState<Book[]>([]);
   const [userCollections, setUserCollections] = useState<UserCollection[]>([]);
   const [activeBookId, setActiveBookId] = useState<string | null>(null);
@@ -102,17 +131,49 @@ export default function App() {
   );
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
+  const [isAppInfoOpen, setIsAppInfoOpen] = useState(false);
   const [focusCollectionSignal, setFocusCollectionSignal] = useState<{
     name: string;
     tick: number;
   } | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+
+  const setActiveTab = useCallback((nextTab: AppTab) => {
+    setActiveTabState((prevTab) => {
+      if (prevTab === nextTab) return prevTab;
+      const prevIdx = PRIMARY_TAB_ORDER.indexOf(prevTab);
+      const nextIdx = PRIMARY_TAB_ORDER.indexOf(nextTab);
+      if (prevIdx !== -1 && nextIdx !== -1) {
+        setTabDirection(nextIdx > prevIdx ? 'forward' : 'backward');
+      } else {
+        setTabDirection('none');
+      }
+      return nextTab;
+    });
+  }, []);
   const [isReaderAudioPlaying, setIsReaderAudioPlaying] = useState(false);
   const [discToggleSignal, setDiscToggleSignal] = useState(0);
   const [driveAuth, setDriveAuth] = useState<DriveAuthSnapshot>(() => getDriveAuthSnapshot());
   const [lastAutoSyncAt, setLastAutoSyncAt] = useState<number | null>(null);
   const [isAutoSyncing, setIsAutoSyncing] = useState(false);
   const [customWallpaperDataUrl, setCustomWallpaperDataUrl] = useState<string | null>(null);
+  const [pendingDuplicateBook, setPendingDuplicateBook] = useState<{
+    existing: Book;
+    incoming: Book;
+    openImmediately: boolean;
+  } | null>(null);
+
+  const booksRef = useRef<Book[]>([]);
+  const readingLogsRef = useRef<ReadingLogEntry[]>([]);
+  const isAutoSyncingRef = useRef(false);
+
+  useEffect(() => {
+    booksRef.current = books;
+  }, [books]);
+
+  useEffect(() => {
+    readingLogsRef.current = readingLogs;
+  }, [readingLogs]);
 
   useEffect(() => {
     const boot = async () => {
@@ -168,14 +229,63 @@ export default function App() {
     };
   }, []);
 
-  // Debounced background auto-sync to Google Drive (`sáchlazy`) when enabled & signed in
+  const runTwoWayAutoSync = useCallback(async () => {
+    if (isAutoSyncingRef.current) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    const token = getDriveAccessToken();
+    if (!token) return;
+
+    isAutoSyncingRef.current = true;
+    setIsAutoSyncing(true);
+    try {
+      const result = await syncProgressTwoWayWithDrive(
+        token,
+        booksRef.current,
+        readingLogsRef.current
+      );
+      if (result.matchedProgressCount > 0) {
+        setBooks(result.mergedBooks);
+        setReadingLogs(result.mergedLogs);
+        await saveAllBooks(result.mergedBooks);
+        await saveReadingLogs(result.mergedLogs);
+      }
+      setLastAutoSyncAt(Date.now());
+    } catch {
+      // Silent background retry on next trigger
+    } finally {
+      isAutoSyncingRef.current = false;
+      setIsAutoSyncing(false);
+    }
+  }, []);
+
+  // Immediate two-way sync when auto-sync is enabled & connected, and whenever device regains network
   useEffect(() => {
     if (!isLoaded || !basicSettings.autoSyncGoogleDrive || !driveAuth.isConnected) return;
+    void runTwoWayAutoSync();
+
+    const handleOnline = () => {
+      void runTwoWayAutoSync();
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [
+    isLoaded,
+    basicSettings.autoSyncGoogleDrive,
+    driveAuth.isConnected,
+    runTwoWayAutoSync,
+  ]);
+
+  // Debounced background push to Google Drive (`sáchlazy`) on reading/book updates
+  useEffect(() => {
+    if (!isLoaded || !basicSettings.autoSyncGoogleDrive || !driveAuth.isConnected) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
     const token = getDriveAccessToken();
     if (!token) return;
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      if (isAutoSyncingRef.current) return;
+      isAutoSyncingRef.current = true;
       try {
         setIsAutoSyncing(true);
         await uploadProgressManifestToDrive(token, books, readingLogs);
@@ -185,6 +295,7 @@ export default function App() {
       } catch {
         // Silent background retry on next change
       } finally {
+        isAutoSyncingRef.current = false;
         if (!cancelled) setIsAutoSyncing(false);
       }
     }, 4000);
@@ -205,6 +316,19 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Thermal & battery saver: freeze continuous CSS animations whenever app is backgrounded
+  useEffect(() => {
+    const syncVisibility = () => {
+      document.documentElement.setAttribute(
+        'data-app-hidden',
+        document.hidden ? 'true' : 'false'
+      );
+    };
+    syncVisibility();
+    document.addEventListener('visibilitychange', syncVisibility);
+    return () => document.removeEventListener('visibilitychange', syncVisibility);
   }, []);
 
   const handleGlobalSearchAction = (action: GlobalSearchAction) => {
@@ -308,14 +432,99 @@ export default function App() {
     await saveBook(updated);
   };
 
-  const handleAddBook = async (newBook: Book, openImmediately = true) => {
-    setBooks((prev) => [newBook, ...prev]);
-    await saveBook(newBook);
+  const handleAddBook = async (
+    newBook: Book,
+    openImmediately = true,
+    options?: { bypassDuplicateCheck?: boolean }
+  ) => {
+    const incomingFp = newBook.fingerprint || computeBookFingerprint(newBook);
+    const normalizedIncoming: Book = { ...newBook, fingerprint: incomingFp };
+
+    if (!options?.bypassDuplicateCheck) {
+      const incomingTitleKey = normalizeBookMatchKey(normalizedIncoming.title);
+      const duplicate = booksRef.current.find(
+        (b) =>
+          (b.fingerprint || computeBookFingerprint(b)) === incomingFp ||
+          (Boolean(incomingTitleKey) && normalizeBookMatchKey(b.title) === incomingTitleKey)
+      );
+      if (duplicate) {
+        setPendingDuplicateBook({
+          existing: duplicate,
+          incoming: normalizedIncoming,
+          openImmediately,
+        });
+        return;
+      }
+    }
+
+    setBooks((prev) => [normalizedIncoming, ...prev]);
+    await saveBook(normalizedIncoming);
     if (openImmediately) {
-      setActiveBookId(newBook.id);
+      setActiveBookId(normalizedIncoming.id);
       setOpenAudioOnRead(false);
       setActiveTab('reader');
     }
+  };
+
+  const handleResolveDuplicateBook = async (
+    action: 'keep-existing' | 'overwrite-content' | 'rename-new'
+  ) => {
+    if (!pendingDuplicateBook) return;
+    const { existing, incoming, openImmediately } = pendingDuplicateBook;
+    setPendingDuplicateBook(null);
+
+    if (action === 'keep-existing') {
+      if (openImmediately) {
+        handleOpenBook(existing.id, false);
+      }
+      return;
+    }
+
+    if (action === 'overwrite-content') {
+      const clampedCh = Math.min(
+        Math.max(0, existing.currentChapterIndex),
+        Math.max(0, incoming.chapters.length - 1)
+      );
+      const maxPara = Math.max(0, (incoming.chapters[clampedCh]?.paragraphs.length || 1) - 1);
+      const clampedPara = Math.min(Math.max(0, existing.currentParagraphIndex), maxPara);
+      const overwritten: Book = {
+        ...incoming,
+        id: existing.id,
+        collection: existing.collection || incoming.collection,
+        currentChapterIndex: clampedCh,
+        currentParagraphIndex: clampedPara,
+        currentSentenceIndex: existing.currentSentenceIndex,
+        progressPercent: existing.progressPercent,
+        bookmarks: existing.bookmarks,
+        highlights: existing.highlights,
+        lastReadAt: Math.max(existing.lastReadAt, Date.now()),
+      };
+      await handleUpdateBook(overwritten);
+      if (openImmediately) {
+        handleOpenBook(overwritten.id, false);
+      }
+      return;
+    }
+
+    // Rename & save as separate copy
+    const existingKeys = new Set(
+      booksRef.current.map((b) => normalizeBookMatchKey(b.title)).filter(Boolean)
+    );
+    const baseTitle = incoming.title.replace(/\s*\(\d+\)\s*$/, '').trim() || 'Sách mới';
+    let suffix = 2;
+    let uniqueTitle = `${baseTitle} (${suffix})`;
+    while (existingKeys.has(normalizeBookMatchKey(uniqueTitle))) {
+      suffix += 1;
+      uniqueTitle = `${baseTitle} (${suffix})`;
+    }
+    const renamedBook: Book = {
+      ...incoming,
+      id: `book-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: uniqueTitle,
+      addedAt: Date.now(),
+      lastReadAt: Date.now(),
+    };
+    await handleAddBook(renamedBook, openImmediately, { bypassDuplicateCheck: true });
   };
 
   const handleUpdateCollections = (nextCollections: UserCollection[]) => {
@@ -472,7 +681,7 @@ export default function App() {
           : basicSettings.uiTheme === 'amoled'
           ? 'bg-black text-zinc-100'
           : 'bg-[var(--app-bg-light)] dark:bg-[var(--app-bg-dark)] text-stone-900 dark:text-stone-100'
-      } ${activeTab !== 'reader' ? 'pb-20' : ''}`}
+      } ${activeTab !== 'reader' ? 'pb-24' : ''}`}
     >
       {/* Non-Reader App Wallpaper Layer (strictly unmounted in Reader mode) */}
       {showAppWallpaper && activeWallpaperUrl && (
@@ -515,21 +724,39 @@ export default function App() {
             : 'bg-[var(--app-bg-light)]/95 dark:bg-[var(--app-bg-dark)]/95 border-stone-200 dark:border-stone-800'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-[56px] flex items-center justify-between gap-3 sm:gap-6">
-          {/* Zone 1: Single-line Brand Wordmark */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('library')}
-            className="text-lg sm:text-xl font-display font-bold tracking-tight text-stone-900 dark:text-stone-100 whitespace-nowrap shrink-0"
-          >
-            LaziRead
-          </button>
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-[48px] sm:h-[52px] flex items-center justify-between gap-1.5 sm:gap-6">
+          {/* Zone 1: BOOKHAD Brand Logo + Icon + (!) Info Button */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveTab('library')}
+              className="inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <img
+                src="/bookhad-icon.jpg"
+                alt="BOOKHAD"
+                className="w-6 h-6 sm:w-7 sm:h-7 rounded-[8px] object-cover shadow-xs ring-1 ring-amber-700/25 shrink-0"
+              />
+              <span className="text-[16px] sm:text-[18px] font-display font-bold tracking-tight text-stone-900 dark:text-stone-100">
+                BOOKHAD
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsAppInfoOpen(true)}
+              aria-label="Thông tin ứng dụng BOOKHAD, quyền riêng tư và điều khoản"
+              title="Thông tin ứng dụng BOOKHAD"
+              className="w-6 h-6 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 flex items-center justify-center text-amber-800 dark:text-amber-300 hover:bg-amber-800/10 transition-transform active:scale-90 shrink-0"
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
           {/* Zone 2: Liquid-Glass Sliding Water-Drop Desktop Navigation */}
           <nav
             ref={desktopNavRef}
             aria-label="Điều hướng chính"
-            className="relative hidden md:flex items-center gap-1 p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-xs font-medium min-w-0"
+            className="relative hidden md:flex items-center gap-1 p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium min-w-0"
           >
             <LiquidDropThumb
               thumb={desktopNavThumb}
@@ -540,7 +767,7 @@ export default function App() {
               type="button"
               data-liquid-key="library"
               onClick={() => setActiveTab('library')}
-              className={`relative z-10 ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 ${
+              className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full whitespace-nowrap shrink-0 ${
                 activeTab === 'library'
                   ? 'text-amber-800 dark:text-amber-300 font-semibold'
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
@@ -554,7 +781,7 @@ export default function App() {
                 if (activeBook) setActiveTab('reader');
               }}
               disabled={!activeBook}
-              className="relative z-10 ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 disabled:opacity-40 text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white"
+              className="relative z-10 ios-liquid-pill px-3 py-1 rounded-full whitespace-nowrap shrink-0 disabled:opacity-40 text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white"
             >
               Trình đọc
             </button>
@@ -562,7 +789,7 @@ export default function App() {
               type="button"
               data-liquid-key="web"
               onClick={() => setActiveTab('web')}
-              className={`relative z-10 ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 ${
+              className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full whitespace-nowrap shrink-0 ${
                 activeTab === 'web'
                   ? 'text-amber-800 dark:text-amber-300 font-semibold'
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
@@ -574,7 +801,7 @@ export default function App() {
               type="button"
               data-liquid-key="studio"
               onClick={() => setActiveTab('studio')}
-              className={`relative z-10 ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 ${
+              className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full whitespace-nowrap shrink-0 ${
                 activeTab === 'studio'
                   ? 'text-amber-800 dark:text-amber-300 font-semibold'
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
@@ -586,7 +813,7 @@ export default function App() {
               type="button"
               data-liquid-key="settings"
               onClick={() => setActiveTab('settings')}
-              className={`relative z-10 ios-liquid-pill px-3.5 py-1.5 rounded-full whitespace-nowrap shrink-0 ${
+              className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full whitespace-nowrap shrink-0 ${
                 activeTab === 'settings'
                   ? 'text-amber-800 dark:text-amber-300 font-semibold'
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
@@ -596,14 +823,14 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Zone 3: Universal In-App Search + Theme Switcher + Single Primary Action */}
+          {/* Zone 3: Universal In-App Search + Theme Switcher + Compact Primary Action */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setIsGlobalSearchOpen(true)}
               aria-label="Tìm kiếm toàn ứng dụng"
               title="Tìm kiếm sách, cài đặt, đồng bộ, tải sách... (Ctrl+K)"
-              className="ios-liquid-pill inline-flex items-center justify-center gap-1.5 h-9 px-2.5 sm:px-3.5 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-xs font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 dark:hover:text-amber-300 shrink-0"
+              className="ios-liquid-pill inline-flex items-center justify-center gap-1 w-8 h-8 sm:w-auto sm:h-8 sm:px-3 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 dark:hover:text-amber-300 shrink-0"
             >
               <Search className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">Tìm kiếm</span>
@@ -615,16 +842,16 @@ export default function App() {
                 isDarkOrAmoled ? 'Đổi giao diện Sáng / AMOLED' : 'Chuyển giao diện tối'
               }
               title={`Giao diện: ${basicSettings.uiTheme.toUpperCase()}`}
-              className="ios-liquid-pill w-9 h-9 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 flex items-center justify-center text-stone-700 dark:text-stone-300 hover:text-amber-800 dark:hover:text-amber-300"
+              className="ios-liquid-pill w-8 h-8 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 flex items-center justify-center text-stone-700 dark:text-stone-300 hover:text-amber-800 dark:hover:text-amber-300 shrink-0"
             >
-              {isDarkOrAmoled ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {isDarkOrAmoled ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
             </button>
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}
-              className="ios-liquid-btn inline-flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-95 whitespace-nowrap shrink-0"
+              className="ios-liquid-btn inline-flex items-center justify-center gap-0.5 sm:gap-1 h-8 px-2 sm:px-3 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[10px] sm:text-[11px] font-semibold hover:opacity-95 whitespace-nowrap shrink-0"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-3 h-3 shrink-0" />
               <span>Thêm sách</span>
             </button>
           </div>
@@ -634,10 +861,17 @@ export default function App() {
 
       {!isLoaded ? (
         <div className="max-w-7xl mx-auto px-6 py-16 text-xs text-stone-500">
-          Đang tải tủ sách LaziRead...
+          Đang tải tủ sách BOOKHAD...
         </div>
       ) : (
-        <>
+        <Suspense
+          fallback={
+            <div className="max-w-7xl mx-auto px-6 py-16 flex items-center gap-2 text-xs text-stone-500">
+              <Loader2 className="w-4 h-4 animate-spin text-amber-800" />
+              <span>Đang mở...</span>
+            </div>
+          }
+        >
           {activeBook && (activeTab === 'reader' || isReaderAudioPlaying) && (
             <div className={activeTab === 'reader' ? 'ios-reader-enter' : 'hidden'}>
               <ReaderView
@@ -664,7 +898,16 @@ export default function App() {
           )}
 
           {activeTab !== 'reader' && (
-            <div key={activeTab} className="relative z-10 ios-view-enter">
+            <div
+              key={activeTab}
+              className={`relative z-10 ${
+                tabDirection === 'forward'
+                  ? 'ios-tab-forward'
+                  : tabDirection === 'backward'
+                  ? 'ios-tab-backward'
+                  : 'ios-view-enter'
+              }`}
+            >
               {activeTab === 'library' && (
                 <LibraryView
                   books={books}
@@ -677,6 +920,9 @@ export default function App() {
                   onOpenImportModal={() => setIsImportOpen(true)}
                   onGoToWebScraper={() => setActiveTab('web')}
                   onRestoreSamples={handleRestoreSamples}
+                  onDuplicateAsNewBook={(copy) =>
+                    handleAddBook(copy, false, { bypassDuplicateCheck: true })
+                  }
                   focusCollectionSignal={focusCollectionSignal}
                 />
               )}
@@ -720,7 +966,7 @@ export default function App() {
               )}
             </div>
           )}
-        </>
+        </Suspense>
       )}
 
       {/* iPhone-Style Floating Raised Glass Bottom Dock with Sliding Transparent Water-Drop */}
@@ -728,7 +974,7 @@ export default function App() {
         <nav
           ref={mobileDockRef}
           aria-label="Thanh điều hướng nổi iPhone"
-          className={`fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1.5rem)] max-w-[368px] sm:w-auto sm:max-w-none ios-glass-dock rounded-[24px] p-1 border grid grid-cols-4 sm:flex sm:items-center sm:justify-center gap-1 sm:gap-1.5 ${
+          className={`fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:w-auto sm:max-w-none h-[60px] sm:h-auto ios-glass-dock rounded-[24px] p-1 border grid grid-cols-4 sm:flex sm:items-center sm:justify-center gap-0.5 sm:gap-1.5 ${
             basicSettings.uiTheme === 'amoled'
               ? 'border-zinc-800/90'
               : 'border-white/75 dark:border-zinc-700/60'
@@ -755,14 +1001,14 @@ export default function App() {
                 type="button"
                 data-liquid-key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`relative z-10 ios-liquid-pill min-w-0 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-1 sm:px-3.5 py-1.5 sm:py-2 rounded-[20px] min-h-[42px] sm:min-h-[38px] ${
+                className={`relative z-10 ios-liquid-pill min-w-0 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 px-1 sm:px-3.5 py-1.5 sm:py-2 rounded-[20px] min-h-[50px] sm:min-h-[38px] ${
                   active
                     ? 'text-amber-800 dark:text-amber-300 font-semibold'
                     : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5 shrink-0" />
-                <span className="text-[9.5px] sm:text-xs leading-tight tracking-tight truncate max-w-full">
+                <Icon className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[11px] sm:text-xs leading-tight tracking-tight whitespace-nowrap">
                   {item.label}
                 </span>
               </button>
@@ -771,12 +1017,12 @@ export default function App() {
         </nav>
       )}
 
-      {/* LaziBook-Style Spinning Vinyl Book Disc (Bottom Right) */}
+      {/* BOOKHAD Sleek Spinning Vinyl Book Disc (Bottom Right) */}
       <FloatingBookDisc
         book={activeBook}
         isAudioPlaying={isReaderAudioPlaying}
         isReaderOpen={activeTab === 'reader'}
-        onClickDisc={() => {
+        onClick={() => {
           if (!activeBook) return;
           if (activeTab !== 'reader') {
             handleOpenBook(activeBook.id, isReaderAudioPlaying);
@@ -883,21 +1129,112 @@ export default function App() {
 
       <OfflineIndicator />
 
-      <ImportBookModal
-        isOpen={isImportOpen}
-        onClose={() => setIsImportOpen(false)}
-        onImportBook={handleAddBook}
-        defaultReadingStyle={basicSettings.defaultReadingStyle}
-        standaloneDeviceMode={isStandaloneDeviceMode}
-      />
+      <Suspense fallback={null}>
+        {isImportOpen && (
+          <ImportBookModal
+            isOpen={isImportOpen}
+            onClose={() => setIsImportOpen(false)}
+            onImportBook={handleAddBook}
+            defaultReadingStyle={basicSettings.defaultReadingStyle}
+            standaloneDeviceMode={isStandaloneDeviceMode}
+          />
+        )}
 
-      <GlobalSearchModal
-        isOpen={isGlobalSearchOpen}
-        onClose={() => setIsGlobalSearchOpen(false)}
-        books={books}
-        collections={userCollections}
-        onSelectAction={handleGlobalSearchAction}
-      />
+        {isGlobalSearchOpen && (
+          <GlobalSearchModal
+            isOpen={isGlobalSearchOpen}
+            onClose={() => setIsGlobalSearchOpen(false)}
+            books={books}
+            collections={userCollections}
+            onSelectAction={handleGlobalSearchAction}
+          />
+        )}
+
+        {isAppInfoOpen && (
+          <AppInfoModal
+            isOpen={isAppInfoOpen}
+            onClose={() => setIsAppInfoOpen(false)}
+          />
+        )}
+      </Suspense>
+
+      {pendingDuplicateBook && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="duplicate-book-modal-title"
+          className="fixed inset-0 z-[70] bg-black/45 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#FBF9F5] dark:bg-[#191B1F] border border-stone-200 dark:border-stone-800 shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <h3
+                  id="duplicate-book-modal-title"
+                  className="text-[16px] font-semibold text-stone-900 dark:text-stone-100"
+                >
+                  Phát hiện sách trùng tên
+                </h3>
+                <p className="text-[13px] leading-[1.4] text-stone-600 dark:text-stone-400">
+                  Sách{' '}
+                  <span className="font-semibold text-stone-900 dark:text-stone-100">
+                    “{pendingDuplicateBook.incoming.title}”
+                  </span>{' '}
+                  đã có sẵn trong thư viện ({pendingDuplicateBook.existing.progressPercent}% đã đọc).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDuplicateBook(null)}
+                aria-label="Đóng thông báo trùng sách"
+                className="p-1.5 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => handleResolveDuplicateBook('keep-existing')}
+                className="w-full text-left px-3.5 py-2.5 rounded-xl border border-stone-200 dark:border-stone-800 hover:bg-stone-100 dark:hover:bg-stone-800/70 transition-colors"
+              >
+                <p className="text-[13px] font-semibold text-stone-900 dark:text-stone-100">
+                  1. Giữ nguyên sách cũ ({pendingDuplicateBook.existing.progressPercent}%)
+                </p>
+                <p className="text-[12px] text-stone-500 mt-0.5">
+                  Không thêm bản trùng, dùng bản đang có để đồng bộ tiến độ.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleResolveDuplicateBook('overwrite-content')}
+                className="w-full text-left px-3.5 py-2.5 rounded-xl border border-stone-200 dark:border-stone-800 hover:bg-stone-100 dark:hover:bg-stone-800/70 transition-colors"
+              >
+                <p className="text-[13px] font-semibold text-stone-900 dark:text-stone-100">
+                  2. Ghi đè nội dung mới (giữ nguyên trang đang đọc)
+                </p>
+                <p className="text-[12px] text-stone-500 mt-0.5">
+                  Cập nhật chương mới vào sách cũ mà không mất bookmark & vị trí đọc.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleResolveDuplicateBook('rename-new')}
+                className="w-full text-left px-3.5 py-2.5 rounded-xl bg-amber-800 text-white hover:bg-amber-900 transition-colors"
+              >
+                <p className="text-[13px] font-semibold">
+                  3. Đổi tên & lưu thành file mới
+                </p>
+                <p className="text-[12px] text-amber-100 mt-0.5">
+                  Tự thêm hậu tố (2), (3)... để giữ cả 2 file riêng biệt.
+                </p>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

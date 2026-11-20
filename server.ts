@@ -204,7 +204,7 @@ async function startServer() {
 
           const aiResp = await ai.models.generateContent({
             model: 'gemini-4-hydrogen',
-            contents: `You are an expert ebook web-page scanner. Extract ONLY the clean story/book chapter content from this web page (${parsedUrl.toString()}), removing ads, menus, comments, and site boilerplate. Also identify the exact next-chapter URL if present in the candidate links.\n\nCandidate links:\n${candidateLinks || '(none)'}\n\nExtracted page text:\n${strippedText}`,
+            contents: `You are an expert ebook web-page scanner. Extract ONLY the clean story/book chapter content from this web page (${parsedUrl.toString()}), removing ads, menus, comments, and site boilerplate. Also scan the bottom and right-edge navigation links to find the exact next-chapter/next-page URL if present.\n\nCandidate links:\n${candidateLinks || '(none)'}\n\nExtracted page text:\n${strippedText}`,
             config: {
               responseMimeType: 'application/json',
               responseSchema: {
@@ -542,6 +542,103 @@ async function startServer() {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi nhận dạng & dịch ảnh.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // Silent multi-page book scanner (video frames or photo batch -> structured EPUB chapters)
+  app.post('/api/ai/scan-book-pages', async (req, res) => {
+    try {
+      const {
+        pages,
+        targetLang = 'vi',
+        translateMode = 'original',
+        fallbackTitle = 'Sách quét từ video',
+      } = req.body as {
+        pages: Array<{ base64: string; mimeType?: string }>;
+        targetLang?: string;
+        translateMode?: 'original' | 'override' | 'bilingual';
+        fallbackTitle?: string;
+      };
+
+      if (!Array.isArray(pages) || pages.length === 0) {
+        res.status(400).json({ error: 'Thiếu danh sách trang sách cần quét.' });
+        return;
+      }
+
+      const ai = getAiClient();
+      const langLabel = getLanguageName(targetLang);
+      const boundedPages = pages.slice(0, 12);
+
+      const parts: Array<
+        | { inlineData: { mimeType: string; data: string } }
+        | { text: string }
+      > = boundedPages.map((p) => ({
+        inlineData: {
+          mimeType: p.mimeType || 'image/jpeg',
+          data: p.base64,
+        },
+      }));
+
+      const modeInstruction =
+        translateMode === 'override'
+          ? `Translate every extracted paragraph smoothly into ${langLabel}. Output only the translated text in paragraphs.`
+          : translateMode === 'bilingual'
+          ? `For each paragraph, output the original paragraph followed by its ${langLabel} translation as clean consecutive paragraphs.`
+          : 'Keep the exact original language cleanly corrected for OCR typos and merged across line wraps.';
+
+      parts.push({
+        text: `You are an ultra-accurate book digitization engine. These ${boundedPages.length} ordered frames were captured while flipping through a physical or digital book.
+1. Deduplicate any repeated page or overlapping text between consecutive frames.
+2. Ignore page numbers, headers/footers, finger shadows, margins, and UI chrome.
+3. Reconstruct clean reading-order paragraphs and group them into logical chapters (create "Chương 1" if no explicit chapter heading is visible).
+4. Infer book title and author if visible (otherwise use "${fallbackTitle}").
+5. ${modeInstruction}`,
+      });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: { parts },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              author: { type: Type.STRING },
+              chapters: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    paragraphs: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                  },
+                  required: ['title', 'paragraphs'],
+                },
+              },
+            },
+            required: ['title', 'chapters'],
+          },
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}') as {
+        title?: string;
+        author?: string;
+        chapters?: Array<{ title: string; paragraphs: string[] }>;
+      };
+
+      res.json({
+        title: parsed.title?.trim() || fallbackTitle,
+        author: parsed.author?.trim() || 'BOOKHAD Scan',
+        chapters: Array.isArray(parsed.chapters) ? parsed.chapters : [],
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Lỗi quét trang sách thành EPUB.';
       res.status(500).json({ error: msg });
     }
   });
@@ -926,7 +1023,7 @@ export class ErrorOverlay extends HTMLElement {}
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`LaziRead server running at http://localhost:${PORT}`);
+    console.log(`BOOKHAD server running at http://localhost:${PORT}`);
   });
 }
 

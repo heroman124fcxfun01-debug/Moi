@@ -93,3 +93,35 @@ export function getVintagePaperTextureStyles(themeId: PaperThemeId): {
   }
   return {};
 }
+
+export interface InteractiveCurlTransform {
+  progress: number;
+  direction: 'next' | 'prev';
+  rotateYDeg: number;
+  translateXPx: number;
+  shadowAlpha: number;
+  shouldCommitFlip: boolean;
+}
+
+/**
+ * Maps live touch/mouse horizontal drag distance (deltaX) across a book stage width
+ * to a continuous 3D page-peel angle, horizontal shift, curl shadow opacity, and commit threshold.
+ */
+export function computeInteractiveCurlTransform(
+  deltaX: number,
+  stageWidth: number
+): InteractiveCurlTransform {
+  const safeWidth = Math.max(120, stageWidth || 360);
+  const progress = Math.min(1, Math.max(0, Math.abs(deltaX) / safeWidth));
+  const direction: 'next' | 'prev' = deltaX < 0 ? 'next' : 'prev';
+  const sign = direction === 'next' ? -1 : 1;
+  return {
+    progress,
+    direction,
+    rotateYDeg: Number((sign * progress * 64).toFixed(2)),
+    translateXPx: Number((deltaX * 0.24).toFixed(2)),
+    shadowAlpha: Number((progress * 0.26).toFixed(3)),
+    shouldCommitFlip: progress >= 0.2,
+  };
+}
+

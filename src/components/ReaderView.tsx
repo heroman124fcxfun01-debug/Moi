@@ -1,21 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  AlertCircle,
   ArrowLeft,
   Bookmark,
   BookMarked,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Disc3,
   Download,
   FileOutput,
   Headphones,
   Languages,
-  List,
   Loader2,
-  MoreVertical,
+  Menu,
   Music,
-  PackageCheck,
+  Pause,
   Play,
   RotateCcw,
   Settings,
@@ -25,7 +26,6 @@ import {
 import type {
   AppBasicSettings,
   Book,
-  BookReadingStyle,
   ChapterAnalysis,
   CharacterVoiceAssignment,
   CustomAmbientTrack,
@@ -44,6 +44,8 @@ import {
 import {
   buildRenderedParagraphs,
   computeReadingProgress,
+  isPageBookmarked,
+  togglePageBookmark,
 } from '../utils/textProcessing';
 import {
   findScreenPageForParagraph,
@@ -52,17 +54,13 @@ import {
 } from '../utils/screenPaginator';
 import {
   PAGE_TURN_STYLES,
+  computeInteractiveCurlTransform,
   getPageTurnAnimationClass,
   getVintagePaperTextureStyles,
 } from '../utils/readerEffects';
 import { buildEpubBlob } from '../utils/epubBuilder';
 import { ambientSoundManager } from '../utils/ambientSoundEngine';
-import {
-  downloadLanguagePackToApp,
-  getLanguagePackDefinition,
-  loadInstalledLanguagePacks,
-  type InstalledLanguagePack,
-} from '../utils/languagePacks';
+import { getLanguagePackDefinition } from '../utils/languagePacks';
 import {
   hasOriginalBookBackup,
   restoreOriginalBookFromBackup,
@@ -70,9 +68,11 @@ import {
   translateParagraphsFast,
 } from '../utils/bookTranslator';
 import { triggerDeviceHaptic } from '../utils/deviceHardware';
+import { unlockAudioPlaybackSync } from '../utils/deviceTtsEngine';
 import { ReaderSettingsDrawer } from './ReaderSettingsDrawer';
 import { AudiobookStudioDrawer } from './AudiobookStudioDrawer';
 import { AmbientSoundDrawer } from './AmbientSoundDrawer';
+import { GlassSelect, type GlassSelectOption } from './GlassSelect';
 
 interface ReaderViewProps {
   book: Book;
@@ -134,10 +134,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [showAudio, setShowAudio] = useState(initialOpenAudio);
   const [showAmbient, setShowAmbient] = useState(false);
   const [showToolsMenu, setShowToolsMenu] = useState(false);
+  const [showQuickActions, setShowQuickActions] = useState(false);
+  const [isAudioPlayingLocal, setIsAudioPlayingLocal] = useState(false);
+  const [isAudioSessionActive, setIsAudioSessionActive] = useState(false);
   const [ambientActiveCount, setAmbientActiveCount] = useState(
     () => Object.keys(ambientSoundManager.getSnapshot().activeVolumes).length
   );
   const [autoPlaySignal, setAutoPlaySignal] = useState(0);
+  const [togglePlaySignal, setTogglePlaySignal] = useState(0);
 
   useEffect(() => {
     return ambientSoundManager.subscribe((snap) => {
@@ -164,11 +168,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [isTranslating, setIsTranslating] = useState(false);
   const [translateError, setTranslateError] = useState('');
   const [translateStatusMsg, setTranslateStatusMsg] = useState('');
-  const [installedPacks, setInstalledPacks] = useState<Record<string, InstalledLanguagePack>>(() =>
-    loadInstalledLanguagePacks()
-  );
-  const [isDownloadingPack, setIsDownloadingPack] = useState(false);
-  const [packProgressMsg, setPackProgressMsg] = useState('');
   const [isTranslatingFullEpub, setIsTranslatingFullEpub] = useState(false);
   const [fullEpubProgress, setFullEpubProgress] = useState<{
     percent: number;
@@ -179,6 +178,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [turnDirection, setTurnDirection] = useState<'next' | 'prev'>('next');
   const [turnTick, setTurnTick] = useState(0);
+  const [dragCurlDeltaX, setDragCurlDeltaX] = useState<number | null>(null);
   const [spokenParaIndex, setSpokenParaIndex] = useState<number | null>(null);
   const [spokenProgressRatio, setSpokenProgressRatio] = useState(0);
   const [activeParaAction, setActiveParaAction] = useState<{
@@ -186,20 +186,37 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     copied?: boolean;
   } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [stageSize, setStageSize] = useState<{ width: number; height: number }>(() => ({
-    width: typeof window !== 'undefined' ? Math.min(window.innerWidth - 32, 672) : 360,
-    height: typeof window !== 'undefined' ? Math.max(320, window.innerHeight - 132) : 600,
-  }));
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>(() => {
+    if (typeof window === 'undefined') return { width: 360, height: 600 };
+    const widthLimitMap: Record<ReaderSettings['pageWidth'], number> = {
+      narrow: 576,
+      medium: 672,
+      wide: 896,
+      full: 1152,
+    };
+    const rawW = window.innerWidth;
+    const rawH = Math.max(320, window.innerHeight - 108);
+    const horizPad = rawW >= 640 ? 64 : 32;
+    const maxArticleW = widthLimitMap[settings.pageWidth] || 672;
+    return {
+      width: Math.max(220, Math.min(rawW - horizPad, maxArticleW)),
+      height: Math.max(240, rawH - 18),
+    };
+  });
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pageMeasureBoxRef = useRef<HTMLDivElement>(null);
   const paraRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const touchStartXRef = useRef<number | null>(null);
-  const touchStartYRef = useRef<number | null>(null);
+  const dragStartXRef = useRef<number | null>(null);
+  const dragStartYRef = useRef<number | null>(null);
+  const isHorizontalDragRef = useRef(false);
+  const suppressNextClickRef = useRef(false);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const longPressOriginRef = useRef<{ x: number; y: number } | null>(null);
   const pendingLastPageOnPrevChapterRef = useRef(false);
+  const pendingTargetPageRef = useRef<number | null>(null);
+  const hasUserTurnedRef = useRef(false);
   const anchorParagraphRef = useRef<number>(book.currentParagraphIndex || 0);
 
   const chapterIndex = Math.min(
@@ -207,7 +224,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     Math.max(0, book.chapters.length - 1)
   );
   const currentChapter = book.chapters[chapterIndex];
-  const readingStyle: BookReadingStyle = book.readingStyle || 'novel';
 
   const activeTheme = useMemo(() => {
     if (settings.paperTheme === 'custom') {
@@ -273,26 +289,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  const handleDownloadActiveLanguagePack = async (langCode: string) => {
-    setTranslateError('');
-    setIsDownloadingPack(true);
-    setPackProgressMsg('Đang tải gói ngôn ngữ vào app...');
-    try {
-      const pack = await downloadLanguagePackToApp(langCode, (_pct, msg) => {
-        setPackProgressMsg(msg);
-      });
-      setInstalledPacks((prev) => ({ ...prev, [pack.code]: pack }));
-      setTranslateStatusMsg(
-        `Đã tải gói ngôn ngữ ${pack.label} vào ứng dụng (${pack.sizeLabel}). Tốc độ dịch và độ chuẩn văn học đã được kích hoạt!`
-      );
-    } catch (err) {
-      setTranslateError(err instanceof Error ? err.message : 'Không thể tải gói ngôn ngữ.');
-    } finally {
-      setIsDownloadingPack(false);
-      setPackProgressMsg('');
-    }
-  };
-
   const handleTranslateEntireBookAndOverwriteEpub = async () => {
     if (isTranslatingFullEpub) return;
     setTranslateError('');
@@ -302,14 +298,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     fullTranslateAbortRef.current = controller;
 
     try {
-      // Auto-install language pack if missing so translation uses literary rules immediately
-      if (!installedPacks[settings.targetLang]) {
-        const pack = await downloadLanguagePackToApp(settings.targetLang, (_p, msg) => {
-          setFullEpubProgress({ percent: 5, message: msg });
-        });
-        setInstalledPacks((prev) => ({ ...prev, [pack.code]: pack }));
-      }
-
       const { overwrittenBook, epubBlob, translatedChapterCount } =
         await translateEntireBookAndBuildEpub({
           book,
@@ -386,7 +374,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       const horizPad = window.innerWidth >= 640 ? 64 : 32;
       const maxArticleW = widthLimitMap[settings.pageWidth] || 672;
       const contentW = Math.max(220, Math.min(rawW - horizPad, maxArticleW));
-      const contentH = Math.max(260, rawH - 18);
+      const contentH = Math.max(240, rawH - 18);
       setStageSize((prev) =>
         Math.abs(prev.width - contentW) > 3 || Math.abs(prev.height - contentH) > 3
           ? { width: contentW, height: contentH }
@@ -436,6 +424,15 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   // Keep user anchored on their exact reading paragraph whenever fontSize or viewport re-paginates
   useEffect(() => {
     if (settings.readingMode !== 'paginated') return;
+    if (pendingTargetPageRef.current !== null) {
+      const requested = pendingTargetPageRef.current;
+      pendingTargetPageRef.current = null;
+      const clamped = Math.min(Math.max(0, requested), Math.max(0, screenPages.length - 1));
+      const chunk = screenPages[clamped]?.chunks[0];
+      if (chunk) anchorParagraphRef.current = chunk.paragraphIndex;
+      setCurrentPageIndex(clamped);
+      return;
+    }
     if (pendingLastPageOnPrevChapterRef.current) {
       pendingLastPageOnPrevChapterRef.current = false;
       setCurrentPageIndex(Math.max(0, screenPages.length - 1));
@@ -469,8 +466,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   }, [spokenParaIndex, settings.readingMode, screenPages]);
 
   useEffect(() => {
+    hasUserTurnedRef.current = false;
+  }, [book.id]);
+
+  useEffect(() => {
     setActiveParaAction(null);
-    if (pendingLastPageOnPrevChapterRef.current) {
+    if (pendingTargetPageRef.current !== null) {
+      const requested = pendingTargetPageRef.current;
+      const clamped = Math.min(Math.max(0, requested), Math.max(0, screenPages.length - 1));
+      setCurrentPageIndex(clamped);
+      const chunk = screenPages[clamped]?.chunks[0];
+      anchorParagraphRef.current = chunk?.paragraphIndex ?? 0;
+    } else if (pendingLastPageOnPrevChapterRef.current) {
       const lastIdx = Math.max(0, screenPages.length - 1);
       setCurrentPageIndex(lastIdx);
       const lastChunk = screenPages[lastIdx]?.chunks[0];
@@ -501,6 +508,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const commitPageChange = (nextPageIdx: number, direction: 'next' | 'prev') => {
     setActiveParaAction(null);
+    hasUserTurnedRef.current = true;
     setTurnDirection(direction);
     setTurnTick((t) => t + 1);
     setCurrentPageIndex(nextPageIdx);
@@ -517,6 +525,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       commitPageChange(currentPageIndex + 1, 'next');
     } else if (chapterIndex < book.chapters.length - 1) {
       pendingLastPageOnPrevChapterRef.current = false;
+      hasUserTurnedRef.current = true;
       setTurnDirection('next');
       setTurnTick((t) => t + 1);
       goToChapter(chapterIndex + 1);
@@ -529,6 +538,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       commitPageChange(currentPageIndex - 1, 'prev');
     } else if (chapterIndex > 0) {
       pendingLastPageOnPrevChapterRef.current = true;
+      hasUserTurnedRef.current = true;
       setTurnDirection('prev');
       setTurnTick((t) => t + 1);
       goToChapter(chapterIndex - 1);
@@ -591,48 +601,54 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     });
   };
 
-  const goToChapter = (idx: number) => {
+  const goToChapter = (
+    idx: number,
+    opts?: { targetPageIndex?: number; targetParagraphIndex?: number }
+  ) => {
     const clamped = Math.min(Math.max(0, idx), book.chapters.length - 1);
+    hasUserTurnedRef.current = true;
     setTurnDirection(clamped >= chapterIndex ? 'next' : 'prev');
     setTurnTick((t) => t + 1);
-    const pct = computeReadingProgress(book.chapters, clamped, 0);
+
+    const targetPara = opts?.targetParagraphIndex ?? 0;
+    if (typeof opts?.targetPageIndex === 'number') {
+      pendingTargetPageRef.current = opts.targetPageIndex;
+    } else {
+      pendingTargetPageRef.current = null;
+    }
+    if (!pendingLastPageOnPrevChapterRef.current) {
+      anchorParagraphRef.current = targetPara;
+    }
+
+    if (
+      clamped === chapterIndex &&
+      typeof opts?.targetPageIndex === 'number' &&
+      settings.readingMode === 'paginated'
+    ) {
+      const clampedPage = Math.min(
+        Math.max(0, opts.targetPageIndex),
+        Math.max(0, screenPages.length - 1)
+      );
+      pendingTargetPageRef.current = null;
+      setCurrentPageIndex(clampedPage);
+      const chunk = screenPages[clampedPage]?.chunks[0];
+      if (chunk) {
+        anchorParagraphRef.current = chunk.paragraphIndex;
+        syncParagraphPosition(chunk.paragraphIndex);
+      }
+      setShowToc(false);
+      return;
+    }
+
+    const pct = computeReadingProgress(book.chapters, clamped, targetPara);
     onUpdateBook({
       ...book,
       currentChapterIndex: clamped,
-      currentParagraphIndex: 0,
+      currentParagraphIndex: targetPara,
       progressPercent: pct,
       lastReadAt: Date.now(),
     });
     setShowToc(false);
-  };
-
-  const isBookmarked = book.bookmarks.some((bm) => bm.chapterId === currentChapter?.id);
-
-  const toggleChapterBookmark = () => {
-    if (!currentChapter) return;
-    if (isBookmarked) {
-      onUpdateBook({
-        ...book,
-        bookmarks: book.bookmarks.filter((bm) => bm.chapterId !== currentChapter.id),
-      });
-    } else {
-      onUpdateBook({
-        ...book,
-        bookmarks: [
-          ...book.bookmarks,
-          {
-            id: `bm-${Date.now()}`,
-            chapterId: currentChapter.id,
-            chapterTitle: currentChapter.title,
-            paragraphIndex: book.currentParagraphIndex || 0,
-            excerpt:
-              currentChapter.paragraphs[book.currentParagraphIndex || 0]?.slice(0, 120) ||
-              currentChapter.title,
-            createdAt: Date.now(),
-          },
-        ],
-      });
-    }
   };
 
   const toggleHighlight = (paraIdx: number, color: HighlightItem['color']) => {
@@ -719,6 +735,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const handleContinueListenFromHere = () => {
+    unlockAudioPlaybackSync();
     setShowSettings(false);
     setShowAmbient(false);
     setShowToolsMenu(false);
@@ -765,6 +782,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const handleCanvasTapForPagination = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      return;
+    }
     if (longPressTriggeredRef.current) {
       longPressTriggeredRef.current = false;
       return;
@@ -777,33 +798,64 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     if ((e.target as HTMLElement).closest('button, select, input')) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const xRatio = (e.clientX - rect.left) / rect.width;
-    if (xRatio < 0.28) {
+    if (xRatio < 0.3) {
       goPrevPage();
-    } else if (xRatio > 0.72) {
+    } else if (xRatio > 0.7) {
       goNextPage();
     }
   };
 
-  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+  const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (settings.readingMode !== 'paginated') return;
-    touchStartXRef.current = e.touches[0]?.clientX ?? null;
-    touchStartYRef.current = e.touches[0]?.clientY ?? null;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('button, select, input')) return;
+    dragStartXRef.current = e.clientX;
+    dragStartYRef.current = e.clientY;
+    isHorizontalDragRef.current = false;
   };
 
-  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+  const handleStagePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (settings.readingMode !== 'paginated' || dragStartXRef.current === null) return;
+    if (e.pointerType === 'mouse' && e.buttons !== 1) return;
+    const dx = e.clientX - dragStartXRef.current;
+    const dy = e.clientY - (dragStartYRef.current ?? e.clientY);
+    if (!isHorizontalDragRef.current) {
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+        isHorizontalDragRef.current = true;
+        clearLongPressTimer();
+      } else {
+        return;
+      }
+    }
+    if (settings.pageTurnStyle === 'curl') {
+      setDragCurlDeltaX(dx);
+    }
+  };
+
+  const finishStageDrag = (clientX?: number) => {
     clearLongPressTimer();
-    if (settings.readingMode !== 'paginated' || touchStartXRef.current === null) return;
-    const endX = e.changedTouches[0]?.clientX;
-    const endY = e.changedTouches[0]?.clientY;
-    const startX = touchStartXRef.current;
-    const startY = touchStartYRef.current ?? 0;
-    touchStartXRef.current = null;
-    touchStartYRef.current = null;
-    if (typeof endX !== 'number') return;
-    const deltaX = endX - startX;
-    const deltaY = typeof endY === 'number' ? Math.abs(endY - startY) : 0;
-    if (Math.abs(deltaX) > 40 && Math.abs(deltaX) > deltaY * 1.15) {
-      if (deltaX < 0) {
+    const startX = dragStartXRef.current;
+    const wasHorizontal = isHorizontalDragRef.current;
+    dragStartXRef.current = null;
+    dragStartYRef.current = null;
+    isHorizontalDragRef.current = false;
+
+    if (!wasHorizontal || startX === null || typeof clientX !== 'number') {
+      setDragCurlDeltaX(null);
+      return;
+    }
+
+    suppressNextClickRef.current = true;
+    const dx = clientX - startX;
+    const curlEval = computeInteractiveCurlTransform(dx, stageSize.width);
+    const shouldFlip =
+      settings.pageTurnStyle === 'curl'
+        ? curlEval.shouldCommitFlip
+        : Math.abs(dx) > 40;
+
+    setDragCurlDeltaX(null);
+    if (shouldFlip) {
+      if (dx < 0) {
         goNextPage();
       } else {
         goPrevPage();
@@ -812,7 +864,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const renderIlluminatedText = (text: string, isSpoken: boolean) => {
-    if (!isSpoken) return text;
+    if (!isSpoken || settings.highlightSpokenText === false) return text;
     const words = text.split(/(\s+)/);
     const nonSpaceTotal = words.filter((w) => w.trim().length > 0).length;
     const currentWordIdx = Math.min(
@@ -861,10 +913,62 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         }));
 
   const isPaginatedMode = settings.readingMode === 'paginated';
+  const activePageAnchorParagraph =
+    activeScreenPage.chunks[0]?.paragraphIndex ?? book.currentParagraphIndex ?? 0;
+  const isCurrentPageBookmarked = isPageBookmarked(
+    book.bookmarks,
+    currentChapter?.id,
+    safePageIndex,
+    isPaginatedMode,
+    activePageAnchorParagraph
+  );
+
+  const togglePageBookmarkHandler = (overrideParaIdx?: number) => {
+    if (!currentChapter) return;
+    const paraIdx =
+      !isPaginatedMode && typeof overrideParaIdx === 'number'
+        ? overrideParaIdx
+        : activePageAnchorParagraph;
+    const targetPage = isPaginatedMode ? safePageIndex : 0;
+    const excerpt =
+      activeScreenPage.chunks[0]?.original.slice(0, 100) ||
+      currentChapter.paragraphs[paraIdx]?.slice(0, 100) ||
+      currentChapter.title;
+    const { nextBookmarks } = togglePageBookmark(book.bookmarks, {
+      chapterId: currentChapter.id,
+      chapterTitle: currentChapter.title,
+      pageIndex: targetPage,
+      isPaginated: isPaginatedMode,
+      paragraphIndex: paraIdx,
+      excerpt,
+    });
+    onUpdateBook({
+      ...book,
+      bookmarks: nextBookmarks,
+    });
+    triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
+  };
+
+  const translationModeOptions: GlassSelectOption<TranslationMode>[] = [
+    { value: 'original', label: 'Văn bản gốc', subtitle: 'Hiển thị nguyên bản chưa dịch' },
+    { value: 'override', label: 'Dịch đè', subtitle: 'Thay văn bản bằng bản dịch' },
+    { value: 'bilingual', label: 'Song ngữ', subtitle: 'Hiện song song gốc & bản dịch' },
+  ];
+
+  const targetLangOptions: GlassSelectOption[] = TARGET_LANGUAGES.map((l) => ({
+    value: l.code,
+    label: l.label,
+  }));
+
   const vintageTexture = getVintagePaperTextureStyles(activeTheme.id);
-  const pageTurnClass = isPaginatedMode
-    ? getPageTurnAnimationClass(settings.pageTurnStyle, turnDirection)
-    : '';
+  const liveCurlTransform =
+    isPaginatedMode && settings.pageTurnStyle === 'curl' && dragCurlDeltaX !== null
+      ? computeInteractiveCurlTransform(dragCurlDeltaX, stageSize.width)
+      : null;
+  const pageTurnClass =
+    isPaginatedMode && !liveCurlTransform && hasUserTurnedRef.current && turnTick > 0
+      ? getPageTurnAnimationClass(settings.pageTurnStyle, turnDirection)
+      : '';
   const activeTurnLabel =
     PAGE_TURN_STYLES.find((s) => s.id === (settings.pageTurnStyle || 'curl'))?.label ||
     'Cong mép sách';
@@ -882,7 +986,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         isPaginatedMode ? 'h-[100dvh] overflow-hidden' : 'min-h-screen'
       } w-full flex flex-col transition-colors duration-200`}
     >
-      {/* Ultra-slim Distraction-Free Top Bar — all controls collapsed into corner Gear / 3-dot Menu */}
+      {/* Slim Top Bar: Back | 3-bar Menu TOC | Per-Page Bookmark + Play/Pause + Quick Actions (!) + Settings */}
       <div
         style={{
           borderColor: activeTheme.border,
@@ -890,53 +994,201 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         }}
         className="sticky top-0 z-30 h-[52px] border-b backdrop-blur-md px-3 sm:px-5 flex items-center justify-between gap-2"
       >
-        <div className="flex items-center gap-2 min-w-0 flex-1">
+        <div className="flex items-center shrink-0">
           <button
             type="button"
             onClick={onBackToLibrary}
             aria-label="Quay lại tủ sách"
-            className="ios-liquid-pill inline-flex items-center gap-1 px-3 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap shrink-0"
+            className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap shrink-0"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Tủ sách</span>
           </button>
+        </div>
 
+        {/* Center 3-Bar TOC Trigger */}
+        <div className="flex-1 flex items-center justify-center min-w-0">
           <button
             type="button"
             onClick={() => setShowToc((v) => !v)}
             aria-label="Mở mục lục và đánh dấu"
-            className="min-w-0 flex-1 text-left px-2 py-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 truncate text-xs font-medium opacity-85"
+            title="Mục lục & đánh dấu"
+            className={`ios-liquid-pill w-9 h-9 rounded-full border flex items-center justify-center shrink-0 ${
+              showToc
+                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300'
+                : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
+            }`}
           >
-            <span className="truncate">{currentChapter?.title || book.title}</span>
+            <Menu className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Single Corner Options Trigger (Gear + 3-dots) */}
-        <button
-          type="button"
-          onClick={() => setShowToolsMenu((v) => !v)}
-          aria-label="Mở menu tùy chọn đọc sách"
-          aria-expanded={showToolsMenu}
-          className={`ios-liquid-pill relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium shrink-0 ${
-            showToolsMenu || showSettings || showAudio || showAmbient
-              ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
-              : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
-          }`}
-        >
-          <Settings className="w-3.5 h-3.5" />
-          <MoreVertical className="w-3.5 h-3.5 -ml-1 opacity-75" />
-          {(ambientActiveCount > 0 || settings.translationMode !== 'original') && (
-            <span className="w-2 h-2 rounded-full bg-amber-700 absolute -top-0.5 -right-0.5 ring-2 ring-[#FBF9F5] dark:ring-[#16181C]" />
-          )}
-        </button>
+        {/* Right Corner Controls: Bookmark + Play/Pause + ! Quick Actions + Settings */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => togglePageBookmarkHandler()}
+            aria-label={
+              isCurrentPageBookmarked ? 'Bỏ đánh dấu trang hiện tại' : 'Đánh dấu trang hiện tại'
+            }
+            aria-pressed={isCurrentPageBookmarked}
+            title={
+              isCurrentPageBookmarked
+                ? `Đã đánh dấu Trang ${safePageIndex + 1} (nhấn để bỏ)`
+                : `Đánh dấu Trang ${safePageIndex + 1}`
+            }
+            className={`ios-liquid-pill w-9 h-9 rounded-full border flex items-center justify-center shrink-0 ${
+              isCurrentPageBookmarked
+                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300'
+                : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
+            }`}
+          >
+            {isCurrentPageBookmarked ? (
+              <BookMarked className="w-4 h-4" />
+            ) : (
+              <Bookmark className="w-4 h-4" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              unlockAudioPlaybackSync();
+              setTogglePlaySignal((s) => s + 1);
+            }}
+            aria-label={isAudioPlayingLocal ? 'Tạm dừng đọc sách' : 'Phát đọc sách'}
+            title={isAudioPlayingLocal ? 'Tạm dừng' : 'Đọc thành tiếng'}
+            className={`ios-liquid-pill w-9 h-9 rounded-full border flex items-center justify-center shrink-0 ${
+              isAudioPlayingLocal
+                ? 'ios-liquid-pill-active border-amber-700/50 bg-amber-800 text-white'
+                : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
+            }`}
+          >
+            {isAudioPlayingLocal ? (
+              <Pause className="w-4 h-4" />
+            ) : (
+              <Play className="w-4 h-4 ml-0.5" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowToolsMenu(false);
+              setShowQuickActions((v) => !v);
+            }}
+            aria-label="Mở công cụ nhanh cỡ chữ và dịch"
+            aria-expanded={showQuickActions}
+            title="Chỉnh cỡ chữ & dịch nhanh"
+            className={`ios-liquid-pill relative w-9 h-9 rounded-full border flex items-center justify-center shrink-0 ${
+              showQuickActions || settings.translationMode !== 'original'
+                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300'
+                : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
+            }`}
+          >
+            <AlertCircle className="w-4 h-4" />
+            {settings.translationMode !== 'original' && (
+              <span className="w-2 h-2 rounded-full bg-amber-700 absolute -top-0.5 -right-0.5 ring-2 ring-[#FBF9F5] dark:ring-[#16181C]" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowQuickActions(false);
+              setShowToolsMenu((v) => !v);
+            }}
+            aria-label="Mở menu tùy chọn đọc sách"
+            aria-expanded={showToolsMenu}
+            title="Tùy chọn đọc sách"
+            className={`ios-liquid-pill relative w-9 h-9 rounded-full border flex items-center justify-center shrink-0 ${
+              showToolsMenu || showSettings || showAmbient
+                ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300'
+                : 'ios-liquid-bar border-white/65 dark:border-white/15 text-stone-800 dark:text-stone-100'
+            }`}
+          >
+            <Settings className="w-4 h-4" />
+            {ambientActiveCount > 0 && (
+              <span className="w-2 h-2 rounded-full bg-amber-700 absolute -top-0.5 -right-0.5 ring-2 ring-[#FBF9F5] dark:ring-[#16181C]" />
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* Collapsible Corner Liquid-Glass Options Popover / Sheet */}
+      {/* Quick Actions Floating Bar (!) — A- / A+ & Quick Translate Toggle */}
+      {showQuickActions &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[70] bg-transparent flex items-start justify-end pt-[58px] pr-3 sm:pr-5"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowQuickActions(false);
+            }}
+          >
+            <div
+              role="dialog"
+              aria-label="Công cụ đọc nhanh"
+              className="ios-sheet-enter ios-frosted-surface rounded-[22px] p-2.5 flex items-center gap-2 text-stone-900 dark:text-stone-100"
+            >
+              <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-1">
+                <button
+                  type="button"
+                  disabled={settings.fontSize <= 14}
+                  onClick={() =>
+                    onUpdateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })
+                  }
+                  aria-label="Giảm cỡ chữ"
+                  className="px-2.5 py-1 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors"
+                >
+                  A-
+                </button>
+                <span className="px-1 text-[11px] font-semibold tabular-nums min-w-[36px] text-center opacity-80">
+                  {settings.fontSize}px
+                </span>
+                <button
+                  type="button"
+                  disabled={settings.fontSize >= 32}
+                  onClick={() =>
+                    onUpdateSettings({ fontSize: Math.min(32, settings.fontSize + 1) })
+                  }
+                  aria-label="Tăng cỡ chữ"
+                  className="px-2.5 py-1 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors"
+                >
+                  A+
+                </button>
+              </div>
+
+              <button
+                type="button"
+                disabled={isTranslating}
+                onClick={() => {
+                  const nextMode: TranslationMode =
+                    settings.translationMode === 'override' ? 'original' : 'override';
+                  void handleTranslationModeChange(nextMode);
+                }}
+                aria-pressed={settings.translationMode === 'override'}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold transition-colors whitespace-nowrap ${
+                  settings.translationMode === 'override'
+                    ? 'bg-amber-800 text-white shadow-sm'
+                    : 'bg-black/5 dark:bg-white/10 text-stone-800 dark:text-stone-100 hover:bg-black/10 dark:hover:bg-white/15'
+                }`}
+              >
+                <Languages className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {settings.translationMode === 'override' ? 'Đang dịch' : 'Dịch nhanh'}
+                </span>
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Collapsible Corner Options Popover / Sheet (3 Stacked List Items + Dịch nhanh + Xuất EPUB) */}
       {showToolsMenu &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-[70] flex items-end sm:items-start sm:justify-end bg-black/35 backdrop-blur-xs p-0 sm:pt-[60px] sm:pr-5"
+            className="fixed inset-0 z-[70] ios-frosted-backdrop flex items-end sm:items-start sm:justify-end p-0 sm:pt-[60px] sm:pr-5"
             onClick={(e) => {
               if (e.target === e.currentTarget) setShowToolsMenu(false);
             }}
@@ -945,32 +1197,29 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               role="dialog"
               aria-modal="true"
               aria-label="Tùy chọn trình đọc sách"
-              className="ios-sheet-enter w-full max-w-full sm:w-[376px] bg-[#FBF9F5]/95 dark:bg-[#191B1F]/95 backdrop-blur-2xl text-stone-900 dark:text-stone-100 rounded-t-[28px] sm:rounded-[26px] border border-white/70 dark:border-stone-800 shadow-2xl overflow-hidden max-h-[88vh] flex flex-col"
+              className="ios-sheet-enter ios-frosted-surface w-full max-w-full sm:w-[348px] text-stone-900 dark:text-stone-100 rounded-t-[26px] sm:rounded-[24px] overflow-hidden max-h-[92vh] flex flex-col"
             >
-              <div className="sm:hidden flex justify-center pt-2.5 shrink-0">
-                <div className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />
+              <div className="sm:hidden flex justify-center pt-2 shrink-0">
+                <div className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
               </div>
 
-              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-200/80 dark:border-stone-800 shrink-0">
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-sm font-display font-semibold truncate">
-                    Tùy chọn đọc &amp; nghe sách
-                  </h2>
-                  <p className="text-[11px] text-stone-500 truncate">{book.title}</p>
-                </div>
+              <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
+                <h2 className="text-[13px] font-display font-semibold truncate">
+                  Tùy chọn đọc sách
+                </h2>
                 <button
                   type="button"
                   onClick={() => setShowToolsMenu(false)}
                   aria-label="Đóng menu tùy chọn đọc"
-                  className="w-8 h-8 rounded-full bg-stone-200/70 dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0"
+                  className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               </div>
 
-              <div className="p-4 pb-6 sm:pb-4 space-y-4 overflow-y-auto overflow-x-hidden text-xs">
-                {/* Primary Tool Shortcuts Grid */}
-                <div className="grid grid-cols-2 gap-2">
+              <div className="p-3.5 pb-5 sm:pb-3.5 space-y-3 overflow-y-auto overflow-x-hidden text-xs">
+                {/* 3 Stacked List Items */}
+                <div className="rounded-2xl border border-stone-200/70 dark:border-white/10 divide-y divide-stone-200/60 dark:divide-white/10 overflow-hidden bg-white/75 dark:bg-stone-900/50">
                   <button
                     type="button"
                     onClick={() => {
@@ -979,28 +1228,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       setShowAmbient(false);
                       setShowSettings(true);
                     }}
-                    className="ios-liquid-pill min-w-0 w-full flex items-center gap-2 p-3 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-left font-medium"
+                    className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-black/5 dark:hover:bg-white/10"
                   >
-                    <SlidersHorizontal className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold leading-tight break-words">Chữ, Nền &amp; Lật</div>
-                      <div className="text-[10px] text-stone-500 truncate">Aa · Giấy cũ</div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowToolsMenu(false);
-                      handleContinueListenFromHere();
-                    }}
-                    className="ios-liquid-btn min-w-0 w-full flex items-center gap-2 p-3 rounded-2xl bg-amber-800 text-white text-left font-medium"
-                  >
-                    <Play className="w-4 h-4 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold leading-tight break-words">Nghe tiếp AI</div>
-                      <div className="text-[10px] text-amber-100 truncate">Từ đoạn đang đọc</div>
-                    </div>
+                    <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
+                      <SlidersHorizontal className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                      <span>Chữ, Nền &amp; Lật</span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
 
                   <button
@@ -1011,13 +1245,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       setShowAmbient(false);
                       setShowAudio(true);
                     }}
-                    className="ios-liquid-pill min-w-0 w-full flex items-center gap-2 p-3 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-left font-medium"
+                    className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-black/5 dark:hover:bg-white/10"
                   >
-                    <Headphones className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold leading-tight break-words">Giọng AI &amp; Vai</div>
-                      <div className="text-[10px] text-stone-500 truncate">Quét nhân vật</div>
-                    </div>
+                    <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
+                      <Headphones className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                      <span>Giọng đọc</span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
 
                   <button
@@ -1028,265 +1262,83 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       setShowAudio(false);
                       setShowAmbient(true);
                     }}
-                    className="ios-liquid-pill min-w-0 w-full flex items-center gap-2 p-3 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-left font-medium"
+                    className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-black/5 dark:hover:bg-white/10"
                   >
-                    <Music className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold leading-tight break-words">
+                    <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
+                      <Music className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                      <span>
                         Nhạc nền{ambientActiveCount > 0 ? ` (${ambientActiveCount})` : ''}
-                      </div>
-                      <div className="text-[10px] text-stone-500 truncate">20 tiếng chill</div>
-                    </div>
+                      </span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
                 </div>
 
-                {/* Translation Mode, In-App Language Pack & Fast AI Overwrite EPUB */}
-                <div className="space-y-2.5 pt-2.5 border-t border-stone-200/80 dark:border-stone-800">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold text-stone-600 dark:text-stone-400">
-                      Dịch nhanh AI &amp; Gói ngôn ngữ
-                    </span>
-                    {installedPacks[settings.targetLang] ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-                        <PackageCheck className="w-3 h-3 shrink-0" />
-                        <span>Đã tải gói {settings.targetLang.toUpperCase()}</span>
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-amber-800 dark:text-amber-400">
-                        Chưa tải gói {settings.targetLang.toUpperCase()}
-                      </span>
-                    )}
+                {/* Compact Inline Dịch nhanh Controls with GlassSelect */}
+                <div className="space-y-2 pt-2 border-t border-stone-300/40 dark:border-white/10">
+                  <div className="text-[11px] font-semibold text-stone-600 dark:text-stone-400">
+                    Dịch nhanh
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <GlassSelect<TranslationMode>
+                      title="Chế độ dịch nhanh"
+                      ariaLabel="Chế độ dịch nhanh"
+                      value={settings.translationMode}
+                      options={translationModeOptions}
+                      onChange={(mode) => {
+                        void handleTranslationModeChange(mode);
+                      }}
+                    />
+
+                    <GlassSelect
+                      title="Ngôn ngữ dịch sách"
+                      ariaLabel="Ngôn ngữ dịch sách"
+                      value={settings.targetLang}
+                      options={targetLangOptions}
+                      onChange={async (lang) => {
+                        onUpdateSettings({ targetLang: lang });
+                        if (settings.translationMode !== 'original') {
+                          await translateCurrentChapter(lang);
+                        }
+                      }}
+                    />
                   </div>
 
-                  <div className="grid grid-cols-3 p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 gap-1">
-                    {(
-                      [
-                        { id: 'original', label: 'Gốc' },
-                        { id: 'override', label: 'Dịch đè' },
-                        { id: 'bilingual', label: 'Song ngữ' },
-                      ] as Array<{ id: TranslationMode; label: string }>
-                    ).map((mode) => (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        onClick={() => handleTranslationModeChange(mode.id)}
-                        className={`ios-liquid-pill min-w-0 px-1.5 py-1.5 text-[11px] font-medium rounded-full text-center leading-tight ${
-                          settings.translationMode === mode.id
-                            ? 'ios-liquid-pill-active text-amber-800 dark:text-amber-300 font-semibold'
-                            : 'text-stone-600 dark:text-stone-300'
-                        }`}
-                      >
-                        {mode.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Full-width Language Selector (never pushes adjacent buttons off-screen) */}
-                  <select
-                    aria-label="Ngôn ngữ dịch sách"
-                    value={settings.targetLang}
-                    onChange={async (e) => {
-                      const lang = e.target.value;
-                      onUpdateSettings({ targetLang: lang });
-                      if (settings.translationMode !== 'original') {
-                        await translateCurrentChapter(lang);
-                      }
-                    }}
-                    className="w-full min-w-0 max-w-full px-3 py-2 text-xs rounded-xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100"
-                  >
-                    {TARGET_LANGUAGES.map((l) => (
-                      <option key={l.code} value={l.code} className="text-stone-900">
-                        Dịch sang: {l.label}
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* Stacked / Wrapping Action Buttons — zero overflow on narrow screens */}
-                  <div className="flex flex-col gap-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      {!installedPacks[settings.targetLang] ? (
-                        <button
-                          type="button"
-                          disabled={isDownloadingPack}
-                          onClick={() => handleDownloadActiveLanguagePack(settings.targetLang)}
-                          className="ios-liquid-pill min-w-0 w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl border border-amber-700/40 bg-amber-50/80 dark:bg-amber-950/30 text-amber-900 dark:text-amber-300 text-[11px] font-medium text-center leading-snug whitespace-normal break-words"
-                        >
-                          {isDownloadingPack ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                          ) : (
-                            <Download className="w-3.5 h-3.5 shrink-0" />
-                          )}
-                          <span>
-                            {isDownloadingPack
-                              ? 'Đang tải gói...'
-                              : `Tải gói ${getLanguagePackDefinition(settings.targetLang).label}`}
-                          </span>
-                        </button>
-                      ) : (
-                        <div className="min-w-0 w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl border border-emerald-500/30 bg-emerald-50/70 dark:bg-emerald-950/25 text-emerald-800 dark:text-emerald-300 text-[11px] font-medium text-center leading-snug">
-                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                          <span className="truncate">
-                            Gói {settings.targetLang.toUpperCase()} sẵn sàng
-                          </span>
-                        </div>
-                      )}
-
-                      <button
-                        type="button"
-                        disabled={isTranslating || isTranslatingFullEpub}
-                        onClick={() => {
-                          if (settings.translationMode === 'original') {
-                            onUpdateSettings({ translationMode: 'override' });
-                          }
-                          translateCurrentChapter(settings.targetLang);
-                        }}
-                        className="ios-liquid-pill min-w-0 w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-center leading-snug whitespace-normal break-words"
-                      >
-                        {isTranslating ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                        ) : (
-                          <Languages className="w-3.5 h-3.5 shrink-0 text-amber-800 dark:text-amber-400" />
-                        )}
-                        <span>{isTranslating ? 'Đang dịch...' : 'Dịch lại chương'}</span>
-                      </button>
-                    </div>
-
-                    {/* Full-Book AI Translate & Permanent EPUB Overwrite */}
+                  {hasOriginalBookBackup(book) && (
                     <button
                       type="button"
-                      disabled={isTranslatingFullEpub || isTranslating}
-                      onClick={handleTranslateEntireBookAndOverwriteEpub}
-                      className="ios-liquid-btn w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold text-center leading-snug whitespace-normal break-words disabled:opacity-60"
+                      onClick={handleRestoreOriginalBookText}
+                      className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl border border-stone-300/70 dark:border-white/10 bg-white/60 dark:bg-stone-900/40 text-[11px] text-stone-600 dark:text-stone-300"
                     >
-                      {isTranslatingFullEpub ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                      ) : (
-                        <FileOutput className="w-3.5 h-3.5 shrink-0" />
-                      )}
-                      <span>
-                        {isTranslatingFullEpub
-                          ? `Đang dịch & ghi đè EPUB (${fullEpubProgress?.percent ?? 0}%)...`
-                          : `AI Dịch toàn bộ (${book.chapters.length} ch) → Ghi đè EPUB`}
-                      </span>
+                      <RotateCcw className="w-3 h-3 shrink-0" />
+                      <span>Khôi phục bản gốc</span>
                     </button>
-
-                    {isTranslatingFullEpub && fullEpubProgress && (
-                      <div className="p-2.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/30 border border-amber-700/30 space-y-1.5">
-                        <div className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-amber-900 dark:text-amber-200 leading-snug break-words">
-                            {fullEpubProgress.message}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => fullTranslateAbortRef.current?.abort()}
-                            className="text-[10px] font-semibold text-red-600 dark:text-red-400 underline shrink-0"
-                          >
-                            Hủy
-                          </button>
-                        </div>
-                        <div className="h-1.5 w-full rounded-full bg-amber-200/70 dark:bg-amber-900/50 overflow-hidden">
-                          <div
-                            className="h-full bg-amber-700 dark:bg-amber-400 transition-all duration-300"
-                            style={{ width: `${fullEpubProgress.percent}%` }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {packProgressMsg && (
-                      <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                        {packProgressMsg}
-                      </p>
-                    )}
-
-                    {hasOriginalBookBackup(book) && (
-                      <button
-                        type="button"
-                        onClick={handleRestoreOriginalBookText}
-                        className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl border border-stone-300 dark:border-stone-700 text-[11px] text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800"
-                      >
-                        <RotateCcw className="w-3 h-3 shrink-0" />
-                        <span>Khôi phục bản gốc trước khi ghi đè</span>
-                      </button>
-                    )}
-                  </div>
+                  )}
                 </div>
 
-                {/* Reading Style */}
-                <div className="space-y-1.5 pt-2 border-t border-stone-200/80 dark:border-stone-800">
-                  <label className="block text-[11px] font-semibold text-stone-600 dark:text-stone-400">
-                    Văn phong đọc AI
-                  </label>
-                  <select
-                    aria-label="Chọn văn phong đọc"
-                    value={readingStyle}
-                    onChange={(e) =>
-                      onUpdateBook({
-                        ...book,
-                        readingStyle: e.target.value as BookReadingStyle,
-                      })
-                    }
-                    className="w-full min-w-0 max-w-full px-3 py-2 text-xs font-medium rounded-xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-800 dark:text-stone-100"
-                  >
-                    <option value="novel" className="text-stone-900">
-                      Văn phong: Tiểu thuyết
-                    </option>
-                    <option value="selfhelp" className="text-stone-900">
-                      Văn phong: Học tập
-                    </option>
-                    <option value="essay" className="text-stone-900">
-                      Văn phong: Tản văn
-                    </option>
-                    <option value="research" className="text-stone-900">
-                      Văn phong: Nghiên cứu
-                    </option>
-                  </select>
-                </div>
-
-                {/* Utility Row: TOC, Bookmark, Export EPUB */}
-                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-stone-200/80 dark:border-stone-800">
+                {/* Full-width Export EPUB Action */}
+                <div className="pt-2 border-t border-stone-300/40 dark:border-white/10">
                   <button
                     type="button"
+                    disabled={isExporting || isTranslatingFullEpub}
                     onClick={() => {
                       setShowToolsMenu(false);
-                      setShowToc(true);
+                      if (settings.translationMode !== 'original') {
+                        handleTranslateEntireBookAndOverwriteEpub();
+                      } else {
+                        handleExportCurrentEpub();
+                      }
                     }}
-                    className="ios-liquid-pill min-w-0 flex flex-col items-center justify-center gap-1 py-2.5 px-1.5 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-center leading-tight"
+                    className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-2xl border border-stone-300/70 dark:border-white/10 bg-white/80 dark:bg-stone-900/60 hover:border-amber-700/60 text-[12px] font-semibold transition-colors"
                   >
-                    <List className="w-4 h-4 shrink-0" />
-                    <span>Mục lục</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      toggleChapterBookmark();
-                    }}
-                    className={`ios-liquid-pill min-w-0 flex flex-col items-center justify-center gap-1 py-2.5 px-1.5 rounded-2xl border text-[11px] font-medium text-center leading-tight ${
-                      isBookmarked
-                        ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300 font-semibold'
-                        : 'ios-liquid-bar border-white/75 dark:border-zinc-700/60'
-                    }`}
-                  >
-                    {isBookmarked ? (
-                      <BookMarked className="w-4 h-4 text-amber-700 shrink-0" />
+                    {settings.translationMode !== 'original' ? (
+                      <FileOutput className="w-3.5 h-3.5 shrink-0" />
                     ) : (
-                      <Bookmark className="w-4 h-4 shrink-0" />
+                      <Download className="w-3.5 h-3.5 shrink-0" />
                     )}
-                    <span>{isBookmarked ? 'Đã lưu dấu' : 'Đánh dấu'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={isExporting}
-                    onClick={() => {
-                      setShowToolsMenu(false);
-                      handleExportCurrentEpub();
-                    }}
-                    className="ios-liquid-pill min-w-0 flex flex-col items-center justify-center gap-1 py-2.5 px-1.5 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-center leading-tight"
-                  >
-                    <Download className="w-4 h-4 shrink-0" />
-                    <span>Xuất EPUB</span>
+                    <span>
+                      {settings.translationMode !== 'original' ? 'Dịch & xuất EPUB' : 'Xuất EPUB'}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -1300,12 +1352,15 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         <div
           ref={scrollContainerRef}
           onClick={handleCanvasTapForPagination}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
+          onPointerDown={handleStagePointerDown}
+          onPointerMove={handleStagePointerMove}
+          onPointerUp={(e) => finishStageDrag(e.clientX)}
+          onPointerCancel={() => finishStageDrag()}
+          style={{ touchAction: isPaginatedMode ? 'pan-y' : undefined }}
           className={`flex-1 min-w-0 page-turn-stage ${
             isPaginatedMode
               ? 'h-full flex flex-col overflow-hidden select-none'
-              : 'overflow-x-hidden px-4 sm:px-8 pt-6 sm:pt-9 pb-10'
+              : 'overflow-x-hidden px-4 sm:px-8 pt-6 sm:pt-9 pb-12'
           }`}
         >
           {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page) */}
@@ -1323,7 +1378,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   ? `${chapterIndex}-${safePageIndex}-${turnTick}`
                   : chapterIndex
               }
-              className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} transition-all`}
+              className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} ${
+                liveCurlTransform ? '' : 'transition-all'
+              }`}
               style={{
                 fontFamily: settings.fontFamily,
                 fontSize: `${settings.fontSize}px`,
@@ -1331,6 +1388,15 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 letterSpacing: `${settings.letterSpacing}em`,
                 fontWeight: settings.fontWeight,
                 textAlign: settings.textAlign,
+                ...(liveCurlTransform
+                  ? {
+                      transformOrigin:
+                        liveCurlTransform.direction === 'next' ? 'left center' : 'right center',
+                      transform: `perspective(1400px) translateX(${liveCurlTransform.translateXPx}px) rotateY(${liveCurlTransform.rotateYDeg}deg)`,
+                      boxShadow: `0 12px 32px rgba(28, 25, 23, ${liveCurlTransform.shadowAlpha})`,
+                      transition: 'none',
+                    }
+                  : {}),
               }}
             >
               {translateError && (
@@ -1446,7 +1512,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                         setActiveParaAction({ paragraphIndex: chunk.paragraphIndex });
                       }}
                       className={`relative rounded-lg px-1.5 py-0.5 transition-colors select-none ${
-                        isSpoken
+                        isSpoken && settings.highlightSpokenText !== false
                           ? 'ring-2 ring-amber-700/70 bg-amber-500/10'
                           : isLongPressed
                           ? 'ring-1 ring-amber-700/60 bg-amber-500/10'
@@ -1561,17 +1627,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           typeof document !== 'undefined' &&
           createPortal(
             <div
-              className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-black/25 backdrop-blur-[1px] p-4 pb-8"
+              className="fixed inset-0 z-[80] ios-frosted-backdrop flex items-end sm:items-center justify-center p-4 pb-8"
               onClick={() => setActiveParaAction(null)}
             >
               <div
                 role="dialog"
                 aria-label="Tùy chọn đoạn văn bản"
                 onClick={(e) => e.stopPropagation()}
-                className="ios-sheet-enter w-full max-w-sm rounded-2xl bg-[#1C1917]/95 text-white border border-white/15 shadow-2xl p-3.5 space-y-3 font-sans text-xs"
+                className="ios-sheet-enter ios-frosted-surface w-full max-w-sm rounded-[24px] text-stone-900 dark:text-stone-100 p-3.5 space-y-3 font-sans text-xs"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <p className="text-[11px] text-stone-300 line-clamp-2 leading-relaxed">
+                  <p className="text-[11px] text-stone-600 dark:text-stone-300 line-clamp-2 leading-relaxed">
                     &ldquo;
                     {currentChapter?.paragraphs[activeParaAction.paragraphIndex]?.slice(0, 110) ||
                       ''}
@@ -1581,7 +1647,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     type="button"
                     onClick={() => setActiveParaAction(null)}
                     aria-label="Đóng bảng tùy chọn đoạn"
-                    className="p-1 rounded-full text-stone-400 hover:text-white shrink-0"
+                    className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -1591,12 +1657,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      unlockAudioPlaybackSync();
                       const pIdx = activeParaAction.paragraphIndex;
                       syncParagraphPosition(pIdx);
                       setActiveParaAction(null);
                       handleContinueListenFromHere();
                     }}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-700 hover:bg-amber-600 text-white font-semibold"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-800 hover:bg-amber-900 text-white font-semibold"
                   >
                     <Play className="w-3.5 h-3.5 shrink-0" />
                     <span>Nghe từ đây</span>
@@ -1604,18 +1671,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      toggleChapterBookmark();
+                      togglePageBookmarkHandler(activeParaAction.paragraphIndex);
                       setActiveParaAction(null);
                     }}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-medium"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 font-medium"
                   >
                     <Bookmark className="w-3.5 h-3.5 shrink-0" />
-                    <span>{isBookmarked ? 'Bỏ lưu dấu' : 'Lưu dấu trang'}</span>
+                    <span>{isCurrentPageBookmarked ? 'Bỏ lưu dấu' : 'Lưu dấu trang'}</span>
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
-                  <span className="text-[11px] text-stone-300">Đánh dấu màu:</span>
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-stone-300/40 dark:border-white/10">
+                  <span className="text-[11px] text-stone-600 dark:text-stone-300">Đánh dấu màu:</span>
                   <div className="flex items-center gap-2">
                     {(['amber', 'emerald', 'rose', 'sky'] as const).map((clr) => (
                       <button
@@ -1623,7 +1690,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                         type="button"
                         onClick={() => toggleHighlight(activeParaAction.paragraphIndex, clr)}
                         aria-label={`Tô màu ${clr}`}
-                        className={`w-6 h-6 rounded-full border-2 border-white/60 ${
+                        className={`w-6 h-6 rounded-full border-2 border-white/80 shadow-xs ${
                           clr === 'amber'
                             ? 'bg-amber-400'
                             : clr === 'emerald'
@@ -1641,30 +1708,30 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             document.body
           )}
 
-        {/* Table of Contents & Bookmarks Sidebar (Portaled out of CSS filter container, h-auto tightly hugs chapters) */}
+        {/* Table of Contents & Bookmarks Sidebar (Portaled frosted-glass panel) */}
         {showToc &&
           typeof document !== 'undefined' &&
           createPortal(
             <div className="fixed inset-0 z-[75] flex items-end sm:items-start sm:justify-start">
               <div
-                className="fixed inset-0 bg-black/45 backdrop-blur-xs"
+                className="fixed inset-0 ios-frosted-backdrop"
                 onClick={() => setShowToc(false)}
                 aria-hidden="true"
               />
               <aside
                 aria-label="Mục lục và đánh dấu trang"
-                className="ios-sheet-enter sm:ios-drawer-left relative z-10 w-full sm:w-80 sm:mt-[56px] sm:ml-3 h-auto max-h-[82dvh] sm:max-h-[calc(100dvh-72px)] bg-[#FBF9F5]/98 dark:bg-[#16181C]/98 backdrop-blur-xl text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-800 rounded-t-[28px] sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+                className="ios-sheet-enter sm:ios-drawer-left ios-frosted-surface relative z-10 w-full sm:w-80 sm:mt-[56px] sm:ml-3 h-auto max-h-[82dvh] sm:max-h-[calc(100dvh-72px)] text-stone-900 dark:text-stone-100 rounded-t-[28px] sm:rounded-[24px] flex flex-col overflow-hidden"
               >
                 <div className="sm:hidden flex justify-center pt-2 pb-1 shrink-0">
-                  <span className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />
+                  <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
                 </div>
-                <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-200 dark:border-stone-800 shrink-0">
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
                   <h2 className="text-base font-display font-semibold">Mục lục &amp; Đánh dấu</h2>
                   <button
                     type="button"
                     onClick={() => setShowToc(false)}
                     aria-label="Đóng mục lục"
-                    className="p-2 rounded-md text-stone-500 hover:text-stone-900 dark:hover:text-stone-100"
+                    className="p-2 rounded-full bg-black/5 dark:bg-white/10 text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -1679,10 +1746,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                         key={ch.id}
                         type="button"
                         onClick={() => goToChapter(idx)}
-                        className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${
+                        className={`w-full text-left px-3 py-2.5 rounded-xl transition-colors ${
                           idx === chapterIndex
                             ? 'bg-amber-800 text-white font-medium'
-                            : 'hover:bg-stone-200/60 dark:hover:bg-stone-800'
+                            : 'hover:bg-black/5 dark:hover:bg-white/10'
                         }`}
                       >
                         {ch.title}
@@ -1691,7 +1758,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   </div>
 
                   {book.bookmarks.length > 0 && (
-                    <div className="space-y-1.5 pt-3 border-t border-stone-200 dark:border-stone-800">
+                    <div className="space-y-1.5 pt-3 border-t border-stone-300/40 dark:border-white/10">
                       <h3 className="px-2 text-[11px] uppercase tracking-wider text-stone-500 font-semibold">
                         Trang đã đánh dấu ({book.bookmarks.length})
                       </h3>
@@ -1701,12 +1768,24 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                           type="button"
                           onClick={() => {
                             const idx = book.chapters.findIndex((c) => c.id === bm.chapterId);
-                            if (idx >= 0) goToChapter(idx);
+                            if (idx >= 0) {
+                              goToChapter(idx, {
+                                targetPageIndex: bm.pageIndex,
+                                targetParagraphIndex: bm.paragraphIndex,
+                              });
+                            }
                           }}
-                          className="w-full text-left p-2.5 rounded-lg border border-stone-200 dark:border-stone-800 hover:bg-stone-100 dark:hover:bg-stone-800"
+                          className="w-full text-left p-2.5 rounded-xl border border-stone-200/80 dark:border-white/10 bg-white/60 dark:bg-stone-900/50 hover:bg-stone-100/80 dark:hover:bg-stone-800/70 transition-colors"
                         >
-                          <div className="font-medium">{bm.chapterTitle}</div>
-                          <div className="text-[11px] text-stone-500 line-clamp-2 mt-0.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium truncate">{bm.chapterTitle}</span>
+                            {typeof bm.pageIndex === 'number' && (
+                              <span className="px-1.5 py-0.5 rounded-md bg-amber-800/12 dark:bg-amber-500/20 text-amber-900 dark:text-amber-200 text-[10px] font-semibold tabular-nums shrink-0">
+                                Trang {bm.pageIndex + 1}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-stone-500 dark:text-stone-400 line-clamp-2 mt-0.5">
                             {bm.excerpt}
                           </div>
                         </button>
@@ -1723,34 +1802,59 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         <ReaderSettingsDrawer
           isOpen={showSettings}
           onClose={() => setShowSettings(false)}
+          onBackToToolsMenu={() => setShowToolsMenu(true)}
           settings={settings}
           onUpdateSettings={onUpdateSettings}
           customFonts={customFonts}
           onAddCustomFont={onAddCustomFont}
         />
 
-        {/* AI Audiobook & Character Voice Dubbing Drawer + Inline Mini-Bar */}
+        {/* AI Audiobook & Character Voice Dubbing Drawer */}
         {currentChapter && (
           <AudiobookStudioDrawer
             isOpen={showAudio}
             onClose={() => setShowAudio(false)}
+            onBackToToolsMenu={() => setShowToolsMenu(true)}
             onOpenPanel={() => {
               setShowSettings(false);
               setShowAmbient(false);
               setShowAudio(true);
             }}
             isReaderActive={isReaderActive}
+            hasPaginatedFooter={isPaginatedMode}
+            highlightSpokenText={settings.highlightSpokenText !== false}
+            onToggleHighlightSpoken={(next) => onUpdateSettings({ highlightSpokenText: next })}
+            onSessionActiveChange={setIsAudioSessionActive}
             book={book}
             chapter={currentChapter}
             hasNextChapter={chapterIndex < book.chapters.length - 1}
             displayedParagraphs={
-              settings.translationMode !== 'original'
+              settings.translationMode === 'override'
                 ? renderedParagraphs.map((p) => p.original)
                 : undefined
             }
+            ttsLanguageCode={
+              settings.translationMode === 'override' ? settings.targetLang : book.language
+            }
             autoPlaySignal={autoPlaySignal}
+            togglePlaySignal={togglePlaySignal}
             onSaveChapterAnalysis={handleSaveAnalysis}
             onUpdateVoiceAssignment={handleUpdateVoiceAssignment}
+            onBatchUpdateVoiceAssignments={(nextMap) =>
+              onUpdateBook({
+                ...book,
+                voiceAssignments: {
+                  ...(book.voiceAssignments || {}),
+                  ...nextMap,
+                },
+              })
+            }
+            onUpdateReadingStyle={(style) =>
+              onUpdateBook({
+                ...book,
+                readingStyle: style,
+              })
+            }
             externalVoices={externalVoices}
             onAddExternalVoice={onAddExternalVoice}
             customAmbientTracks={customAmbientTracks}
@@ -1763,7 +1867,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             onSyncReadingParagraph={(paraIdx) => {
               syncParagraphPosition(paraIdx);
             }}
-            onPlaybackStateChange={onAudioPlayingChange}
+            onPlaybackStateChange={(playing) => {
+              setIsAudioPlayingLocal(playing);
+              onAudioPlayingChange?.(playing);
+            }}
             defaultVoice={basicSettings.defaultVoice}
             standaloneDeviceMode={basicSettings.standaloneDeviceMode !== false}
             onNextChapter={() => {
@@ -1772,10 +1879,41 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           />
         )}
 
+        {/* Compact Spinning Disc Trigger on Side Edge while Reading with Audio Active */}
+        {isReaderActive &&
+          (isAudioPlayingLocal || isAudioSessionActive) &&
+          !showAudio &&
+          typeof document !== 'undefined' &&
+          createPortal(
+            <button
+              type="button"
+              data-testid="reader-spinning-disc"
+              onClick={() => {
+                setShowToolsMenu(false);
+                setShowQuickActions(false);
+                setShowSettings(false);
+                setShowAmbient(false);
+                setShowAudio(true);
+              }}
+              aria-label="Mở cài đặt giọng đọc và nhạc nền"
+              className={`fixed right-3 z-[55] w-11 h-11 rounded-full bg-stone-900 dark:bg-stone-800 border-2 border-amber-500/80 shadow-xl flex items-center justify-center text-amber-400 hover:scale-105 active:scale-95 transition-transform ${
+                isPaginatedMode ? 'bottom-[56px]' : 'bottom-5'
+              }`}
+            >
+              <Disc3
+                className={`w-6 h-6 ${
+                  isAudioPlayingLocal ? 'animate-spin [animation-duration:4s]' : ''
+                }`}
+              />
+            </button>,
+            document.body
+          )}
+
         {/* Ambient Sound & Chill Music Drawer */}
         <AmbientSoundDrawer
           isOpen={showAmbient}
           onClose={() => setShowAmbient(false)}
+          onBackToToolsMenu={() => setShowToolsMenu(true)}
           customTracks={customAmbientTracks}
           onAddCustomTrack={onAddCustomAmbientTrack}
           onDeleteCustomTrack={onDeleteCustomAmbientTrack}

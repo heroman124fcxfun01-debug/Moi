@@ -6,47 +6,17 @@ import { resolveApiUrl } from '../utils/apiClient';
 import { computeBookFingerprint } from '../utils/syncAndStats';
 import {
   type CrawlStatus,
-  type MacroStep,
   type WebIssueReason,
   detectDuplicateOrLoop,
   detectPaywallOrIssue,
 } from '../utils/webCrawlerEngine';
 import { extractWebChapterClientSide } from '../utils/deviceHardware';
 
-const DEFAULT_MACRO_STEPS: MacroStep[] = [
-  {
-    id: 'step-1',
-    label: 'Click 1 (Mở khung đọc / Đóng quảng cáo)',
-    selector: '.chapter-content',
-    delayMs: 350,
-  },
-  {
-    id: 'step-2',
-    label: 'Click 2 (Nút chuyển sang trang tiếp)',
-    selector: '.next-chapter-btn',
-    delayMs: 850,
-  },
-];
-
-function extractNextSelectorFromMacro(steps: MacroStep[], fallbackSelector: string): string {
-  // Prefer the last step that looks like navigation/next, or the final step selector
-  const navStep =
-    [...steps]
-      .reverse()
-      .find((s) => /next|tiếp|sau|chap|trang/i.test(`${s.selector} ${s.label}`)) ||
-    steps[steps.length - 1];
-  return (navStep?.selector || fallbackSelector || '').trim();
-}
-
 export function useWebCrawler(
   onAddBookToLibrary: (book: Book, openImmediately?: boolean) => void
 ) {
-  const [urlInput, setUrlInput] = useState('/demo-web-book/chap-1');
-  const [fallbackSelector, setFallbackSelector] = useState('');
-  const [macroSteps, setMacroSteps] = useState<MacroStep[]>(DEFAULT_MACRO_STEPS);
-  const [pickingStepId, setPickingStepId] = useState<string | null>(null);
+  const [urlInput, setUrlInput] = useState('');
   const [maxPages, setMaxPages] = useState(25);
-  const [useAiScan, setUseAiScan] = useState(true);
   const [autoSaveAndExportEpub, setAutoSaveAndExportEpub] = useState(true);
 
   const [currentPage, setCurrentPage] = useState<ScrapedChapterDraft | null>(null);
@@ -58,7 +28,7 @@ export function useWebCrawler(
   const [statusMessage, setStatusMessage] = useState('');
   const [issueMessage, setIssueMessage] = useState('');
   const [issueReason, setIssueReason] = useState<WebIssueReason | null>(null);
-  const [activeMacroStepLabel, setActiveMacroStepLabel] = useState('');
+  const [activeScanStepLabel, setActiveScanStepLabel] = useState('');
 
   const [compiledTitle, setCompiledTitle] = useState('Truyện tổng hợp từ Web');
   const [compiledAuthor, setCompiledAuthor] = useState('Sưu tầm Web');
@@ -67,12 +37,7 @@ export function useWebCrawler(
 
   const runTokenRef = useRef(0);
   const scrapedRef = useRef<ScrapedChapterDraft[]>([]);
-  const useAiScanRef = useRef(useAiScan);
   const autoSaveRef = useRef(autoSaveAndExportEpub);
-
-  useEffect(() => {
-    useAiScanRef.current = useAiScan;
-  }, [useAiScan]);
 
   useEffect(() => {
     autoSaveRef.current = autoSaveAndExportEpub;
@@ -95,125 +60,81 @@ export function useWebCrawler(
       }, Math.max(80, ms));
     });
 
-  const fetchPageData = useCallback(
-    async (
-      targetUrl: string,
-      selectorHint?: string,
-      forceAiScan?: boolean
-    ): Promise<ScrapedChapterDraft> => {
-      const normalizedUrl = targetUrl.trim();
-      const shouldUseAi = forceAiScan ?? useAiScanRef.current;
+  const fetchPageData = useCallback(async (targetUrl: string): Promise<ScrapedChapterDraft> => {
+    const normalizedUrl = targetUrl.trim();
+    let data: Record<string, unknown> | null = null;
 
-      let data: Record<string, unknown> | null = null;
-
-      if (shouldUseAi && !selectorHint) {
-        try {
-          const aiResp = await fetch(resolveApiUrl('/api/web/ai-scan'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: normalizedUrl, useAiClean: true }),
-          });
-          const aiJson = await aiResp.json();
-          if (aiResp.ok) {
-            data = aiJson;
-          }
-        } catch {
-          // Fall through cleanly to /api/web/fetch
-        }
+    // Default AI Auto-Scan: auto-scrolls / locates bottom & right-side next-page controls
+    try {
+      const aiResp = await fetch(resolveApiUrl('/api/web/ai-scan'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: normalizedUrl, useAiClean: true }),
+      });
+      const aiJson = await aiResp.json();
+      if (aiResp.ok) {
+        data = aiJson;
       }
+    } catch {
+      // Fall through cleanly to /api/web/fetch
+    }
 
-      if (!data) {
-        try {
-          const qs = new URLSearchParams({ url: normalizedUrl });
-          const effectiveSel =
-            selectorHint || extractNextSelectorFromMacro(macroSteps, fallbackSelector);
-          if (effectiveSel && !effectiveSel.includes('.chapter-content')) {
-            qs.set('nextSelector', effectiveSel);
-          }
-
-          const resp = await fetch(resolveApiUrl(`/api/web/fetch?${qs.toString()}`));
-          const json = (await resp.json()) as Record<string, unknown>;
-          if (!resp.ok) {
-            throw new Error(
-              String(json?.error || `Lỗi HTTP ${resp.status} khi tải trang web.`)
-            );
-          }
-          data = json;
-        } catch (proxyErr) {
-          // Standalone phone fallback: attempt direct browser fetch + client-side HTML extraction
-          try {
-            const directResp = await fetch(normalizedUrl);
-            if (!directResp.ok) throw proxyErr;
-            const rawHtml = await directResp.text();
-            const extracted = extractWebChapterClientSide(rawHtml, normalizedUrl);
-            data = {
-              url: extracted.url,
-              title: extracted.title,
-              paragraphs: extracted.paragraphs,
-              wordCount: extracted.wordCount,
-              nextUrl: extracted.nextUrl,
-              nextLabel: extracted.nextLabel,
-              interactiveLinks: extracted.interactiveLinks,
-              paywallHint: '',
-            };
-          } catch {
-            throw proxyErr;
-          }
-        }
-      }
-
-      const resolvedData: Record<string, unknown> = data;
-      let resolvedNextUrl: string | null = (resolvedData.nextUrl as string | null) || null;
-      let resolvedNextLabel: string | null = (resolvedData.nextLabel as string | null) || null;
-
-      if (!shouldUseAi) {
-        const navStep =
-          [...macroSteps]
-            .reverse()
-            .find((s) => s.selector.trim() && s.selector.trim() !== '.chapter-content');
-        if (navStep && Array.isArray(resolvedData.interactiveLinks)) {
-          const matchedTarget = (
-            resolvedData.interactiveLinks as Array<{
-              label: string;
-              selector: string;
-              href: string | null;
-            }>
-          ).find(
-            (item) =>
-              item.href &&
-              (item.selector === navStep.selector.trim() ||
-                navStep.selector.includes(item.selector))
+    if (!data) {
+      try {
+        const qs = new URLSearchParams({ url: normalizedUrl });
+        const resp = await fetch(resolveApiUrl(`/api/web/fetch?${qs.toString()}`));
+        const json = (await resp.json()) as Record<string, unknown>;
+        if (!resp.ok) {
+          throw new Error(
+            String(json?.error || `Lỗi HTTP ${resp.status} khi tải trang web.`)
           );
-          if (matchedTarget?.href) {
-            resolvedNextUrl = matchedTarget.href;
-            resolvedNextLabel = matchedTarget.label || resolvedNextLabel;
-          }
+        }
+        data = json;
+      } catch (proxyErr) {
+        // Standalone phone fallback: attempt direct browser fetch + client-side HTML extraction
+        try {
+          const directResp = await fetch(normalizedUrl);
+          if (!directResp.ok) throw proxyErr;
+          const rawHtml = await directResp.text();
+          const extracted = extractWebChapterClientSide(rawHtml, normalizedUrl);
+          data = {
+            url: extracted.url,
+            title: extracted.title,
+            paragraphs: extracted.paragraphs,
+            wordCount: extracted.wordCount,
+            nextUrl: extracted.nextUrl,
+            nextLabel: extracted.nextLabel,
+            interactiveLinks: extracted.interactiveLinks,
+            paywallHint: '',
+          };
+        } catch {
+          throw proxyErr;
         }
       }
+    }
 
-      return {
-        id: `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        url: String(resolvedData.url || normalizedUrl),
-        title: String(resolvedData.title || 'Chương không tên'),
-        paragraphs: Array.isArray(resolvedData.paragraphs)
-          ? (resolvedData.paragraphs as string[])
-          : [],
-        wordCount: Number(resolvedData.wordCount || 0),
-        nextUrl: resolvedNextUrl,
-        nextLabel: resolvedNextLabel,
-        interactiveLinks: Array.isArray(resolvedData.interactiveLinks)
-          ? (resolvedData.interactiveLinks as Array<{
-              label: string;
-              selector: string;
-              href: string | null;
-            }>)
-          : [],
-        paywallHint: String(resolvedData.paywallHint || ''),
-        scrapedAt: Date.now(),
-      };
-    },
-    [macroSteps, fallbackSelector]
-  );
+    const resolvedData: Record<string, unknown> = data;
+    return {
+      id: `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      url: String(resolvedData.url || normalizedUrl),
+      title: String(resolvedData.title || 'Chương không tên'),
+      paragraphs: Array.isArray(resolvedData.paragraphs)
+        ? (resolvedData.paragraphs as string[])
+        : [],
+      wordCount: Number(resolvedData.wordCount || 0),
+      nextUrl: (resolvedData.nextUrl as string | null) || null,
+      nextLabel: (resolvedData.nextLabel as string | null) || null,
+      interactiveLinks: Array.isArray(resolvedData.interactiveLinks)
+        ? (resolvedData.interactiveLinks as Array<{
+            label: string;
+            selector: string;
+            href: string | null;
+          }>)
+        : [],
+      paywallHint: String(resolvedData.paywallHint || ''),
+      scrapedAt: Date.now(),
+    };
+  }, []);
 
   const buildBookFromChaptersList = useCallback(
     (
@@ -321,6 +242,7 @@ export function useWebCrawler(
         const msg = err instanceof Error ? err.message : 'Lỗi kết nối trang web.';
         setIssueReason('error');
         setIssueMessage(msg);
+        setCrawlStatus('issue');
         return null;
       } finally {
         setIsFetching(false);
@@ -349,7 +271,7 @@ export function useWebCrawler(
 
         while (runTokenRef.current === token && nextTargetUrl && stepsCount < maxPages) {
           stepsCount += 1;
-          setStatusMessage(`Đang quét trang ${stepsCount}: ${nextTargetUrl}`);
+          setStatusMessage(`AI đang quét trang ${stepsCount}: ${nextTargetUrl}`);
           setIsFetching(true);
           let pageDraft: ScrapedChapterDraft;
           try {
@@ -361,7 +283,7 @@ export function useWebCrawler(
             setIsMinimized(false);
             setIssueReason('error');
             setIssueMessage(
-              `${err instanceof Error ? err.message : 'Lỗi tải trang.'} Bạn có thể lưu các trang trước hoặc sửa URL rồi nhấn Bắt đầu tiếp.`
+              `${err instanceof Error ? err.message : 'Lỗi tải trang.'} Bạn có thể đóng thông báo (X) để tự kiểm tra trên trình duyệt gốc hoặc lưu các chương đã quét.`
             );
             setStatusMessage('Tạm dừng do lỗi tải trang.');
             return;
@@ -372,7 +294,7 @@ export function useWebCrawler(
           setCurrentPage(pageDraft);
           setUrlInput(pageDraft.url);
 
-          // Check paywall or missing/empty content
+          // Detect paywall / login / captcha / empty page
           const issueCheck = detectPaywallOrIssue(
             pageDraft.title,
             pageDraft.paragraphs,
@@ -383,11 +305,11 @@ export function useWebCrawler(
             setIsMinimized(false);
             setIssueReason(issueCheck.reason);
             setIssueMessage(issueCheck.message);
-            setStatusMessage(`Phát hiện vấn đề tại "${pageDraft.title}" — chờ xử lý.`);
+            setStatusMessage(`Phát hiện rào cản tại "${pageDraft.title}" — chờ kiểm tra.`);
             return;
           }
 
-          // Check duplicate or loop back to page 1
+          // Detect duplicate or loop back to chapter 1
           const dupCheck = detectDuplicateOrLoop(
             pageDraft.url,
             pageDraft.title,
@@ -410,14 +332,12 @@ export function useWebCrawler(
             return;
           }
 
-          // Clean new chapter (or re-scanned current starting chapter)
           if (!isRescanningStartingPage) {
             workingList = [...workingList, pageDraft];
             scrapedRef.current = workingList;
             setScrapedList(workingList);
           }
 
-          // Check if no next page link exists
           if (!pageDraft.nextUrl) {
             setCrawlStatus('completed');
             setIssueReason('end_of_book');
@@ -428,29 +348,17 @@ export function useWebCrawler(
             return;
           }
 
-          // In AI Smart Scan mode use a polite 350ms pause; in manual macro mode run configured steps
-          if (useAiScanRef.current) {
-            setActiveMacroStepLabel(`AI tự nhận diện nút "${pageDraft.nextLabel || 'Chương tiếp'}"`);
-            setStatusMessage(
-              `AI đang quét trang ${workingList.length} · Tự chuyển sang chương tiếp theo...`
-            );
-            const stillRunning = await sleepWithCheck(350, token);
-            if (!stillRunning) return;
-          } else {
-            for (let mIdx = 0; mIdx < macroSteps.length; mIdx += 1) {
-              const step = macroSteps[mIdx];
-              setActiveMacroStepLabel(
-                `Macro ${mIdx + 1}/${macroSteps.length}: ${step.label} (${step.delayMs}ms)`
-              );
-              setStatusMessage(
-                `Đang chạy ngầm · Đã quét ${workingList.length} trang · Chờ ${step.delayMs}ms (${step.label})`
-              );
-              const stillRunning = await sleepWithCheck(step.delayMs, token);
-              if (!stillRunning) return;
-            }
-          }
+          // Polite AI auto-turn pause (handles bottom & right-side next-page links)
+          setActiveScanStepLabel(
+            `AI tự lướt tìm nút sang trang "${pageDraft.nextLabel || 'Trang tiếp'}"`
+          );
+          setStatusMessage(
+            `AI đang quét trang ${workingList.length} · Tự lướt tìm nút sang trang tiếp theo...`
+          );
+          const stillRunning = await sleepWithCheck(350, token);
+          if (!stillRunning) return;
 
-          setActiveMacroStepLabel('');
+          setActiveScanStepLabel('');
           nextTargetUrl = pageDraft.nextUrl;
         }
 
@@ -458,34 +366,20 @@ export function useWebCrawler(
           setCrawlStatus('completed');
           await triggerAutoSaveAndEpub(
             workingList,
-            `Đã quét đủ ${workingList.length} trang theo giới hạn.`
+            `Đã quét đủ ${workingList.length} chương theo giới hạn.`
           );
         }
       } finally {
         setIsFetching(false);
-        setActiveMacroStepLabel('');
+        setActiveScanStepLabel('');
       }
     },
-    [fetchPageData, macroSteps, maxPages, triggerAutoSaveAndEpub]
+    [fetchPageData, maxPages, triggerAutoSaveAndEpub]
   );
-
-  const setAndStartBackgroundCrawl = useCallback(() => {
-    const start = urlInput.trim();
-    if (!start) return;
-    runCrawlerLoop(start, false);
-  }, [urlInput, runCrawlerLoop]);
-
-  const startFreshBackgroundCrawl = useCallback(() => {
-    const start = urlInput.trim();
-    if (!start) return;
-    runCrawlerLoop(start, true);
-  }, [urlInput, runCrawlerLoop]);
 
   const startAiAutoScanAndSave = useCallback(() => {
     const start = urlInput.trim();
     if (!start) return;
-    setUseAiScan(true);
-    useAiScanRef.current = true;
     runCrawlerLoop(start, true);
   }, [urlInput, runCrawlerLoop]);
 
@@ -495,12 +389,20 @@ export function useWebCrawler(
     runCrawlerLoop(fixedUrl, false);
   }, [urlInput, runCrawlerLoop]);
 
+  const dismissIssueAlert = useCallback(() => {
+    setIssueMessage('');
+    setIssueReason(null);
+    setCrawlStatus((prev) =>
+      prev === 'issue' ? (scrapedRef.current.length > 0 ? 'paused' : 'idle') : prev
+    );
+  }, []);
+
   const togglePause = useCallback(() => {
     if (crawlStatus === 'running') {
       runTokenRef.current += 1;
       setCrawlStatus('paused');
       setStatusMessage(
-        `Đã tạm dừng quét ngầm (${scrapedRef.current.length} trang đã lưu).`
+        `Đã tạm dừng quét AI (${scrapedRef.current.length} chương đã lưu).`
       );
       return;
     }
@@ -519,46 +421,8 @@ export function useWebCrawler(
     setIsMinimized(false);
     setIssueMessage('');
     setIssueReason(null);
-    setStatusMessage('Đã dừng trình quét Auto-Click.');
+    setStatusMessage('Đã dừng trình quét AI.');
   }, []);
-
-  const addMacroStep = () => {
-    setMacroSteps((prev) => [
-      ...prev,
-      {
-        id: `step-${Date.now()}`,
-        label: `Click ${prev.length + 1}`,
-        selector: '.next-chapter-btn',
-        delayMs: 600,
-      },
-    ]);
-  };
-
-  const updateMacroStep = (id: string, patch: Partial<MacroStep>) => {
-    setMacroSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
-  };
-
-  const removeMacroStep = (id: string) => {
-    setMacroSteps((prev) => (prev.length > 1 ? prev.filter((s) => s.id !== id) : prev));
-  };
-
-  const applyInteractiveTargetToStep = (
-    target: { label: string; selector: string; href: string | null }
-  ) => {
-    if (!pickingStepId) return;
-    setMacroSteps((prev) =>
-      prev.map((s) =>
-        s.id === pickingStepId
-          ? {
-              ...s,
-              selector: target.selector,
-              label: `${s.label.split('(')[0].trim()} (${target.label})`,
-            }
-          : s
-      )
-    );
-    setPickingStepId(null);
-  };
 
   const buildBookFromScraped = useCallback(
     (overrideTitle?: string, overrideCollection?: string): Book => {
@@ -570,7 +434,9 @@ export function useWebCrawler(
   const saveScrapedToLibrary = useCallback(
     (overrideTitle?: string, overrideCollection?: string, openImmediately = true) => {
       if (scrapedList.length === 0) {
+        setIssueReason('empty');
         setIssueMessage('Chưa có chương nào được quét để lưu vào thư viện.');
+        setCrawlStatus('issue');
         return;
       }
       const book = buildBookFromScraped(overrideTitle, overrideCollection);
@@ -585,7 +451,9 @@ export function useWebCrawler(
   const exportScrapedEpub = useCallback(
     async (overrideTitle?: string) => {
       if (scrapedList.length === 0) {
+        setIssueReason('empty');
         setIssueMessage('Chưa có chương nào để trích xuất file .EPUB.');
+        setCrawlStatus('issue');
         return;
       }
       const book = buildBookFromScraped(overrideTitle);
@@ -617,26 +485,17 @@ export function useWebCrawler(
       scrapedRef.current = next;
       return next;
     });
-    setStatusMessage(`Đã trích xuất trực tiếp "${draft.title}" trên thiết bị (${draft.wordCount} từ).`);
+    setStatusMessage(
+      `Đã trích xuất trực tiếp "${draft.title}" trên thiết bị (${draft.wordCount} từ).`
+    );
     return draft;
   }, []);
 
   return {
     urlInput,
     setUrlInput,
-    fallbackSelector,
-    setFallbackSelector,
-    macroSteps,
-    addMacroStep,
-    updateMacroStep,
-    removeMacroStep,
-    pickingStepId,
-    setPickingStepId,
-    applyInteractiveTargetToStep,
     maxPages,
     setMaxPages,
-    useAiScan,
-    setUseAiScan,
     autoSaveAndExportEpub,
     setAutoSaveAndExportEpub,
     currentPage,
@@ -649,7 +508,7 @@ export function useWebCrawler(
     statusMessage,
     issueMessage,
     issueReason,
-    activeMacroStepLabel,
+    activeScanStepLabel,
     compiledTitle,
     setCompiledTitle,
     compiledAuthor,
@@ -659,10 +518,9 @@ export function useWebCrawler(
     compiledStyle,
     setCompiledStyle,
     openUrlDirectly,
-    setAndStartBackgroundCrawl,
-    startFreshBackgroundCrawl,
     startAiAutoScanAndSave,
     resumeAfterIssue,
+    dismissIssueAlert,
     togglePause,
     stopAndResetStatus,
     saveScrapedToLibrary,

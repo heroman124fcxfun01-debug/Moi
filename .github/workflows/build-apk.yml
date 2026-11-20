@@ -1,4 +1,4 @@
-name: Đóng gói File APK LaziRead (Android)
+name: Đóng gói File APK BOOKHAD (Android)
 
 on:
   push:
@@ -56,7 +56,7 @@ jobs:
 
       - name: Cài thư viện và build giao diện Web (dist)
         env:
-          VITE_API_BASE_URL: ${{ vars.LAZIREAD_SERVER_URL || '' }}
+          VITE_API_BASE_URL: ${{ vars.BOOKHAD_SERVER_URL || vars.LAZIREAD_SERVER_URL || '' }}
           NODE_OPTIONS: --max-old-space-size=4096
         run: |
           node -v
@@ -64,7 +64,7 @@ jobs:
           npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
-      - name: Tạo dự án Android với Capacitor 6
+      - name: Tạo dự án Android với Capacitor 6 & gắn biểu tượng BOOKHAD
         env:
           CI: true
           CAPACITOR_TELEMETRY: '0'
@@ -73,6 +73,15 @@ jobs:
           rm -rf android
           npx cap add android
           npx cap sync android
+          if [ -f public/pwa-512x512.png ]; then
+            for dir in android/app/src/main/res/mipmap-*; do
+              if [ -d "$dir" ]; then
+                cp public/pwa-512x512.png "$dir/ic_launcher.png" || true
+                cp public/pwa-512x512.png "$dir/ic_launcher_round.png" || true
+                cp public/pwa-512x512.png "$dir/ic_launcher_foreground.png" || true
+              fi
+            done
+          fi
 
       - name: Biên dịch file APK (Debug Test)
         working-directory: android
@@ -83,14 +92,14 @@ jobs:
           cat local.properties
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk ../LaziRead-S24Ultra.apk
-          ls -lh ../LaziRead-S24Ultra.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../BOOKHAD-Android.apk
+          ls -lh ../BOOKHAD-Android.apk
 
       - name: Tải lên file APK vào GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: LaziRead-S24Ultra-APK
-          path: LaziRead-S24Ultra.apk
+          name: BOOKHAD-Android-APK
+          path: BOOKHAD-Android.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -100,13 +109,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NOTES="File cài đặt Android .apk cho Samsung Galaxy S24 Ultra và các máy Android.
-          - Tải trực tiếp file LaziRead-S24Ultra.apk bên dưới và mở để cài đặt.
-          - Đọc EPUB/PDF, Nghe giọng thiết bị offline và Trình trộn 20 âm thanh nền hoạt động ngoại tuyến.
-          - Để dùng thêm AI TTS/Dịch/Quét Web bên trong file APK, nhập link máy chủ vào Cài đặt → Link Máy chủ AI."
+          - Tải trực tiếp file BOOKHAD-Android.apk bên dưới và mở để cài đặt.
+          - Đọc EPUB/PDF, Nghe giọng thiết bị offline và Trình trộn âm thanh nền hoạt động ngoại tuyến mượt mà 120Hz.
+          - Để dùng thêm AI TTS/Dịch/Quét Web & Quét Video thành EPUB bên trong file APK, nhập link máy chủ vào Cài đặt → Link Máy chủ AI."
           if gh release view apk-latest >/dev/null 2>&1; then
-            gh release upload apk-latest LaziRead-S24Ultra.apk --clobber
+            gh release upload apk-latest BOOKHAD-Android.apk --clobber
           else
-            gh release create apk-latest LaziRead-S24Ultra.apk \
-              --title "LaziRead Android APK (Bản cài đặt trực tiếp)" \
+            gh release create apk-latest BOOKHAD-Android.apk \
+              --title "BOOKHAD Android APK (Bản cài đặt trực tiếp)" \
               --notes "$NOTES"
           fi

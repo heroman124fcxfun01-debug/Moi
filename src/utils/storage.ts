@@ -39,6 +39,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   pageTurnStyle: 'curl',
   columnsInPaginated: 1,
   autoScrollSpeed: 0,
+  highlightSpokenText: true,
   translationMode: 'original',
   targetLang: 'vi',
 };

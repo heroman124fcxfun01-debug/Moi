@@ -44,6 +44,7 @@ export interface CharacterVoiceAssignment {
   browserRate: number;
   externalVoiceId?: string;
   toneSettings?: VoiceToneSettings;
+  isCustomOverride?: boolean;
 }
 
 export interface CharacterInfo {
@@ -97,6 +98,7 @@ export interface BookmarkItem {
   chapterId: string;
   chapterTitle: string;
   paragraphIndex: number;
+  pageIndex?: number;
   excerpt: string;
   createdAt: number;
 }
@@ -186,6 +188,7 @@ export interface ReaderSettings {
   pageTurnStyle: PageTurnStyle;
   columnsInPaginated: 1 | 2;
   autoScrollSpeed: number;
+  highlightSpokenText?: boolean;
   translationMode: TranslationMode;
   targetLang: string;
 }

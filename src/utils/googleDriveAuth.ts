@@ -91,6 +91,28 @@ export function initDriveAuth(
   });
 }
 
+export interface UnauthorizedDomainErrorInfo {
+  isUnauthorizedDomain: boolean;
+  hostname: string;
+  message: string;
+}
+
+export function extractUnauthorizedDomainError(err: unknown): UnauthorizedDomainErrorInfo {
+  const code = (err as { code?: string })?.code || '';
+  const rawMsg = err instanceof Error ? err.message : String(err || '');
+  const hostname = typeof window !== 'undefined' ? window.location.hostname || 'localhost' : 'localhost';
+  const isUnauthorizedDomain =
+    code === 'auth/unauthorized-domain' || /unauthorized-domain/i.test(rawMsg);
+
+  return {
+    isUnauthorizedDomain,
+    hostname,
+    message: isUnauthorizedDomain
+      ? `Tên miền "${hostname}" chưa được cấp quyền trong Firebase Console (auth/unauthorized-domain). Hãy thêm "${hostname}" vào Authentication → Settings → Authorized domains.`
+      : rawMsg,
+  };
+}
+
 export async function signInWithGoogleDrive(): Promise<{
   user: User;
   accessToken: string;
@@ -113,6 +135,12 @@ export async function signInWithGoogleDrive(): Promise<{
     }
     if (code === 'auth/popup-blocked') {
       throw new Error('Trình duyệt đang chặn cửa sổ bật lên (popup). Hãy cho phép popup rồi bấm đăng nhập lại.');
+    }
+    const domainInfo = extractUnauthorizedDomainError(err);
+    if (domainInfo.isUnauthorizedDomain) {
+      const wrapped = new Error(domainInfo.message) as Error & { code?: string };
+      wrapped.code = 'auth/unauthorized-domain';
+      throw wrapped;
     }
     throw err instanceof Error ? err : new Error('Đăng nhập Google Drive thất bại.');
   } finally {

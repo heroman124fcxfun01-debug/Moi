@@ -4,6 +4,8 @@ import {
   computeBookFingerprint,
   buildSyncBackupBundle,
   mergeSyncBundleIntoLibrary,
+  mergeProgressBundlesForCloudPush,
+  normalizeBookMatchKey,
   addReadingSecondsToLogs,
   getWeeklyReadingChart,
   getMonthlyReadingChart,
@@ -60,6 +62,34 @@ test('mergeSyncBundleIntoLibrary restores reading progress onto re-uploaded iden
   assert.equal(result.mergedBooks[0].currentParagraphIndex, 1);
   assert.equal(result.mergedBooks[0].progressPercent, 100);
   assert.equal(result.mergedBooks[0].bookmarks.length, 1);
+});
+
+test('mergeSyncBundleIntoLibrary matches books by normalized filename/title even when fingerprints differ', () => {
+  const device1Book = makeBook('d1-a', 'Đắc Nhân Tâm.epub', 1, 0, 8000);
+  const bundle = buildSyncBackupBundle([device1Book], [], { includeFullBooks: false });
+
+  const device2Book: Book = {
+    ...makeBook('d2-a', 'Đắc Nhân Tâm', 0, 0, 1000),
+    fingerprint: 'fp-different-edit',
+  };
+  assert.equal(normalizeBookMatchKey('Đắc_Nhân_Tâm.epub'), normalizeBookMatchKey('Đắc Nhân Tâm'));
+  const result = mergeSyncBundleIntoLibrary([device2Book], bundle);
+  assert.equal(result.matchedProgressCount, 1);
+  assert.equal(result.mergedBooks[0].currentChapterIndex, 1);
+});
+
+test('mergeProgressBundlesForCloudPush preserves remote records for books not on the current device', () => {
+  const bookA = makeBook('a-1', 'Sách A', 1, 1, 9000);
+  const bookB = makeBook('b-1', 'Sách B', 1, 0, 7000);
+  const remote = buildSyncBackupBundle([bookA, bookB], [], { includeFullBooks: false });
+
+  // Device 2 only has Book A at older position, pushing must not delete Book B
+  const device2BookA = makeBook('a-2', 'Sách A', 0, 0, 2000);
+  const pushed = mergeProgressBundlesForCloudPush([device2BookA], [], remote);
+  assert.equal(pushed.progressRecords.length, 2);
+  const remoteB = pushed.progressRecords.find((r) => r.title === 'Sách B');
+  assert.ok(remoteB);
+  assert.equal(remoteB.currentChapterIndex, 1);
 });
 
 test('reading time logs aggregate accurately for weekly and monthly charts', () => {

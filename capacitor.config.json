@@ -1,6 +1,6 @@
 {
-  "appId": "com.laziread.app",
-  "appName": "LaziRead",
+  "appId": "com.bookhad.app",
+  "appName": "BOOKHAD",
   "webDir": "dist",
   "server": {
     "androidScheme": "https",

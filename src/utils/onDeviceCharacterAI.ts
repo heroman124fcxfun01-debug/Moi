@@ -231,20 +231,28 @@ function extractSpeakerFromContext(context: string): string | null {
 
 export function detectEmotionFromLine(text: string, context = ''): string {
   const combined = `${text} ${context}`.toLowerCase();
-  if (/quát|hét|gầm|giận|phẫn nộ|cút|im ngay|!{2,}/.test(combined)) {
+  if (/dọa|đe|liệu hồn|hùng hồn|quyết chí|xông lên|thề|quát|hét|gầm|giận|phẫn nộ|cút|im ngay|!{2,}/.test(combined)) {
+    if (/dọa|đe|liệu hồn/.test(combined)) return 'Dọa nạt, gằn giọng, uy hiếp';
+    if (/hùng hồn|quyết chí|xông lên|thề/.test(combined)) return 'Hùng hồn, quyết chí, sục sôi';
     return 'Mạnh mẽ, giận dữ, dứt khoát';
   }
-  if (/hoảng|sợ|run|thở gấp|kinh hãi|cứu/.test(combined)) {
-    return 'Hoảng hốt, lo âu, hồi hộp';
+  if (/hoảng|sợ hãi|sợ quá|run rẩy|thở gấp|kinh hãi|thất kinh|cứu/.test(combined)) {
+    return 'Hoảng sợ, lo âu, dồn dập';
+  }
+  if (/bất ngờ|sửng sốt|ngạc nhiên|trời ơi|không thể nào|sao có thể|!\?/.test(combined)) {
+    return 'Bất ngờ, sửng sốt, cao giọng';
+  }
+  if (/kiên định|đĩnh đạc|chắc nịch|không lùi bước|bình tĩnh/.test(combined)) {
+    return 'Kiên định, đĩnh đạc, chắc chắn';
   }
   if (/thì thầm|khẽ|nhỏ giọng|bí mật|lặng lẽ/.test(combined)) {
     return 'Thì thầm bí ẩn, nhẹ nhàng';
   }
-  if (/cười|vui|hào hứng|tuyệt vời|haha/.test(combined)) {
-    return 'Vui vẻ, tươi sáng, hào hứng';
+  if (/cười lớn|phá lên cười|haha|ha ha|vui mừng|sung sướng|hào hứng|tuyệt vời/.test(combined)) {
+    return 'Vui mừng, cười lớn, rạng rỡ';
   }
-  if (/buồn|khóc|nước mắt|thở dài|tiếc|hoài niệm|đau/.test(combined)) {
-    return 'Sâu lắng, trầm buồn, truyền cảm';
+  if (/đau thương|buồn khổ|khóc|nước mắt|nức nở|tuyệt vọng|thở dài|tiếc|hoài niệm|đau/.test(combined)) {
+    return 'Đau thương, buồn khổ, nghẹn ngào';
   }
   if (text.trim().endsWith('?')) {
     return 'Tò mò, nghi vấn, tự nhiên';
@@ -253,6 +261,101 @@ export function detectEmotionFromLine(text: string, context = ''): string {
     return 'Nhấn mạnh, cảm xúc cao trào';
   }
   return 'Tự nhiên, truyền cảm';
+}
+
+export interface ReadingVoiceStyleOption {
+  id: BookReadingStyle;
+  label: string;
+  shortLabel: string;
+  description: string;
+}
+
+export const READING_VOICE_STYLES: ReadingVoiceStyleOption[] = [
+  {
+    id: 'novel',
+    label: 'Giọng tiểu thuyết — Nhấn nhá tình huống & cảm xúc',
+    shortLabel: 'Tiểu thuyết',
+    description:
+      'Tự động nhấn nhá theo từng tình huống: hoảng sợ, bất ngờ, kiên định, đĩnh đạc, dọa nạt, hùng hồn, quyết chí, đau thương, buồn khổ, vui mừng, cười lớn, khóc.',
+  },
+  {
+    id: 'essay',
+    label: 'Giọng tản văn — Nhẹ nhàng, tình cảm',
+    shortLabel: 'Tản văn',
+    description: 'Nhịp đọc êm ái, nhẹ nhàng, giàu cảm xúc lắng đọng.',
+  },
+  {
+    id: 'selfhelp',
+    label: 'Giọng học tập — Phong cách sách Self-help',
+    shortLabel: 'Học tập',
+    description: 'Rõ ràng, mạch lạc, giàu năng lượng truyền động lực như sách phát triển bản thân.',
+  },
+  {
+    id: 'research',
+    label: 'Giọng nghiên cứu — Chuẩn xác, điềm tĩnh',
+    shortLabel: 'Nghiên cứu',
+    description: 'Nhịp ổn định, nhấn mạnh thuật ngữ và số liệu rõ ràng.',
+  },
+];
+
+export function computeReadingStyleModulation(
+  readingStyle: BookReadingStyle,
+  emotionStyle: string,
+  basePitch: number,
+  baseRate: number
+): { pitch: number; rate: number; stylePrompt: string } {
+  const safePitch = Number.isFinite(basePitch) ? basePitch : 1.0;
+  const safeRate = Number.isFinite(baseRate) ? baseRate : 1.0;
+  const lower = (emotionStyle || '').toLowerCase();
+
+  let pitchMult = 1.0;
+  let rateMult = 1.0;
+  let styleTag = '';
+
+  if (readingStyle === 'essay') {
+    pitchMult = 0.98;
+    rateMult = 0.93;
+    styleTag = 'Giọng tản văn nhẹ nhàng, tình cảm, sâu lắng';
+  } else if (readingStyle === 'selfhelp') {
+    pitchMult = 1.03;
+    rateMult = 1.04;
+    styleTag = 'Giọng sách Self-help tự tin, truyền động lực, nhấn ý chính';
+  } else if (readingStyle === 'research') {
+    pitchMult = 1.0;
+    rateMult = 0.98;
+    styleTag = 'Giọng nghiên cứu chuẩn xác, mạch lạc';
+  } else {
+    // 'novel' — expressive situational modulation
+    styleTag = 'Giọng tiểu thuyết nhấn nhá tình huống';
+    if (/hoảng sợ|dồn dập|lo âu/.test(lower)) {
+      pitchMult = 1.12;
+      rateMult = 1.11;
+    } else if (/bất ngờ|sửng sốt|cao giọng/.test(lower)) {
+      pitchMult = 1.15;
+      rateMult = 1.06;
+    } else if (/kiên định|đĩnh đạc|chắc chắn/.test(lower)) {
+      pitchMult = 0.93;
+      rateMult = 0.95;
+    } else if (/dọa nạt|gằn giọng|uy hiếp|hùng hồn|quyết chí|giận dữ/.test(lower)) {
+      pitchMult = 0.87;
+      rateMult = 1.04;
+    } else if (/đau thương|buồn khổ|nghẹn ngào|khóc|trầm buồn/.test(lower)) {
+      pitchMult = 0.90;
+      rateMult = 0.86;
+    } else if (/vui mừng|cười lớn|rạng rỡ|tươi sáng/.test(lower)) {
+      pitchMult = 1.12;
+      rateMult = 1.08;
+    } else if (/thì thầm/.test(lower)) {
+      pitchMult = 0.95;
+      rateMult = 0.88;
+    }
+  }
+
+  return {
+    pitch: Math.min(1.6, Math.max(0.6, Math.round(safePitch * pitchMult * 100) / 100)),
+    rate: Math.min(1.8, Math.max(0.65, Math.round(safeRate * rateMult * 100) / 100)),
+    stylePrompt: `${styleTag}. ${emotionStyle || 'Tự nhiên'}`.trim(),
+  };
 }
 
 function inferCharacterTraits(name: string, contexts: string[]): {
@@ -557,12 +660,32 @@ export function analyzeChapterOnDevice(
  */
 export function buildAutoVoiceAssignments(
   characters: CharacterInfo[],
-  existing: Record<string, CharacterVoiceAssignment> = {}
+  existing: Record<string, CharacterVoiceAssignment> = {},
+  options?: { inheritNarratorVoice?: boolean }
 ): Record<string, CharacterVoiceAssignment> {
   const next: Record<string, CharacterVoiceAssignment> = { ...existing };
+  const inheritNarrator = Boolean(options?.inheritNarratorVoice && next.narrator);
 
   for (const ch of characters) {
-    if (next[ch.id]) continue;
+    if (next[ch.id] && (ch.id === 'narrator' || !inheritNarrator || next[ch.id].isCustomOverride)) {
+      continue;
+    }
+    if (inheritNarrator && ch.id !== 'narrator' && next.narrator) {
+      next[ch.id] = {
+        characterId: ch.id,
+        source: next.narrator.source,
+        geminiVoice: next.narrator.geminiVoice,
+        externalVoiceId: next.narrator.externalVoiceId,
+        browserVoiceURI: next.narrator.browserVoiceURI,
+        stylePrompt: next.narrator.stylePrompt || ch.voiceDescription,
+        browserPitch: next.narrator.browserPitch,
+        browserRate: next.narrator.browserRate,
+        toneSettings: next.narrator.toneSettings ? { ...next.narrator.toneSettings } : { ...DEFAULT_VOICE_TONE },
+        isCustomOverride: false,
+      };
+      continue;
+    }
+
     const preset = CHARACTER_VOICE_POOL.find((p) => p.voiceName === ch.suggestedVoiceName);
     next[ch.id] = {
       characterId: ch.id,
@@ -576,8 +699,40 @@ export function buildAutoVoiceAssignments(
         pitch: ch.id === 'narrator' ? 1.0 : preset?.browserPitch ?? 1.0,
         rate: ch.id === 'narrator' ? 1.0 : preset?.browserRate ?? 1.0,
       },
+      isCustomOverride: false,
     };
   }
 
+  return next;
+}
+
+/**
+ * Implicitly propagates a newly selected narrator voice onto all non-manually-overridden characters
+ * so choosing a narrator voice automatically applies across character lines without extra UI toggles.
+ */
+export function applyNarratorVoiceToCharacters(
+  existing: Record<string, CharacterVoiceAssignment>,
+  narratorAssignment: CharacterVoiceAssignment
+): Record<string, CharacterVoiceAssignment> {
+  const next: Record<string, CharacterVoiceAssignment> = {
+    ...existing,
+    narrator: { ...narratorAssignment, characterId: 'narrator' },
+  };
+  for (const [charId, assign] of Object.entries(next)) {
+    if (charId === 'narrator' || assign.isCustomOverride) continue;
+    next[charId] = {
+      ...assign,
+      source: narratorAssignment.source,
+      geminiVoice: narratorAssignment.geminiVoice,
+      externalVoiceId: narratorAssignment.externalVoiceId,
+      browserVoiceURI: narratorAssignment.browserVoiceURI,
+      browserPitch: narratorAssignment.browserPitch,
+      browserRate: narratorAssignment.browserRate,
+      toneSettings: narratorAssignment.toneSettings
+        ? { ...narratorAssignment.toneSettings }
+        : assign.toneSettings,
+      isCustomOverride: false,
+    };
+  }
   return next;
 }
