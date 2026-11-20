@@ -5,7 +5,6 @@ import {
   FileText,
   Image as ImageIcon,
   BookOpen,
-  Download,
   Loader2,
   Camera,
   ChevronLeft,
@@ -41,7 +40,7 @@ interface ImportBookModalProps {
   standaloneDeviceMode?: boolean;
 }
 
-type ImportTab = 'file' | 'image' | 'text';
+type ImportTab = 'file' | 'image';
 
 const READING_STYLE_OPTIONS: Array<{ value: BookReadingStyle; label: string; subtitle: string }> = [
   { value: 'novel', label: 'Tiểu thuyết', subtitle: 'Diễn cảm đa nhân vật & cảm xúc' },
@@ -81,11 +80,6 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
   const [imageMode, setImageMode] = useState<TranslationMode>('bilingual');
   const [imageTargetLang, setImageTargetLang] = useState('vi');
   const [imageBookTitle, setImageBookTitle] = useState('');
-
-  // Raw text import state
-  const [textTitle, setTextTitle] = useState('');
-  const [textAuthor, setTextAuthor] = useState('');
-  const [rawTextContent, setRawTextContent] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -426,50 +420,6 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
     }
   };
 
-  const handleCreateTextBook = (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage('');
-    if (!textTitle.trim() || !rawTextContent.trim()) {
-      setErrorMessage('Vui lòng nhập tiêu đề và nội dung sách.');
-      return;
-    }
-
-    const paras = cleanExtractedParagraphs(rawTextContent);
-    const title = textTitle.trim();
-    const author = textAuthor.trim() || 'Tác giả tự do';
-    const chapters = [
-      {
-        id: 'ch-1',
-        index: 0,
-        title: 'Chương 1',
-        paragraphs: paras,
-      },
-    ];
-    const newBook: Book = {
-      id: `book-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      title,
-      author,
-      description: 'Tạo trực tiếp từ trình soạn thảo văn bản BOOKHAD.',
-      language: 'vi',
-      sourceType: 'epub',
-      collection: collectionInput.trim() || 'Sách tự soạn',
-      readingStyle: selectedStyle,
-      fingerprint: computeBookFingerprint({ title, author, chapters }),
-      chapters,
-      currentChapterIndex: 0,
-      currentParagraphIndex: 0,
-      progressPercent: 1,
-      bookmarks: [],
-      highlights: [],
-      voiceAssignments: {},
-      addedAt: Date.now(),
-      lastReadAt: Date.now(),
-    };
-
-    onImportBook(newBook, true);
-    onClose();
-  };
-
   return (
     <div
       className="fixed inset-0 z-[75] flex items-end sm:items-center justify-center ios-frosted-backdrop ios-backdrop-fade p-0 sm:p-4"
@@ -480,26 +430,26 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
         if (e.target === e.currentTarget && !isBusy) onClose();
       }}
     >
-      <div className="ios-sheet-enter ios-frosted-surface w-full max-w-xl text-stone-900 dark:text-stone-100 rounded-t-[26px] sm:rounded-[24px] overflow-hidden max-h-[88dvh] flex flex-col">
-        <div className="sm:hidden flex justify-center pt-2 pb-0.5 shrink-0">
-          <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
+      <div className="ios-sheet-enter ios-frosted-surface w-full max-w-xl text-stone-900 dark:text-stone-100 rounded-t-[24px] sm:rounded-[22px] overflow-hidden max-h-[88dvh] flex flex-col">
+        <div className="sm:hidden flex justify-center pt-1.5 pb-0.5 shrink-0">
+          <span className="w-9 h-1 rounded-full bg-stone-300 dark:bg-stone-600" />
         </div>
 
-        {/* Compact iPhone Header with explicit ← Quay lại + X */}
-        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
+        {/* Compact Header with half-size title */}
+        <div className="flex items-center justify-between gap-2 px-3.5 py-2 border-b border-stone-200 dark:border-zinc-800 shrink-0">
           <button
             type="button"
             disabled={isBusy}
             onClick={onClose}
-            className="inline-flex items-center gap-0.5 px-2 py-1 rounded-full text-[12px] font-medium text-amber-800 dark:text-amber-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors shrink-0 disabled:opacity-40"
+            className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[11px] font-medium text-amber-800 dark:text-amber-300 hover:bg-stone-100 dark:hover:bg-zinc-800 transition-colors shrink-0 disabled:opacity-40"
           >
-            <ChevronLeft className="w-4 h-4 -ml-0.5" />
+            <ChevronLeft className="w-3.5 h-3.5 -ml-0.5" />
             <span>Quay lại</span>
           </button>
 
           <h2
             id="import-modal-title"
-            className="text-[14px] sm:text-[15px] font-display font-semibold truncate text-center"
+            className="text-[10px] sm:text-[11px] font-display font-semibold truncate text-center leading-tight"
           >
             Thêm sách mới
           </h2>
@@ -509,21 +459,21 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             disabled={isBusy}
             onClick={onClose}
             aria-label="Đóng hộp thoại thêm sách"
-            className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0 disabled:opacity-40"
+            className="w-6 h-6 rounded-full bg-stone-100 dark:bg-zinc-800 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0 disabled:opacity-40"
           >
-            <X className="w-4 h-4" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        {/* Compact Half-Size Non-Overflowing Segmented Tabs */}
-        <div className="px-4 pt-3 shrink-0 flex justify-center sm:justify-start">
-          <div className="inline-flex items-center p-0.5 rounded-full bg-black/[0.06] dark:bg-white/[0.08] gap-0.5 max-w-full">
+        {/* Compact 2-Tab Selector (EPUB/PDF + Quét ảnh) */}
+        <div className="px-4 pt-2.5 shrink-0 flex justify-center sm:justify-start">
+          <div className="inline-flex items-center p-0.5 rounded-full bg-stone-100 dark:bg-zinc-800 gap-0.5 max-w-full">
             <button
               type="button"
               onClick={() => setActiveTab('file')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center gap-1 px-3 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
                 activeTab === 'file'
-                  ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-stone-100 shadow-xs'
+                  ? 'bg-white dark:bg-zinc-950 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
               }`}
             >
@@ -533,26 +483,14 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('image')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center gap-1 px-3 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
                 activeTab === 'image'
-                  ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-stone-100 shadow-xs'
+                  ? 'bg-white dark:bg-zinc-950 text-stone-900 dark:text-stone-100 shadow-xs'
                   : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
               }`}
             >
               <Camera className="w-2.5 h-2.5 shrink-0" />
               <span>Quét ảnh</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('text')}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full whitespace-nowrap transition-colors ${
-                activeTab === 'text'
-                  ? 'bg-white dark:bg-zinc-900 text-stone-900 dark:text-stone-100 shadow-xs'
-                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
-              }`}
-            >
-              <BookOpen className="w-2.5 h-2.5 shrink-0" />
-              <span>Văn bản</span>
             </button>
           </div>
         </div>
@@ -778,60 +716,6 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
                 )}
               </div>
             </div>
-          )}
-
-          {activeTab === 'text' && (
-            <form onSubmit={handleCreateTextBook} className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
-                    Tên sách *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={textTitle}
-                    onChange={(e) => setTextTitle(e.target.value)}
-                    placeholder="Ví dụ: Tuyển tập truyện ngắn"
-                    className="w-full px-3 py-1.5 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
-                    Tác giả
-                  </label>
-                  <input
-                    type="text"
-                    value={textAuthor}
-                    onChange={(e) => setTextAuthor(e.target.value)}
-                    placeholder="Tên tác giả"
-                    className="w-full px-3 py-1.5 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-[11px] font-medium text-stone-500 dark:text-stone-400 mb-1">
-                  Nội dung sách *
-                </label>
-                <textarea
-                  rows={5}
-                  required
-                  value={rawTextContent}
-                  onChange={(e) => setRawTextContent(e.target.value)}
-                  placeholder="Dán nội dung chương truyện hoặc tài liệu tại đây..."
-                  className="w-full px-3 py-2 text-[11.5px] rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/75 dark:bg-zinc-900/70"
-                />
-              </div>
-              <div className="flex justify-end">
-                <button
-                  type="submit"
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11.5px] font-semibold"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Lưu sách &amp; Đọc ngay</span>
-                </button>
-              </div>
-            </form>
           )}
         </div>
       </div>

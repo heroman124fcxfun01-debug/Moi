@@ -49,6 +49,7 @@ import {
 } from '../utils/textProcessing';
 import {
   findScreenPageForParagraph,
+  findScreenPageForPosition,
   paginateChapterForViewport,
   type ScreenPageChunk,
 } from '../utils/screenPaginator';
@@ -80,6 +81,7 @@ interface ReaderViewProps {
   basicSettings: AppBasicSettings;
   onBackToLibrary: () => void;
   onUpdateBook: (updated: Book) => void;
+  onPatchBook?: (bookId: string, updater: (prev: Book) => Book) => void;
   onLogReadingTime: (seconds: number, bookId: string) => void;
   settings: ReaderSettings;
   onUpdateSettings: (patch: Partial<ReaderSettings>) => void;
@@ -109,12 +111,85 @@ const HIGHLIGHT_CLASSES: Record<HighlightItem['color'], string> = {
   sky: 'bg-sky-200/60 dark:bg-sky-700/35',
 };
 
+interface CachedReadingPos {
+  chapterIndex: number;
+  paragraphIndex: number;
+  pageIndex: number;
+  charOffset: number;
+  scrollRatio: number;
+  updatedAt: number;
+}
+
+const READING_POS_STORAGE_PREFIX = 'bookhad_pos_';
+
+function readCachedReadingPos(bookId: string): CachedReadingPos | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${READING_POS_STORAGE_PREFIX}${bookId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedReadingPos>;
+    if (typeof parsed.chapterIndex !== 'number') return null;
+    return {
+      chapterIndex: Math.max(0, parsed.chapterIndex),
+      paragraphIndex: Math.max(0, parsed.paragraphIndex ?? 0),
+      pageIndex: Math.max(0, parsed.pageIndex ?? 0),
+      charOffset: Math.max(0, parsed.charOffset ?? 0),
+      scrollRatio: Math.min(1, Math.max(0, parsed.scrollRatio ?? 0)),
+      updatedAt: parsed.updatedAt ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedReadingPos(bookId: string, pos: CachedReadingPos): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`${READING_POS_STORAGE_PREFIX}${bookId}`, JSON.stringify(pos));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function resolveSavedPositionForChapter(book: Book, targetChapterIdx: number): {
+  paragraphIndex: number;
+  pageIndex?: number;
+  charOffset: number;
+  scrollRatio: number;
+} {
+  const cached = readCachedReadingPos(book.id);
+  const useCache =
+    cached !== null &&
+    cached.chapterIndex === targetChapterIdx &&
+    (cached.updatedAt >= (book.lastReadAt || 0) ||
+      (typeof book.currentPageIndex !== 'number' &&
+        (cached.pageIndex > 0 || cached.charOffset > 0 || cached.scrollRatio > 0)));
+
+  if (useCache && cached) {
+    return {
+      paragraphIndex: cached.paragraphIndex,
+      pageIndex: cached.pageIndex,
+      charOffset: cached.charOffset,
+      scrollRatio: cached.scrollRatio,
+    };
+  }
+
+  return {
+    paragraphIndex: Math.max(0, book.currentParagraphIndex || 0),
+    pageIndex:
+      typeof book.currentPageIndex === 'number' ? Math.max(0, book.currentPageIndex) : undefined,
+    charOffset: Math.max(0, book.currentPageCharOffset || 0),
+    scrollRatio: Math.min(1, Math.max(0, book.currentScrollRatio || 0)),
+  };
+}
+
 export const ReaderView: React.FC<ReaderViewProps> = ({
   book,
   initialOpenAudio = false,
   basicSettings,
   onBackToLibrary,
   onUpdateBook,
+  onPatchBook,
   onLogReadingTime,
   settings,
   onUpdateSettings,
@@ -175,7 +250,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   } | null>(null);
   const fullTranslateAbortRef = useRef<AbortController | null>(null);
 
-  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const chapterIndex = Math.min(
+    Math.max(0, book.currentChapterIndex),
+    Math.max(0, book.chapters.length - 1)
+  );
+  const currentChapter = book.chapters[chapterIndex];
+
+  const initialResolvedPos = resolveSavedPositionForChapter(book, chapterIndex);
+
+  const [currentPageIndex, setCurrentPageIndex] = useState(() =>
+    Math.max(0, initialResolvedPos.pageIndex ?? 0)
+  );
   const [turnDirection, setTurnDirection] = useState<'next' | 'prev'>('next');
   const [turnTick, setTurnTick] = useState(0);
   const [dragCurlDeltaX, setDragCurlDeltaX] = useState<number | null>(null);
@@ -217,13 +302,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const pendingLastPageOnPrevChapterRef = useRef(false);
   const pendingTargetPageRef = useRef<number | null>(null);
   const hasUserTurnedRef = useRef(false);
-  const anchorParagraphRef = useRef<number>(book.currentParagraphIndex || 0);
-
-  const chapterIndex = Math.min(
-    Math.max(0, book.currentChapterIndex),
-    Math.max(0, book.chapters.length - 1)
-  );
-  const currentChapter = book.chapters[chapterIndex];
+  const anchorParagraphRef = useRef<number>(initialResolvedPos.paragraphIndex);
+  const anchorCharOffsetRef = useRef<number>(initialResolvedPos.charOffset);
+  const anchorPageIndexRef = useRef<number | null>(initialResolvedPos.pageIndex ?? null);
+  const anchorScrollRatioRef = useRef<number>(initialResolvedPos.scrollRatio);
+  const currentPageIndexRef = useRef<number>(currentPageIndex);
+  currentPageIndexRef.current = currentPageIndex;
 
   const activeTheme = useMemo(() => {
     if (settings.paperTheme === 'custom') {
@@ -368,7 +452,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
 
     const updateSize = () => {
+      // Do not overwrite stageSize while ReaderView is hidden (display:none during background audio)
+      if (!isReaderActive) return;
       const box = pageMeasureBoxRef.current || scrollContainerRef.current;
+      if (box && (box.clientWidth < 80 || box.clientHeight < 80)) return;
       const rawW = box ? box.clientWidth : window.innerWidth;
       const rawH = box ? box.clientHeight : Math.max(320, window.innerHeight - 108);
       const horizPad = window.innerWidth >= 640 ? 64 : 32;
@@ -393,7 +480,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       ro?.disconnect();
       window.removeEventListener('resize', updateSize);
     };
-  }, [settings.pageWidth, settings.readingMode, showAudio, showSettings, showAmbient]);
+  }, [settings.pageWidth, settings.readingMode, showAudio, showSettings, showAmbient, isReaderActive]);
 
   // True screen-fitted pagination: recalculates total pages automatically when fontSize/lineHeight/viewport changes
   const screenPages = useMemo(() => {
@@ -421,7 +508,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     settings.columnsInPaginated,
   ]);
 
-  // Keep user anchored on their exact reading paragraph whenever fontSize or viewport re-paginates
+  // Keep user anchored on their exact reading page & character offset whenever fontSize or viewport re-paginates
   useEffect(() => {
     if (settings.readingMode !== 'paginated') return;
     if (pendingTargetPageRef.current !== null) {
@@ -429,30 +516,58 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       pendingTargetPageRef.current = null;
       const clamped = Math.min(Math.max(0, requested), Math.max(0, screenPages.length - 1));
       const chunk = screenPages[clamped]?.chunks[0];
-      if (chunk) anchorParagraphRef.current = chunk.paragraphIndex;
+      if (chunk) {
+        anchorParagraphRef.current = chunk.paragraphIndex;
+        anchorCharOffsetRef.current = chunk.charOffset ?? 0;
+      }
+      anchorPageIndexRef.current = clamped;
       setCurrentPageIndex(clamped);
+      syncReadingPosition({
+        paragraphIndex: chunk?.paragraphIndex ?? anchorParagraphRef.current,
+        pageIndex: clamped,
+        charOffset: chunk?.charOffset ?? 0,
+      });
       return;
     }
     if (pendingLastPageOnPrevChapterRef.current) {
       pendingLastPageOnPrevChapterRef.current = false;
-      setCurrentPageIndex(Math.max(0, screenPages.length - 1));
+      const lastIdx = Math.max(0, screenPages.length - 1);
+      const lastChunk = screenPages[lastIdx]?.chunks[0];
+      if (lastChunk) {
+        anchorParagraphRef.current = lastChunk.paragraphIndex;
+        anchorCharOffsetRef.current = lastChunk.charOffset ?? 0;
+      }
+      anchorPageIndexRef.current = lastIdx;
+      setCurrentPageIndex(lastIdx);
+      syncReadingPosition({
+        paragraphIndex: lastChunk?.paragraphIndex ?? 0,
+        pageIndex: lastIdx,
+        charOffset: lastChunk?.charOffset ?? 0,
+      });
       return;
     }
-    const targetIdx = findScreenPageForParagraph(screenPages, anchorParagraphRef.current);
-    setCurrentPageIndex((prev) => {
-      const clamped = Math.min(Math.max(0, targetIdx), Math.max(0, screenPages.length - 1));
-      return prev === clamped ? prev : clamped;
+    const targetIdx = findScreenPageForPosition(screenPages, {
+      paragraphIndex: anchorParagraphRef.current,
+      charOffset: anchorCharOffsetRef.current,
+      pageIndex: anchorPageIndexRef.current ?? undefined,
     });
+    const clamped = Math.min(Math.max(0, targetIdx), Math.max(0, screenPages.length - 1));
+    anchorPageIndexRef.current = clamped;
+    setCurrentPageIndex((prev) => (prev === clamped ? prev : clamped));
   }, [screenPages, settings.readingMode]);
 
   // Keep spoken paragraph visible (auto-flip page in paginated mode + smooth scroll in scroll mode)
   useEffect(() => {
     if (spokenParaIndex === null) return;
     anchorParagraphRef.current = spokenParaIndex;
+    anchorCharOffsetRef.current = 0;
     if (settings.readingMode === 'paginated') {
       const targetPageIdx = findScreenPageForParagraph(screenPages, spokenParaIndex);
-      if (targetPageIdx >= 0 && targetPageIdx !== currentPageIndex) {
-        setCurrentPageIndex(targetPageIdx);
+      if (targetPageIdx >= 0) {
+        anchorPageIndexRef.current = targetPageIdx;
+        if (targetPageIdx !== currentPageIndex) {
+          setCurrentPageIndex(targetPageIdx);
+        }
       }
     } else {
       const timer = window.setTimeout(() => {
@@ -469,6 +584,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     hasUserTurnedRef.current = false;
   }, [book.id]);
 
+  // Restore exact saved page / character offset / scroll position when opening a book or switching chapters
   useEffect(() => {
     setActiveParaAction(null);
     if (pendingTargetPageRef.current !== null) {
@@ -477,21 +593,107 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       setCurrentPageIndex(clamped);
       const chunk = screenPages[clamped]?.chunks[0];
       anchorParagraphRef.current = chunk?.paragraphIndex ?? 0;
+      anchorCharOffsetRef.current = chunk?.charOffset ?? 0;
+      anchorPageIndexRef.current = clamped;
     } else if (pendingLastPageOnPrevChapterRef.current) {
       const lastIdx = Math.max(0, screenPages.length - 1);
       setCurrentPageIndex(lastIdx);
       const lastChunk = screenPages[lastIdx]?.chunks[0];
       anchorParagraphRef.current = lastChunk?.paragraphIndex ?? 0;
+      anchorCharOffsetRef.current = lastChunk?.charOffset ?? 0;
+      anchorPageIndexRef.current = lastIdx;
     } else {
-      anchorParagraphRef.current = book.currentParagraphIndex || 0;
-      const startPage = findScreenPageForParagraph(screenPages, anchorParagraphRef.current);
+      const saved = resolveSavedPositionForChapter(book, chapterIndex);
+      anchorParagraphRef.current = saved.paragraphIndex;
+      anchorCharOffsetRef.current = saved.charOffset;
+      anchorPageIndexRef.current = saved.pageIndex ?? null;
+      anchorScrollRatioRef.current = saved.scrollRatio;
+
+      const startPage = findScreenPageForPosition(screenPages, {
+        paragraphIndex: saved.paragraphIndex,
+        charOffset: saved.charOffset,
+        pageIndex: saved.pageIndex,
+      });
+      anchorPageIndexRef.current = startPage;
       setCurrentPageIndex(startPage);
+
+      // In scroll mode, restore exact scroll position instead of jumping back to top of chapter
+      if (settings.readingMode === 'scroll' && typeof window !== 'undefined') {
+        const restoreScroll = () => {
+          const maxScroll = Math.max(
+            0,
+            document.documentElement.scrollHeight - window.innerHeight
+          );
+          if (saved.scrollRatio > 0 && maxScroll > 0) {
+            window.scrollTo({ top: Math.round(saved.scrollRatio * maxScroll), behavior: 'auto' });
+          } else if (saved.paragraphIndex > 0) {
+            const el = paraRefs.current.get(saved.paragraphIndex);
+            if (el) {
+              el.scrollIntoView({ behavior: 'auto', block: 'start' });
+            }
+          } else {
+            window.scrollTo({ top: 0, behavior: 'auto' });
+          }
+        };
+        const raf1 = window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(restoreScroll);
+        });
+        return () => window.cancelAnimationFrame(raf1);
+      }
     }
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapterIndex, book.id]);
+
+  // Continuously save scroll position in vertical scroll mode so "Đọc tiếp" resumes at exact spot
+  useEffect(() => {
+    if (settings.readingMode !== 'scroll' || !isReaderActive || typeof window === 'undefined') {
+      return;
+    }
+    let throttleTimer: number | null = null;
+    const captureScrollPos = () => {
+      const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+      const ratio = Math.min(1, Math.max(0, window.scrollY / maxScroll));
+      anchorScrollRatioRef.current = ratio;
+
+      // Find top-most visible paragraph
+      let topPara = anchorParagraphRef.current;
+      let bestTop = Number.POSITIVE_INFINITY;
+      paraRefs.current.forEach((el, pIdx) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.bottom >= 60 && Math.abs(rect.top - 64) < bestTop) {
+          bestTop = Math.abs(rect.top - 64);
+          topPara = pIdx;
+        }
+      });
+      anchorParagraphRef.current = topPara;
+      const estimatedPage = findScreenPageForParagraph(screenPages, topPara);
+      anchorPageIndexRef.current = estimatedPage;
+
+      syncReadingPosition({
+        paragraphIndex: topPara,
+        pageIndex: estimatedPage,
+        charOffset: 0,
+        scrollRatio: ratio,
+      });
+    };
+
+    const onScroll = () => {
+      if (throttleTimer !== null) return;
+      throttleTimer = window.setTimeout(() => {
+        throttleTimer = null;
+        captureScrollPos();
+      }, 240);
+    };
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (throttleTimer !== null) window.clearTimeout(throttleTimer);
+    };
+  }, [settings.readingMode, isReaderActive, book.id, chapterIndex, screenPages]);
 
   // Auto-scroll effect in vertical scroll mode
   useEffect(() => {
@@ -512,11 +714,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setTurnDirection(direction);
     setTurnTick((t) => t + 1);
     setCurrentPageIndex(nextPageIdx);
+    currentPageIndexRef.current = nextPageIdx;
+    anchorPageIndexRef.current = nextPageIdx;
     const firstChunk = screenPages[nextPageIdx]?.chunks[0];
-    if (firstChunk) {
-      anchorParagraphRef.current = firstChunk.paragraphIndex;
-      syncParagraphPosition(firstChunk.paragraphIndex);
-    }
+    const nextPara = firstChunk ? firstChunk.paragraphIndex : anchorParagraphRef.current;
+    const nextCharOffset = firstChunk?.charOffset ?? 0;
+    anchorParagraphRef.current = nextPara;
+    anchorCharOffsetRef.current = nextCharOffset;
+    syncReadingPosition({
+      paragraphIndex: nextPara,
+      pageIndex: nextPageIdx,
+      charOffset: nextCharOffset,
+    });
     triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
   };
 
@@ -591,14 +800,122 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     basicSettings.hapticFeedback,
   ]);
 
-  const syncParagraphPosition = (paraIdx: number) => {
-    const pct = computeReadingProgress(book.chapters, chapterIndex, paraIdx);
-    onUpdateBook({
-      ...book,
-      currentParagraphIndex: paraIdx,
-      progressPercent: pct,
-      lastReadAt: Date.now(),
+  const patchActiveBook = (updater: (prev: Book) => Book) => {
+    if (onPatchBook) {
+      onPatchBook(book.id, updater);
+    } else {
+      onUpdateBook(updater(book));
+    }
+  };
+
+  const syncReadingPosition = (pos: {
+    paragraphIndex: number;
+    pageIndex?: number;
+    charOffset?: number;
+    scrollRatio?: number;
+  }) => {
+    const now = Date.now();
+    const resolvedPageIndex =
+      typeof pos.pageIndex === 'number'
+        ? Math.max(0, pos.pageIndex)
+        : Math.max(0, currentPageIndexRef.current);
+    const resolvedCharOffset =
+      typeof pos.charOffset === 'number'
+        ? Math.max(0, pos.charOffset)
+        : Math.max(0, anchorCharOffsetRef.current);
+    const resolvedScrollRatio =
+      typeof pos.scrollRatio === 'number'
+        ? Math.min(1, Math.max(0, pos.scrollRatio))
+        : anchorScrollRatioRef.current;
+
+    writeCachedReadingPos(book.id, {
+      chapterIndex,
+      paragraphIndex: pos.paragraphIndex,
+      pageIndex: resolvedPageIndex,
+      charOffset: resolvedCharOffset,
+      scrollRatio: resolvedScrollRatio,
+      updatedAt: now,
     });
+
+    patchActiveBook((prev) => {
+      const safeChIdx = Math.min(
+        Math.max(0, prev.currentChapterIndex),
+        Math.max(0, prev.chapters.length - 1)
+      );
+      const pct = computeReadingProgress(prev.chapters, safeChIdx, pos.paragraphIndex);
+      return {
+        ...prev,
+        currentParagraphIndex: pos.paragraphIndex,
+        currentPageIndex: resolvedPageIndex,
+        currentPageCharOffset: resolvedCharOffset,
+        currentScrollRatio: resolvedScrollRatio,
+        progressPercent: pct,
+        lastReadAt: now,
+      };
+    });
+  };
+
+  const syncParagraphPosition = (paraIdx: number) => {
+    const targetPage =
+      settings.readingMode === 'paginated'
+        ? findScreenPageForParagraph(screenPages, paraIdx)
+        : currentPageIndexRef.current;
+    anchorParagraphRef.current = paraIdx;
+    anchorCharOffsetRef.current = 0;
+    anchorPageIndexRef.current = targetPage;
+    syncReadingPosition({
+      paragraphIndex: paraIdx,
+      pageIndex: targetPage,
+      charOffset: 0,
+    });
+  };
+
+  const flushLivePosition = () => {
+    const safeIdx = Math.min(
+      Math.max(0, currentPageIndexRef.current),
+      Math.max(0, screenPages.length - 1)
+    );
+    const firstChunk = screenPages[safeIdx]?.chunks[0];
+    const livePara = firstChunk?.paragraphIndex ?? anchorParagraphRef.current;
+    const liveCharOffset = firstChunk?.charOffset ?? anchorCharOffsetRef.current;
+    let liveScrollRatio = anchorScrollRatioRef.current;
+    if (settings.readingMode === 'scroll' && typeof window !== 'undefined') {
+      const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+      liveScrollRatio = Math.min(1, Math.max(0, window.scrollY / maxScroll));
+    }
+    syncReadingPosition({
+      paragraphIndex: livePara,
+      pageIndex: safeIdx,
+      charOffset: liveCharOffset,
+      scrollRatio: liveScrollRatio,
+    });
+  };
+
+  const flushLivePositionRef = useRef(flushLivePosition);
+  flushLivePositionRef.current = flushLivePosition;
+
+  // Guarantee exact exit page is saved on mobile backgrounding / tab close / unmount
+  useEffect(() => {
+    const handleVisibilityOrHide = () => {
+      if (document.visibilityState === 'hidden') {
+        flushLivePositionRef.current();
+      }
+    };
+    const handlePageHide = () => {
+      flushLivePositionRef.current();
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityOrHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityOrHide);
+      flushLivePositionRef.current();
+    };
+  }, []);
+
+  const handleBackToLibraryClick = () => {
+    flushLivePosition();
+    onBackToLibrary();
   };
 
   const goToChapter = (
@@ -611,6 +928,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setTurnTick((t) => t + 1);
 
     const targetPara = opts?.targetParagraphIndex ?? 0;
+    const targetPage = typeof opts?.targetPageIndex === 'number' ? opts.targetPageIndex : 0;
     if (typeof opts?.targetPageIndex === 'number') {
       pendingTargetPageRef.current = opts.targetPageIndex;
     } else {
@@ -618,6 +936,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
     if (!pendingLastPageOnPrevChapterRef.current) {
       anchorParagraphRef.current = targetPara;
+      anchorCharOffsetRef.current = 0;
+      anchorPageIndexRef.current = targetPage;
+      anchorScrollRatioRef.current = 0;
     }
 
     if (
@@ -631,23 +952,44 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       );
       pendingTargetPageRef.current = null;
       setCurrentPageIndex(clampedPage);
+      currentPageIndexRef.current = clampedPage;
+      anchorPageIndexRef.current = clampedPage;
       const chunk = screenPages[clampedPage]?.chunks[0];
       if (chunk) {
         anchorParagraphRef.current = chunk.paragraphIndex;
-        syncParagraphPosition(chunk.paragraphIndex);
+        anchorCharOffsetRef.current = chunk.charOffset ?? 0;
+        syncReadingPosition({
+          paragraphIndex: chunk.paragraphIndex,
+          pageIndex: clampedPage,
+          charOffset: chunk.charOffset ?? 0,
+          scrollRatio: 0,
+        });
       }
       setShowToc(false);
       return;
     }
 
+    const now = Date.now();
+    writeCachedReadingPos(book.id, {
+      chapterIndex: clamped,
+      paragraphIndex: targetPara,
+      pageIndex: pendingLastPageOnPrevChapterRef.current ? 0 : targetPage,
+      charOffset: 0,
+      scrollRatio: 0,
+      updatedAt: now,
+    });
+
     const pct = computeReadingProgress(book.chapters, clamped, targetPara);
-    onUpdateBook({
-      ...book,
+    patchActiveBook((prev) => ({
+      ...prev,
       currentChapterIndex: clamped,
       currentParagraphIndex: targetPara,
+      currentPageIndex: pendingLastPageOnPrevChapterRef.current ? undefined : targetPage,
+      currentPageCharOffset: 0,
+      currentScrollRatio: 0,
       progressPercent: pct,
-      lastReadAt: Date.now(),
-    });
+      lastReadAt: now,
+    }));
     setShowToc(false);
   };
 
@@ -688,31 +1030,31 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     analysis: ChapterAnalysis,
     mergedVoiceAssignments?: Record<string, CharacterVoiceAssignment>
   ) => {
-    onUpdateBook({
-      ...book,
-      chapters: book.chapters.map((c) => (c.id === chapterId ? { ...c, analysis } : c)),
+    patchActiveBook((prev) => ({
+      ...prev,
+      chapters: prev.chapters.map((c) => (c.id === chapterId ? { ...c, analysis } : c)),
       ...(mergedVoiceAssignments
         ? {
             voiceAssignments: {
-              ...book.voiceAssignments,
+              ...(prev.voiceAssignments || {}),
               ...mergedVoiceAssignments,
             },
           }
         : {}),
-    });
+    }));
   };
 
   const handleUpdateVoiceAssignment = (
     characterId: string,
     assignment: CharacterVoiceAssignment
   ) => {
-    onUpdateBook({
-      ...book,
+    patchActiveBook((prev) => ({
+      ...prev,
       voiceAssignments: {
-        ...book.voiceAssignments,
+        ...(prev.voiceAssignments || {}),
         [characterId]: assignment,
       },
-    });
+    }));
   };
 
   const handleExportCurrentEpub = async () => {
@@ -990,14 +1332,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       <div
         style={{
           borderColor: activeTheme.border,
-          backgroundColor: activeTheme.surface,
+          backgroundColor: activeTheme.bg,
         }}
-        className="sticky top-0 z-30 h-[52px] border-b backdrop-blur-md px-3 sm:px-5 flex items-center justify-between gap-2"
+        className="sticky top-0 z-30 h-[52px] border-b px-3 sm:px-5 flex items-center justify-between gap-2"
       >
         <div className="flex items-center shrink-0">
           <button
             type="button"
-            onClick={onBackToLibrary}
+            onClick={handleBackToLibraryClick}
             aria-label="Quay lại tủ sách"
             className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap shrink-0"
           >
@@ -1841,19 +2183,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             onSaveChapterAnalysis={handleSaveAnalysis}
             onUpdateVoiceAssignment={handleUpdateVoiceAssignment}
             onBatchUpdateVoiceAssignments={(nextMap) =>
-              onUpdateBook({
-                ...book,
+              patchActiveBook((prev) => ({
+                ...prev,
                 voiceAssignments: {
-                  ...(book.voiceAssignments || {}),
+                  ...(prev.voiceAssignments || {}),
                   ...nextMap,
                 },
-              })
+              }))
             }
             onUpdateReadingStyle={(style) =>
-              onUpdateBook({
-                ...book,
+              patchActiveBook((prev) => ({
+                ...prev,
                 readingStyle: style,
-              })
+              }))
             }
             externalVoices={externalVoices}
             onAddExternalVoice={onAddExternalVoice}

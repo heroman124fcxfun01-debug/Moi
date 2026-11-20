@@ -91,7 +91,7 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[85] bg-black/45 backdrop-blur-xs flex items-start justify-center p-3 sm:p-6 pt-12 sm:pt-16"
+      className="fixed inset-0 z-[85] bg-black/50 flex items-start justify-center p-3 sm:p-6 pt-12 sm:pt-16"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -100,7 +100,7 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-label="Tìm kiếm toàn ứng dụng"
-        className="ios-sheet-enter w-full max-w-xl h-auto max-h-[82dvh] rounded-2xl bg-[#FBF9F5] dark:bg-[#181A1F] border border-stone-200 dark:border-stone-800 shadow-2xl overflow-hidden flex flex-col"
+        className="ios-sheet-enter w-full max-w-xl h-auto max-h-[82dvh] rounded-2xl bg-white dark:bg-[#181A1F] border border-stone-200 dark:border-stone-800 shadow-2xl overflow-hidden flex flex-col"
       >
         {/* Search Input Header */}
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-[#14161A]">

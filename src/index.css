@@ -16,6 +16,7 @@
 
   html {
     font-family: var(--font-sans);
+    font-size: 13px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     -webkit-tap-highlight-color: transparent;
@@ -37,6 +38,7 @@
   body {
     background-color: var(--app-bg-light);
     color: #1c1917;
+    font-size: 12px;
     transition: background-color 220ms ease;
     margin: 0;
   }
@@ -91,27 +93,18 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
-/* Frosted Translucent Glass Cards when user enables an App Wallpaper (never active in Reader) */
+/* When an external App Wallpaper is active, ONLY the outer wallpaper image itself is blurred;
+   all app cards, bars, docks, and modals remain crisp solid opaque surfaces for maximum readability. */
 .app-wallpaper-active main section.bg-white,
 .app-wallpaper-active main section .bg-white,
 .app-wallpaper-active main .bg-white,
 .app-wallpaper-active main [class*="bg-white/"],
 .app-wallpaper-active main .bg-\[\#FBF9F5\] {
-  background-color: rgba(255, 255, 255, 0.56) !important;
-  backdrop-filter: blur(12px) saturate(155%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(155%) !important;
-  border-color: rgba(255, 255, 255, 0.56) !important;
-  box-shadow:
-    0 8px 22px rgba(24, 20, 16, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
-}
-
-.app-wallpaper-active main .bg-stone-50,
-.app-wallpaper-active main [class*="bg-stone-50/"],
-.app-wallpaper-active main [class*="bg-amber-50/"] {
-  background-color: rgba(255, 255, 255, 0.44) !important;
-  backdrop-filter: blur(10px) saturate(145%) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(145%) !important;
+  background-color: #ffffff !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: rgba(28, 25, 23, 0.1) !important;
+  box-shadow: 0 6px 18px rgba(24, 20, 16, 0.08) !important;
 }
 
 .dark .app-wallpaper-active main section.bg-white,
@@ -120,32 +113,11 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 .dark .app-wallpaper-active main [class*="dark:bg-[#16181C]"],
 .dark .app-wallpaper-active main [class*="dark:bg-stone-900"],
 .dark .app-wallpaper-active main [class*="dark:bg-zinc-900"] {
-  background-color: rgba(18, 20, 26, 0.54) !important;
-  backdrop-filter: blur(12px) saturate(150%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(150%) !important;
-  border-color: rgba(255, 255, 255, 0.16) !important;
-  box-shadow:
-    0 10px 26px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
-}
-
-.dark .app-wallpaper-active main [class*="dark:bg-amber-950/"] {
-  background-color: rgba(40, 26, 14, 0.46) !important;
-  backdrop-filter: blur(10px) !important;
-  -webkit-backdrop-filter: blur(10px) !important;
-}
-
-/* Keep interactive inputs legible inside frosted cards */
-.app-wallpaper-active main select,
-.app-wallpaper-active main input[type="text"],
-.app-wallpaper-active main textarea {
-  background-color: rgba(255, 255, 255, 0.65) !important;
-}
-
-.dark .app-wallpaper-active main select,
-.dark .app-wallpaper-active main input[type="text"],
-.dark .app-wallpaper-active main textarea {
-  background-color: rgba(18, 20, 26, 0.68) !important;
+  background-color: #16181c !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.36) !important;
 }
 
 .font-display {
@@ -516,37 +488,31 @@ html[data-app-hidden='true'] *::after {
   transform: scale(0.97);
 }
 
+/* Solid Opaque Bottom Dock (Zero Transparency / No See-Through) */
 .ios-glass-dock {
-  background: rgba(251, 249, 245, 0.66);
-  backdrop-filter: blur(16px) saturate(175%);
-  -webkit-backdrop-filter: blur(16px) saturate(175%);
+  background: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
-    0 12px 30px rgba(28, 22, 16, 0.14),
-    0 2px 6px rgba(28, 22, 16, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    0 8px 24px rgba(28, 22, 16, 0.12),
+    0 2px 6px rgba(28, 22, 16, 0.06);
 }
 
 .dark .ios-glass-dock {
-  background: rgba(24, 26, 32, 0.68);
+  background: #16181c;
   box-shadow:
-    0 14px 34px rgba(0, 0, 0, 0.5),
-    0 2px 8px rgba(0, 0, 0, 0.32),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+    0 10px 28px rgba(0, 0, 0, 0.52),
+    0 2px 8px rgba(0, 0, 0, 0.32);
+}
+
+.dark.amoled .ios-glass-dock {
+  background: #0a0a0a;
 }
 
 .ios-dock-pill {
   transition:
     transform 200ms cubic-bezier(0.32, 0.72, 0, 1),
     background-color 180ms ease;
-  box-shadow:
-    0 3px 8px rgba(28, 22, 16, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-.dark .ios-dock-pill {
-  box-shadow:
-    0 3px 8px rgba(0, 0, 0, 0.32),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .ios-dock-pill:active {
@@ -554,17 +520,11 @@ html[data-app-hidden='true'] *::after {
 }
 
 .ios-dock-pill-active {
-  box-shadow:
-    0 8px 18px rgba(146, 64, 14, 0.22),
-    0 2px 6px rgba(0, 0, 0, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(146, 64, 14, 0.18);
 }
 
 .dark .ios-dock-pill-active {
-  box-shadow:
-    0 8px 18px rgba(217, 119, 6, 0.2),
-    0 2px 8px rgba(0, 0, 0, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.42);
 }
 
 .vinyl-spin-playing {
@@ -575,23 +535,21 @@ html[data-app-hidden='true'] *::after {
   animation: spinVinylDisc 22s linear infinite;
 }
 
-/* iPhone Liquid-Glass Rounded Selection Bars & Sliding Transparent Water-Drop */
+/* Solid Opaque Rounded Selection Bars & Sliding Pill Indicator (No See-Through Water-Drop) */
 .ios-liquid-bar {
-  background: rgba(248, 245, 239, 0.56);
-  backdrop-filter: blur(14px) saturate(175%);
-  -webkit-backdrop-filter: blur(14px) saturate(175%);
-  box-shadow:
-    0 6px 20px rgba(24, 20, 16, 0.07),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    inset 0 -1px 0 rgba(24, 20, 16, 0.06);
+  background: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 2px 8px rgba(24, 20, 16, 0.06);
 }
 
 .dark .ios-liquid-bar {
-  background: rgba(26, 29, 36, 0.56);
-  box-shadow:
-    0 8px 24px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+  background: #1c1e24;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.dark.amoled .ios-liquid-bar {
+  background: #121212;
 }
 
 .ios-liquid-pill {
@@ -606,108 +564,85 @@ html[data-app-hidden='true'] *::after {
 }
 
 .ios-liquid-pill-active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.66) 0%, rgba(255, 255, 255, 0.42) 100%);
-  box-shadow:
-    0 5px 14px rgba(var(--app-accent-rgb), 0.15),
-    0 1px 3px rgba(28, 22, 16, 0.08),
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.96);
+  background: #f5efe6;
+  box-shadow: 0 2px 6px rgba(var(--app-accent-rgb), 0.12);
 }
 
 .dark .ios-liquid-pill-active {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.1) 100%);
-  box-shadow:
-    0 5px 14px rgba(0, 0, 0, 0.38),
-    inset 0 1.5px 1px rgba(255, 255, 255, 0.3);
+  background: #272a32;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
 }
 
-/* Sliding Transparent Glass Water-Drop Indicator (120fps iOS Liquid Glass spring glide) */
+/* Crisp Solid Sliding Indicator (120fps spring glide, zero water-drop translucency) */
 .liquid-waterdrop-thumb {
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.72) 0%,
-    rgba(255, 255, 255, 0.42) 55%,
-    rgba(255, 255, 255, 0.56) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  box-shadow:
-    0 5px 14px rgba(var(--app-accent-rgb), 0.15),
-    0 2px 5px rgba(20, 18, 16, 0.07),
-    inset 0 1.5px 2px rgba(255, 255, 255, 0.98);
+  background: #f5efe6;
+  border: 1px solid rgba(146, 64, 14, 0.16);
+  box-shadow: 0 2px 6px rgba(var(--app-accent-rgb), 0.12);
   transition:
-    transform 300ms cubic-bezier(0.32, 0.72, 0, 1),
-    width 300ms cubic-bezier(0.32, 0.72, 0, 1),
-    height 300ms cubic-bezier(0.32, 0.72, 0, 1);
+    transform 280ms cubic-bezier(0.32, 0.72, 0, 1),
+    width 280ms cubic-bezier(0.32, 0.72, 0, 1),
+    height 280ms cubic-bezier(0.32, 0.72, 0, 1);
   will-change: transform;
 }
 
 .dark .liquid-waterdrop-thumb {
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.24) 0%,
-    rgba(255, 255, 255, 0.11) 55%,
-    rgba(255, 255, 255, 0.18) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.42),
-    inset 0 1.5px 2px rgba(255, 255, 255, 0.36);
+  background: #262930;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.42);
 }
 
 .liquid-waterdrop-gliding {
-  box-shadow:
-    0 8px 20px rgba(var(--app-accent-rgb), 0.2),
-    0 2px 8px rgba(20, 18, 16, 0.1),
-    inset 0 2px 3px rgba(255, 255, 255, 1);
+  box-shadow: 0 4px 12px rgba(var(--app-accent-rgb), 0.18);
 }
 
 .ios-liquid-btn {
   transition:
     transform 180ms cubic-bezier(0.32, 0.72, 0, 1),
     opacity 160ms ease;
-  box-shadow:
-    0 5px 14px rgba(28, 22, 16, 0.13),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  box-shadow: 0 4px 12px rgba(28, 22, 16, 0.12);
 }
 
 .ios-liquid-btn:active {
   transform: scale(0.95);
 }
 
-/* iPhone Frosted-Glass Translucent Floating Overlay & Popover Surface (Thermal-Friendly 16px Blur) */
+/* Solid Opaque Floating Overlay & Modal Surface (Zero See-Through Glass) */
 .ios-frosted-backdrop {
-  background: rgba(15, 16, 20, 0.3);
-  backdrop-filter: blur(5px) saturate(130%);
-  -webkit-backdrop-filter: blur(5px) saturate(130%);
+  background: rgba(15, 16, 20, 0.38);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .ios-frosted-surface {
-  background: rgba(250, 248, 244, 0.86);
-  backdrop-filter: blur(18px) saturate(180%);
-  -webkit-backdrop-filter: blur(18px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.74);
+  background: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(28, 25, 23, 0.12);
   box-shadow:
-    0 20px 50px rgba(20, 16, 12, 0.22),
-    0 5px 14px rgba(20, 16, 12, 0.09),
-    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    0 18px 44px rgba(20, 16, 12, 0.2),
+    0 4px 12px rgba(20, 16, 12, 0.08);
 }
 
 .dark .ios-frosted-surface {
-  background: rgba(24, 26, 32, 0.88);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #16181c;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow:
-    0 22px 54px rgba(0, 0, 0, 0.56),
-    0 5px 16px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+    0 20px 48px rgba(0, 0, 0, 0.56),
+    0 4px 14px rgba(0, 0, 0, 0.34);
+}
+
+.dark.amoled .ios-frosted-surface {
+  background: #0c0c0e;
 }
 
 .ios-floating-shadow {
   box-shadow:
-    0 12px 32px rgba(24, 20, 16, 0.08),
-    0 2px 8px rgba(24, 20, 16, 0.04);
+    0 8px 24px rgba(24, 20, 16, 0.07),
+    0 2px 6px rgba(24, 20, 16, 0.04);
 }
 
 .dark .ios-floating-shadow {
   box-shadow:
-    0 14px 36px rgba(0, 0, 0, 0.38),
+    0 10px 28px rgba(0, 0, 0, 0.38),
     0 2px 8px rgba(0, 0, 0, 0.24);
 }

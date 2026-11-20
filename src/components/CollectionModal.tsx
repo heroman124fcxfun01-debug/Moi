@@ -68,7 +68,7 @@ export const CollectionModal: React.FC<CollectionModalProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-md p-0 sm:p-4"
+      className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -77,7 +77,7 @@ export const CollectionModal: React.FC<CollectionModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-label={editingCollection ? 'Chỉnh sửa bộ sưu tập' : 'Tạo bộ sưu tập mới'}
-        className="ios-sheet-enter w-full sm:max-w-lg h-auto max-h-[85dvh] bg-[#FBF9F5] dark:bg-[#16181C] rounded-t-[28px] sm:rounded-[26px] border border-white/60 dark:border-stone-800 shadow-2xl flex flex-col overflow-hidden"
+        className="ios-sheet-enter w-full sm:max-w-lg h-auto max-h-[85dvh] bg-white dark:bg-[#16181C] rounded-t-[28px] sm:rounded-[26px] border border-stone-200 dark:border-stone-800 shadow-2xl flex flex-col overflow-hidden"
       >
         <div className="sm:hidden flex justify-center pt-2.5">
           <div className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />

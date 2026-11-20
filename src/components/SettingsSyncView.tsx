@@ -50,10 +50,12 @@ import { GEMINI_VOICES, downloadBlob, readFileAsArrayBuffer, readFileAsText } fr
 import { parseEpubBuffer } from '../utils/epubBuilder';
 import { parsePdfBufferToBook } from '../utils/pdfParser';
 import {
+  connectGoogleDriveWithToken,
   extractUnauthorizedDomainError,
   getDriveAccessToken,
   getDriveAuthSnapshot,
   signInWithGoogleDrive,
+  signInWithGoogleDriveDirectOAuth,
   signOutGoogleDrive,
   subscribeDriveAuth,
   type DriveAuthSnapshot,
@@ -302,6 +304,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
     hostname: string;
     message: string;
   } | null>(null);
+  const [manualDriveToken, setManualDriveToken] = useState('');
   const [copiedHostname, setCopiedHostname] = useState(false);
   const [loadedBundle, setLoadedBundle] = useState<SyncBackupBundle | null>(null);
   const [isMatchingFile, setIsMatchingFile] = useState(false);
@@ -429,6 +432,44 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
         });
       }
       setSyncError(err instanceof Error ? err.message : 'Không thể đăng nhập Google Drive.');
+    } finally {
+      setIsAuthBusy(false);
+    }
+  };
+
+  const handleDirectGoogleOAuth = async () => {
+    setSyncError('');
+    setSyncStatus('');
+    setIsAuthBusy(true);
+    try {
+      const { user } = await signInWithGoogleDriveDirectOAuth();
+      setAuthDomainError(null);
+      setSyncStatus(
+        `Đã kết nối Google Drive trực tiếp (${user.email || user.displayName || 'Tài khoản Google'}).`
+      );
+    } catch (err) {
+      setSyncError(
+        err instanceof Error ? err.message : 'Không thể đăng nhập Google OAuth trực tiếp.'
+      );
+    } finally {
+      setIsAuthBusy(false);
+    }
+  };
+
+  const handleConnectManualDriveToken = async () => {
+    if (!manualDriveToken.trim()) return;
+    setSyncError('');
+    setSyncStatus('');
+    setIsAuthBusy(true);
+    try {
+      const { user } = await connectGoogleDriveWithToken(manualDriveToken);
+      setManualDriveToken('');
+      setAuthDomainError(null);
+      setSyncStatus(
+        `Đã kết nối Google Drive bằng mã truy cập (${user.email || user.displayName || 'Tài khoản Google'}).`
+      );
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : 'Mã truy cập Google Drive không hợp lệ.');
     } finally {
       setIsAuthBusy(false);
     }
@@ -1428,28 +1469,58 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
             )}
 
             {authDomainError && (
-              <div className="p-3 rounded-xl border border-amber-400/70 dark:border-amber-700 bg-amber-50/90 dark:bg-amber-950/40 text-xs space-y-2">
+              <div className="p-3 rounded-xl border border-amber-400/70 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-xs space-y-2.5">
                 <div className="flex items-start gap-2 text-amber-950 dark:text-amber-200 font-semibold">
                   <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                  <span>Tên miền chưa được cấp quyền Firebase (auth/unauthorized-domain)</span>
+                  <span>Tên miền &ldquo;{authDomainError.hostname}&rdquo; chưa cấp quyền Firebase</span>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-white/80 dark:bg-stone-900/80 px-2.5 py-1.5 rounded-lg border border-amber-300/60 dark:border-amber-800">
-                  <code className="text-[11px] font-mono font-semibold text-stone-900 dark:text-stone-100 break-all">
-                    {authDomainError.hostname}
-                  </code>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={isAuthBusy}
+                    onClick={handleDirectGoogleOAuth}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 disabled:opacity-50"
+                  >
+                    <span>Thử Google OAuth trực tiếp</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handleCopyHostname}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-800 text-white text-[11px] font-semibold shrink-0"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-stone-900 border border-amber-300 dark:border-amber-800 text-stone-900 dark:text-stone-100 text-[11px] font-semibold"
                   >
                     {copiedHostname ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedHostname ? 'Đã chép' : 'Chép tên miền'}</span>
+                    <span>{copiedHostname ? 'Đã chép' : `Chép ${authDomainError.hostname}`}</span>
                   </button>
                 </div>
-                <ol className="list-decimal list-inside text-[11px] text-stone-700 dark:text-stone-300 space-y-0.5 leading-snug">
+
+                <div className="space-y-1 pt-1 border-t border-amber-200 dark:border-amber-800/70">
+                  <p className="text-[10.5px] font-medium text-stone-700 dark:text-stone-300">
+                    Hoặc dán mã truy cập (OAuth Access Token) để kết nối ngay trên APK / localhost:
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="password"
+                      value={manualDriveToken}
+                      onChange={(e) => setManualDriveToken(e.target.value)}
+                      placeholder="ya29.a0..."
+                      aria-label="Dán mã truy cập Google Drive OAuth"
+                      className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-[11px]"
+                    />
+                    <button
+                      type="button"
+                      disabled={isAuthBusy || !manualDriveToken.trim()}
+                      onClick={handleConnectManualDriveToken}
+                      className="px-2.5 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold shrink-0 disabled:opacity-40"
+                    >
+                      Kết nối
+                    </button>
+                  </div>
+                </div>
+
+                <ol className="list-decimal list-inside text-[10.5px] text-stone-700 dark:text-stone-300 space-y-0.5 leading-snug">
                   <li>Mở Firebase Console → Authentication → Settings → Authorized domains.</li>
-                  <li>Nhấn Add domain và dán chính xác tên miền trên ({authDomainError.hostname}).</li>
-                  <li>Lưu lại rồi bấm &ldquo;Đăng nhập với Google Drive&rdquo; thêm lần nữa.</li>
+                  <li>Nhấn Add domain và dán &ldquo;{authDomainError.hostname}&rdquo; rồi lưu lại.</li>
                 </ol>
               </div>
             )}

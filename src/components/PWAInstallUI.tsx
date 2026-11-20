@@ -37,9 +37,9 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
           role="dialog"
           aria-modal="true"
           aria-label="Hướng dẫn cài đặt ứng dụng BOOKHAD"
-          className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/55 backdrop-blur-xs p-0 sm:p-4"
+          className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/55 p-0 sm:p-4"
         >
-          <div className="ios-sheet-enter w-full sm:max-w-md rounded-t-[26px] sm:rounded-[26px] bg-[#FBF9F5] dark:bg-[#191B1F] text-stone-900 dark:text-stone-100 border border-white/60 dark:border-stone-800 p-6 shadow-2xl space-y-4">
+          <div className="ios-sheet-enter w-full sm:max-w-md rounded-t-[26px] sm:rounded-[26px] bg-white dark:bg-[#191B1F] text-stone-900 dark:text-stone-100 border border-stone-200 dark:border-stone-800 p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-display font-semibold">
                 Cài App &amp; Tải sách về máy

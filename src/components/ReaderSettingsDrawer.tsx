@@ -150,8 +150,8 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
         </div>
       </div>
 
-      {/* Live Sample Preview Card (staged changes visible immediately; committed on close/apply) */}
-      <div className="px-4 sm:px-5 pt-3 pb-2 shrink-0 border-b border-stone-200/70 dark:border-stone-800/70 bg-stone-50/70 dark:bg-stone-900/40">
+      {/* Compact Half-Height Live Sample Preview Bar */}
+      <div className="px-4 sm:px-5 py-1.5 shrink-0 border-b border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-900">
         <div
           data-testid="reader-settings-preview"
           style={{
@@ -160,15 +160,15 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
             filter: `brightness(${draft.brightness}%) sepia(${draft.warmth}%)`,
             ...getVintagePaperTextureStyles(previewTheme.id),
             fontFamily: draft.fontFamily,
-            fontSize: `${Math.min(22, Math.max(12, Math.round(draft.fontSize * 0.85)))}px`,
-            lineHeight: draft.lineHeight,
+            fontSize: `${Math.min(18, Math.max(11, Math.round(draft.fontSize * 0.78)))}px`,
+            lineHeight: 1.25,
             letterSpacing: `${draft.letterSpacing}em`,
             fontWeight: draft.fontWeight,
             textAlign: draft.textAlign,
           }}
-          className="px-3 py-2.5 rounded-xl border border-stone-300/80 dark:border-stone-700/80 shadow-xs overflow-hidden transition-all"
+          className="px-2.5 py-1 max-h-[34px] rounded-lg border border-stone-300 dark:border-stone-700 overflow-hidden truncate whitespace-nowrap transition-all"
         >
-          Dưới ánh đèn vàng dịu, từng dòng chữ hiện lên êm ái như trang giấy in hảo hạng.
+          Dưới ánh đèn vàng dịu, từng dòng chữ hiện lên êm ái.
         </div>
       </div>
 

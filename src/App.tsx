@@ -11,7 +11,6 @@ import {
   Moon,
   Pause,
   Play,
-  Plus,
   Search,
   Settings,
   Sun,
@@ -22,11 +21,13 @@ import type {
   Book,
   CustomAmbientTrack,
   CustomFontAsset,
+  DefaultVoiceSelection,
   ExternalVoiceAsset,
   ReaderSettings,
   ReadingLogEntry,
   UserCollection,
 } from './types/book';
+import { resolveNarratorAssignmentFromDefault } from './utils/studioCatalog';
 import {
   DEFAULT_APP_BASIC_SETTINGS,
   DEFAULT_READER_SETTINGS,
@@ -436,6 +437,47 @@ export default function App() {
     await saveBook(updated);
   };
 
+  const handlePatchBook = useCallback((bookId: string, updater: (prev: Book) => Book) => {
+    setBooks((prev) => {
+      let changed: Book | null = null;
+      const next = prev.map((b) => {
+        if (b.id !== bookId) return b;
+        changed = updater(b);
+        return changed;
+      });
+      if (changed) {
+        void saveBook(changed);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSelectDefaultVoice = async (nextDefaultVoice: DefaultVoiceSelection) => {
+    handleUpdateBasicSettings({ defaultVoice: nextDefaultVoice });
+    const nextNarrator = resolveNarratorAssignmentFromDefault(
+      nextDefaultVoice,
+      externalVoices
+    );
+    // Propagate new global default voice onto books immediately so Studio selection works right away in Reader
+    const updatedBooks: Book[] = [];
+    setBooks((prev) =>
+      prev.map((b) => {
+        const nextBook: Book = {
+          ...b,
+          voiceAssignments: {
+            ...(b.voiceAssignments || {}),
+            narrator: nextNarrator,
+          },
+        };
+        updatedBooks.push(nextBook);
+        return nextBook;
+      })
+    );
+    if (updatedBooks.length > 0) {
+      await saveAllBooks(updatedBooks);
+    }
+  };
+
   const handleAddBook = async (
     newBook: Book,
     openImmediately = true,
@@ -726,12 +768,10 @@ export default function App() {
       {/* Strict 3-Zone Top Navigation Bar (hidden in distraction-free Reader mode) */}
       {activeTab !== 'reader' && (
       <header
-        className={`sticky top-0 z-40 backdrop-blur-md border-b ${
-          showAppWallpaper
-            ? 'bg-white/70 dark:bg-zinc-950/75 border-stone-200/70 dark:border-stone-800/70'
-            : basicSettings.uiTheme === 'amoled'
-            ? 'bg-black/95 border-zinc-800'
-            : 'bg-[var(--app-bg-light)]/95 dark:bg-[var(--app-bg-dark)]/95 border-stone-200 dark:border-stone-800'
+        className={`sticky top-0 z-40 border-b ${
+          basicSettings.uiTheme === 'amoled'
+            ? 'bg-black border-zinc-800'
+            : 'bg-white dark:bg-[#16181C] border-stone-200 dark:border-stone-800'
         }`}
       >
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-[48px] sm:h-[52px] flex items-center justify-between gap-1.5 sm:gap-6">
@@ -852,17 +892,9 @@ export default function App() {
                 isDarkOrAmoled ? 'Đổi giao diện Sáng / AMOLED' : 'Chuyển giao diện tối'
               }
               title={`Giao diện: ${basicSettings.uiTheme.toUpperCase()}`}
-              className="ios-liquid-pill w-8 h-8 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 flex items-center justify-center text-stone-700 dark:text-stone-300 hover:text-amber-800 dark:hover:text-amber-300 shrink-0"
+              className="ios-liquid-pill w-8 h-8 rounded-full ios-liquid-bar border border-stone-200 dark:border-zinc-700 flex items-center justify-center text-stone-700 dark:text-stone-300 hover:text-amber-800 dark:hover:text-amber-300 shrink-0"
             >
               {isDarkOrAmoled ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsImportOpen(true)}
-              className="ios-liquid-btn inline-flex items-center justify-center gap-0.5 sm:gap-1 h-8 px-2 sm:px-3 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[10px] sm:text-[11px] font-semibold hover:opacity-95 whitespace-nowrap shrink-0"
-            >
-              <Plus className="w-3 h-3 shrink-0" />
-              <span>Thêm sách</span>
             </button>
           </div>
         </div>
@@ -891,6 +923,7 @@ export default function App() {
                 isReaderActive={activeTab === 'reader'}
                 onBackToLibrary={() => setActiveTab('library')}
                 onUpdateBook={handleUpdateBook}
+                onPatchBook={handlePatchBook}
                 onLogReadingTime={handleLogReadingTime}
                 settings={readerSettings}
                 onUpdateSettings={handleUpdateSettings}
@@ -950,9 +983,7 @@ export default function App() {
                   onAddExternalVoice={handleAddExternalVoice}
                   onDeleteExternalVoice={handleDeleteExternalVoice}
                   defaultVoice={basicSettings.defaultVoice}
-                  onSelectDefaultVoice={(defaultVoice) =>
-                    handleUpdateBasicSettings({ defaultVoice })
-                  }
+                  onSelectDefaultVoice={handleSelectDefaultVoice}
                   customAmbientTracks={customAmbientTracks}
                   onAddCustomAmbientTrack={handleAddCustomAmbientTrack}
                   onDeleteCustomAmbientTrack={handleDeleteCustomAmbientTrack}
@@ -979,21 +1010,22 @@ export default function App() {
         </Suspense>
       )}
 
-      {/* iPhone-Style Floating Raised Glass Bottom Dock with Sliding Transparent Water-Drop */}
+      {/* Compact Opaque Solid Bottom Dock (4/5 height, half-size label text, zero see-through) */}
       {activeTab !== 'reader' && (
         <nav
           ref={mobileDockRef}
+          data-testid="bottom-nav-dock"
           aria-label="Thanh điều hướng nổi iPhone"
-          className={`fixed bottom-3 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:w-auto sm:max-w-none h-[60px] sm:h-auto ios-glass-dock rounded-[24px] p-1 border grid grid-cols-4 sm:flex sm:items-center sm:justify-center gap-0.5 sm:gap-1.5 ${
+          className={`fixed bottom-2.5 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:w-auto sm:max-w-none h-[48px] sm:h-auto ios-glass-dock rounded-[20px] p-1 border grid grid-cols-4 sm:flex sm:items-center sm:justify-center gap-0.5 sm:gap-1 ${
             basicSettings.uiTheme === 'amoled'
-              ? 'border-zinc-800/90'
-              : 'border-white/75 dark:border-zinc-700/60'
+              ? 'bg-[#0a0a0a] border-zinc-800'
+              : 'bg-white dark:bg-[#16181C] border-stone-200 dark:border-zinc-800'
           }`}
         >
           <LiquidDropThumb
             thumb={dockThumb}
             isGliding={dockGliding}
-            roundedClass="rounded-[20px]"
+            roundedClass="rounded-[16px]"
           />
           {(
             [
@@ -1011,14 +1043,14 @@ export default function App() {
                 type="button"
                 data-liquid-key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`relative z-10 ios-liquid-pill min-w-0 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 px-1 sm:px-3.5 py-1.5 sm:py-2 rounded-[20px] min-h-[50px] sm:min-h-[38px] ${
+                className={`relative z-10 ios-liquid-pill min-w-0 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 px-1 sm:px-3 py-1 sm:py-1.5 rounded-[16px] min-h-[38px] sm:min-h-[34px] ${
                   active
                     ? 'text-amber-800 dark:text-amber-300 font-semibold'
                     : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
                 }`}
               >
-                <Icon className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="text-[11px] sm:text-xs leading-tight tracking-tight whitespace-nowrap">
+                <Icon className="w-4 h-4 sm:w-3.5 sm:h-3.5 shrink-0" />
+                <span className="text-[7.5px] sm:text-[9px] leading-none tracking-tight whitespace-nowrap">
                   {item.label}
                 </span>
               </button>
@@ -1051,7 +1083,7 @@ export default function App() {
           <div
             role="status"
             aria-label="Trình quét web chạy ngầm"
-            className="ios-sheet-enter fixed bottom-40 md:bottom-24 right-3 md:right-5 z-40 max-w-sm w-[calc(100%-1.5rem)] rounded-2xl border border-amber-800/40 bg-[#FBF9F5]/95 dark:bg-[#191B1F]/95 backdrop-blur-xl shadow-xl p-3.5 text-xs space-y-2"
+            className="ios-sheet-enter fixed bottom-40 md:bottom-24 right-3 md:right-5 z-40 max-w-sm w-[calc(100%-1.5rem)] rounded-2xl border border-amber-800/40 bg-white dark:bg-[#191B1F] shadow-xl p-3.5 text-xs space-y-2"
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0 font-semibold text-stone-900 dark:text-stone-100">

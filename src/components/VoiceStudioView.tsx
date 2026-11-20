@@ -52,6 +52,7 @@ import { AmbientSoundPanel } from './AmbientSoundPanel';
 import { GlassSelect } from './GlassSelect';
 import { resolveApiUrl } from '../utils/apiClient';
 import {
+  computeExternalVoiceSpeechParams,
   getOnDeviceVoiceTone,
   speakOnDevice,
   stopOnDeviceSpeech,
@@ -359,18 +360,21 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     stopAnyPreview();
     setPlayingVoiceId(key);
     try {
-      if (voice.dataUrl) {
-        await getPlayer().play(voice.dataUrl, voice.toneSettings || DEFAULT_VOICE_TONE, 1.0);
-      } else {
-        const ok = await speakOnDevice({
-          text: sampleText,
-          lang: 'vi-VN',
-          pitch: voice.toneSettings?.pitch ?? 1.0,
-          rate: voice.toneSettings?.rate ?? 1.0,
-        });
-        if (!ok) {
-          const baseVoice = voice.analyzedProfile?.recommendedBaseVoice || 'Kore';
-          const pack = await installOfflineVoicePack(baseVoice);
+      // Use the EXACT same speech parameters as ReaderView/AudiobookStudioDrawer so preview === reading
+      const extParams = computeExternalVoiceSpeechParams(voice);
+      const ok = await speakOnDevice({
+        text: sampleText,
+        lang: 'vi-VN',
+        pitch: extParams.pitch,
+        rate: extParams.rate,
+        preferGender: extParams.preferGender,
+        voiceSlotIndex: extParams.voiceSlotIndex,
+      });
+      if (!ok) {
+        if (voice.dataUrl) {
+          await getPlayer().play(voice.dataUrl, voice.toneSettings || DEFAULT_VOICE_TONE, 1.0);
+        } else {
+          const pack = await installOfflineVoicePack(extParams.baseVoice);
           await getPlayer().play(
             pack.calibrationWavBase64,
             voice.toneSettings || DEFAULT_VOICE_TONE,
@@ -399,34 +403,14 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     setPlayingVoiceId(key);
     try {
       const presetTone = getOnDeviceVoiceTone(voiceName);
-      if (!standaloneDeviceMode) {
-        try {
-          const resp = await fetch(resolveApiUrl('/api/ai/tts'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text: sampleText,
-              voiceName,
-              stylePrompt: 'Tự nhiên, rõ ràng, truyền cảm',
-              expressive: true,
-            }),
-          });
-          const data = await resp.json().catch(() => ({}));
-          if (resp.ok && data.audioBase64) {
-            const dataUrl = `data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`;
-            await getPlayer().play(dataUrl, DEFAULT_VOICE_TONE, 1.0);
-            return;
-          }
-        } catch {
-          // Fall through seamlessly to on-device speech
-        }
-      }
+      // Match Reader playback 100% by using the exact same speakOnDevice voiceSlotIndex/pitch/rate/gender
       const spoke = await speakOnDevice({
         text: sampleText,
         lang: 'vi-VN',
         pitch: presetTone.pitch,
         rate: presetTone.rate,
         preferGender: presetTone.preferGender,
+        voiceSlotIndex: presetTone.voiceSlotIndex,
       });
       if (!spoke) {
         const pack = await installOfflineVoicePack(voiceName);

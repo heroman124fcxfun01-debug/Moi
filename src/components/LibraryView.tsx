@@ -429,7 +429,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             )}
 
             {/* Compact progress badge overlay */}
-            <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-black/65 text-white text-[8.5px] font-medium tabular-nums backdrop-blur-xs">
+            <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-stone-900 text-white text-[8.5px] font-medium tabular-nums">
               {book.progressPercent}%
             </span>
           </div>
@@ -1044,7 +1044,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/45 backdrop-blur-xs p-0 sm:p-4"
+            className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4"
             onClick={(e) => {
               if (e.target === e.currentTarget) setMenuContext(null);
             }}
@@ -1053,7 +1053,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               role="dialog"
               aria-modal="true"
               aria-label={`Tùy chọn cho ${menuContext.book.title}`}
-              className="ios-sheet-enter w-full sm:max-w-sm bg-[#FBF9F5] dark:bg-[#191B1F] rounded-t-[26px] sm:rounded-[24px] border border-white/60 dark:border-stone-800 shadow-2xl overflow-hidden"
+              className="ios-sheet-enter w-full sm:max-w-sm bg-white dark:bg-[#191B1F] rounded-t-[26px] sm:rounded-[24px] border border-stone-200 dark:border-stone-800 shadow-2xl overflow-hidden"
             >
               <div className="sm:hidden flex justify-center pt-2.5">
                 <div className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />

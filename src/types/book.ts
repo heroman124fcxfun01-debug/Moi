@@ -127,6 +127,9 @@ export interface Book {
   chapters: Chapter[];
   currentChapterIndex: number;
   currentParagraphIndex: number;
+  currentPageIndex?: number;
+  currentPageCharOffset?: number;
+  currentScrollRatio?: number;
   currentSentenceIndex?: number;
   progressPercent: number;
   bookmarks: BookmarkItem[];
@@ -245,6 +248,9 @@ export interface BookProgressSnapshot {
   readingStyle?: BookReadingStyle;
   currentChapterIndex: number;
   currentParagraphIndex: number;
+  currentPageIndex?: number;
+  currentPageCharOffset?: number;
+  currentScrollRatio?: number;
   currentSentenceIndex?: number;
   progressPercent: number;
   bookmarks: BookmarkItem[];

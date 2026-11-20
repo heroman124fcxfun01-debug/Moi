@@ -3,6 +3,7 @@ import type { BilingualParagraphPair } from './textProcessing';
 
 export interface ScreenPageChunk {
   paragraphIndex: number;
+  charOffset?: number;
   original: string;
   translated: string | null;
   isFirstOfParagraph: boolean;
@@ -237,6 +238,7 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
     // Pack original lines across one or more screen pages so long paragraphs never overflow off-screen
     let lineOffset = 0;
     let chunkPartIndex = 0;
+    let charOffset = 0;
 
     while (lineOffset < wrappedOriginal.length) {
       const dropCapExtra = useDropCap && chunkPartIndex === 0 ? lineHeightPx * 0.45 : 0;
@@ -267,7 +269,6 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
       }
 
       const isLastSliceOfOriginal = lineOffset + takeLines >= wrappedOriginal.length;
-      const sliceText = wrappedOriginal.slice(lineOffset, lineOffset + takeLines).join(' ');
 
       // Attach translation to the final slice of the paragraph (or bump if it doesn't fit)
       let includeTranslation = isLastSliceOfOriginal && wrappedTranslated.length > 0;
@@ -290,6 +291,7 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
 
       currentChunks.push({
         paragraphIndex: pair.index,
+        charOffset,
         original: finalSliceText,
         translated: attachTrans,
         isFirstOfParagraph: chunkPartIndex === 0,
@@ -305,6 +307,7 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
 
       remainingHeight = Math.max(0, remainingHeight - consumed);
       lineOffset += takeLines;
+      charOffset += finalSliceText.length + 1;
       chunkPartIndex += 1;
 
       if (lineOffset < wrappedOriginal.length) {
@@ -338,4 +341,68 @@ export function findScreenPageForParagraph(
     if (first && first.paragraphIndex <= paragraphIndex) return i;
   }
   return 0;
+}
+
+export interface ExactReadingPosition {
+  paragraphIndex: number;
+  charOffset?: number;
+  pageIndex?: number;
+}
+
+/**
+ * Resolves the exact screen page for a saved reading position, supporting both:
+ * 1. Exact saved `pageIndex` when the page still holds the saved paragraph/offset (zero drift on reopen).
+ * 2. Exact `charOffset` inside multi-page paragraphs (so exiting on page 18 of a 30-page chapter
+ *    never snaps back to page 0 even if font size or viewport height changes).
+ */
+export function findScreenPageForPosition(
+  pages: ScreenPage[],
+  pos: ExactReadingPosition
+): number {
+  if (pages.length === 0) return 0;
+  const maxPageIdx = pages.length - 1;
+  const targetPara = Math.max(0, pos.paragraphIndex || 0);
+  const hasCharOffset = typeof pos.charOffset === 'number' && pos.charOffset > 0;
+  const targetOffset = hasCharOffset ? pos.charOffset! : 0;
+
+  // 1. If we have a saved charOffset inside a paragraph, match the exact chunk spanning that offset
+  if (hasCharOffset) {
+    let bestPage = -1;
+    let bestDelta = Number.POSITIVE_INFINITY;
+
+    for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+      for (const chunk of pages[pIdx].chunks) {
+        if (chunk.paragraphIndex !== targetPara) continue;
+        const start = chunk.charOffset ?? 0;
+        const end = start + chunk.original.length + 1;
+        // Exact hit inside this chunk's character span
+        if (targetOffset >= start && targetOffset < end) {
+          return pIdx;
+        }
+        const delta = Math.abs(start - targetOffset);
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          bestPage = pIdx;
+        }
+      }
+    }
+
+    if (bestPage >= 0) return bestPage;
+  }
+
+  // 2. If exact saved pageIndex still contains targetPara (or is a valid page when no charOffset), prefer it
+  if (typeof pos.pageIndex === 'number' && pos.pageIndex >= 0) {
+    const clampedSaved = Math.min(pos.pageIndex, maxPageIdx);
+    const savedPage = pages[clampedSaved];
+    if (
+      savedPage &&
+      (savedPage.chunks.some((c) => c.paragraphIndex === targetPara) ||
+        (targetPara === 0 && clampedSaved > 0 && savedPage.chunks.length > 0))
+    ) {
+      return clampedSaved;
+    }
+  }
+
+  // 3. Fallback to paragraph lookup
+  return findScreenPageForParagraph(pages, targetPara);
 }

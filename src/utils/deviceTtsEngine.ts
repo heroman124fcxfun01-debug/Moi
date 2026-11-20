@@ -1,23 +1,65 @@
 import { Capacitor } from '@capacitor/core';
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
-import type { GeminiVoiceName } from '../types/book';
+import type { ExternalVoiceAsset, GeminiVoiceName } from '../types/book';
 import { MAX_READING_SPEED, MIN_READING_SPEED } from './audioFilterEngine';
+import { normalizeVietnameseForSpeech } from './vietnameseTtsNormalizer';
 
 /**
  * Distinct on-device acoustic profiles for each voice preset so every voice
- * sounds clearly differentiated using the phone's built-in TTS engine (100% offline).
+ * sounds unmistakably differentiated using the phone's built-in TTS engine (100% offline).
  */
 export const ON_DEVICE_VOICE_TONES: Record<
   GeminiVoiceName,
-  { pitch: number; rate: number; preferGender: 'female' | 'male' | 'neutral' }
+  { pitch: number; rate: number; preferGender: 'female' | 'male' | 'neutral'; voiceSlotIndex: number }
 > = {
-  Kore: { pitch: 1.02, rate: 1.0, preferGender: 'female' },
-  Charon: { pitch: 0.82, rate: 0.94, preferGender: 'male' },
-  Zephyr: { pitch: 1.12, rate: 1.0, preferGender: 'female' },
-  Fenrir: { pitch: 0.76, rate: 0.96, preferGender: 'male' },
-  Puck: { pitch: 1.06, rate: 1.06, preferGender: 'male' },
-  Aoede: { pitch: 1.18, rate: 1.03, preferGender: 'female' },
+  Kore: { pitch: 1.04, rate: 1.0, preferGender: 'female', voiceSlotIndex: 0 },
+  Charon: { pitch: 0.78, rate: 0.94, preferGender: 'male', voiceSlotIndex: 1 },
+  Zephyr: { pitch: 1.18, rate: 0.97, preferGender: 'female', voiceSlotIndex: 2 },
+  Fenrir: { pitch: 0.68, rate: 0.92, preferGender: 'male', voiceSlotIndex: 3 },
+  Puck: { pitch: 0.92, rate: 1.08, preferGender: 'male', voiceSlotIndex: 4 },
+  Aoede: { pitch: 1.28, rate: 1.03, preferGender: 'female', voiceSlotIndex: 5 },
 };
+
+/**
+ * Computes consistent acoustic parameters for an imported/Studio ExternalVoiceAsset
+ * so previewing in Studio/Drawer and live audiobook playback sound 100% identical.
+ */
+export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
+  baseVoice: GeminiVoiceName;
+  pitch: number;
+  rate: number;
+  preferGender: 'female' | 'male' | 'neutral';
+  voiceSlotIndex: number;
+} {
+  const baseVoice = ext.analyzedProfile?.recommendedBaseVoice || 'Kore';
+  const preset = ON_DEVICE_VOICE_TONES[baseVoice] || ON_DEVICE_VOICE_TONES.Kore;
+  const tone = ext.toneSettings;
+  const rawPitch = tone?.pitch ?? ext.analyzedProfile?.pitchHint ?? preset.pitch;
+  const rawRate = tone?.rate ?? ext.analyzedProfile?.rateHint ?? preset.rate;
+
+  // Reflect Studio EQ warmth/clarity subtly in on-device pitch so EQ-tuned voices are audibly distinct
+  const warmthShift = tone ? -(tone.warmthDb || 0) * 0.012 : 0;
+  const clarityShift = tone ? (tone.clarityDb || 0) * 0.008 : 0;
+  const pitch = Math.min(1.65, Math.max(0.6, Math.round((rawPitch + warmthShift + clarityShift) * 100) / 100));
+  const rate = Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, Math.round(rawRate * 100) / 100));
+
+  // Deterministic slot offset from voice id so distinct custom voices rotate through device voices
+  let hash = 0;
+  for (let i = 0; i < ext.id.length; i++) {
+    hash = (hash * 31 + ext.id.charCodeAt(i)) >>> 0;
+  }
+  const voiceSlotIndex = (preset.voiceSlotIndex + (hash % 4)) % 6;
+
+  return {
+    baseVoice,
+    pitch,
+    rate,
+    preferGender: preset.preferGender,
+    voiceSlotIndex,
+  };
+}
+
+let cachedNativeVoices: Array<{ voiceURI?: string; name?: string; lang?: string }> | null = null;
 
 let sharedAudioCtx: AudioContext | null = null;
 let keepaliveGain: GainNode | null = null;
@@ -200,15 +242,21 @@ export function checkSpeechAudioAvailable(): {
   return { nativeAvailable, webSpeechAvailable, voiceCount };
 }
 
+const MALE_VOICE_HINT_RE =
+  /nam|male|man|minh|hung|an|david|daniel|mark|vi-vn-x-vid|vi-vn-x-vic|vnm/i;
+const FEMALE_VOICE_HINT_RE =
+  /nu|nữ|female|woman|linh|lan|mai|hoai|samantha|victoria|vi-vn-x-vif|vi-vn-x-vie|vi-vn-x-gft|vnf/i;
+
 export function pickBestDeviceVoice(
   voices: SpeechSynthesisVoice[],
   lang: string,
   voiceURI?: string,
-  preferGender?: 'female' | 'male' | 'neutral'
+  preferGender?: 'female' | 'male' | 'neutral',
+  voiceSlotIndex = 0
 ): SpeechSynthesisVoice | undefined {
   if (voices.length === 0) return undefined;
   if (voiceURI) {
-    const exact = voices.find((v) => v.voiceURI === voiceURI);
+    const exact = voices.find((v) => v.voiceURI === voiceURI || v.name === voiceURI);
     if (exact) return exact;
   }
 
@@ -219,20 +267,71 @@ export function pickBestDeviceVoice(
   const pool = langMatches.length > 0 ? langMatches : voices;
 
   if (preferGender === 'male') {
-    const male = pool.find((v) =>
-      /nam|male|man|minh|hung|an|david|daniel|mark/i.test(v.name)
-    );
-    if (male) return male;
+    const males = pool.filter((v) => MALE_VOICE_HINT_RE.test(`${v.name} ${v.voiceURI}`));
+    if (males.length > 0) return males[Math.abs(voiceSlotIndex) % males.length];
   } else if (preferGender === 'female') {
-    const female = pool.find((v) =>
-      /nu|nữ|female|woman|linh|lan|mai|hoai|samantha|victoria|google tiếng việt/i.test(
-        v.name
-      )
-    );
-    if (female) return female;
+    const females = pool.filter((v) => FEMALE_VOICE_HINT_RE.test(`${v.name} ${v.voiceURI}`));
+    if (females.length > 0) return females[Math.abs(voiceSlotIndex) % females.length];
   }
 
-  return pool[0];
+  return pool[Math.abs(voiceSlotIndex) % pool.length];
+}
+
+export function pickBestNativeVoiceIndex(
+  voices: Array<{ voiceURI?: string; name?: string; lang?: string }>,
+  lang: string,
+  voiceURI?: string,
+  preferGender?: 'female' | 'male' | 'neutral',
+  voiceSlotIndex = 0
+): number {
+  if (!voices || voices.length === 0) return -1;
+
+  if (voiceURI) {
+    const exactIdx = voices.findIndex(
+      (v) => v.voiceURI === voiceURI || v.name === voiceURI
+    );
+    if (exactIdx >= 0) return exactIdx;
+  }
+
+  const langPrefix = (lang || 'vi-VN').split('-')[0].toLowerCase();
+  const indexedLangMatches = voices
+    .map((v, index) => ({ v, index }))
+    .filter(({ v }) => (v.lang || '').toLowerCase().startsWith(langPrefix));
+
+  if (indexedLangMatches.length === 0) return -1;
+
+  if (preferGender === 'male') {
+    const males = indexedLangMatches.filter(({ v }) =>
+      MALE_VOICE_HINT_RE.test(`${v.name || ''} ${v.voiceURI || ''}`)
+    );
+    if (males.length > 0) {
+      return males[Math.abs(voiceSlotIndex) % males.length].index;
+    }
+  } else if (preferGender === 'female') {
+    const females = indexedLangMatches.filter(({ v }) =>
+      FEMALE_VOICE_HINT_RE.test(`${v.name || ''} ${v.voiceURI || ''}`)
+    );
+    if (females.length > 0) {
+      return females[Math.abs(voiceSlotIndex) % females.length].index;
+    }
+  }
+
+  return indexedLangMatches[Math.abs(voiceSlotIndex) % indexedLangMatches.length].index;
+}
+
+async function getNativeSupportedVoices(): Promise<
+  Array<{ voiceURI?: string; name?: string; lang?: string }>
+> {
+  if (cachedNativeVoices !== null) return cachedNativeVoices;
+  if (!isCapacitorNativeTtsReady()) return [];
+  try {
+    const res = await TextToSpeech.getSupportedVoices();
+    cachedNativeVoices = Array.isArray(res?.voices) ? res.voices : [];
+    return cachedNativeVoices;
+  } catch {
+    cachedNativeVoices = [];
+    return [];
+  }
 }
 
 /**
@@ -301,6 +400,7 @@ export interface SpeakOnDeviceOptions {
   rate?: number;
   voiceURI?: string;
   preferGender?: 'female' | 'male' | 'neutral';
+  voiceSlotIndex?: number;
   onStart?: () => void;
   onBoundary?: (charIndex: number) => void;
 }
@@ -308,22 +408,33 @@ export interface SpeakOnDeviceOptions {
 /**
  * Speaks text cleanly on the user's phone / browser using native Capacitor Android/iOS TTS
  * (directly bridging android.speech.tts.TextToSpeech) or hardened Web Speech API with
- * voice readiness wait & sentence chunking. Returns false if no audio output started.
+ * voice readiness wait, Vietnamese OCR normalization, & sentence chunking.
+ * Returns false if no audio output started.
  */
 export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<boolean> {
-  const cleanText = (options.text || '').trim();
+  const lang = options.lang || 'vi-VN';
+  const cleanText = normalizeVietnameseForSpeech(options.text || '', lang);
   if (!cleanText) return false;
 
   activeSpeechCancelled = false;
-  const lang = options.lang || 'vi-VN';
   const pitch = Math.min(1.8, Math.max(0.55, options.pitch ?? 1.0));
   const rate = Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, options.rate ?? 1.0));
+  const voiceSlotIndex = options.voiceSlotIndex ?? 0;
   const chunks = splitSpeechIntoChunks(cleanText, 210);
 
   // 1. Native Capacitor Android/iOS TextToSpeech bridge (always prioritized inside APK)
   if (isCapacitorNativeTtsReady()) {
     try {
       await TextToSpeech.stop().catch(() => {});
+      const nativeVoices = await getNativeSupportedVoices();
+      const nativeVoiceIdx = pickBestNativeVoiceIndex(
+        nativeVoices,
+        lang,
+        options.voiceURI,
+        options.preferGender,
+        voiceSlotIndex
+      );
+
       let charCursor = 0;
       options.onStart?.();
       for (const chunk of chunks) {
@@ -349,6 +460,7 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
             pitch,
             volume: 1.0,
             category: 'playback',
+            ...(nativeVoiceIdx >= 0 ? { voice: nativeVoiceIdx } : {}),
           });
         } finally {
           window.clearInterval(cadenceTimer);
@@ -419,7 +531,8 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
           voices,
           lang,
           options.voiceURI,
-          options.preferGender
+          options.preferGender,
+          voiceSlotIndex
         );
         if (chosen) {
           utter.voice = chosen;
