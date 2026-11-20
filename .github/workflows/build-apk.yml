@@ -121,6 +121,10 @@ jobs:
           SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "sdk.dir=$SDK_DIR" > local.properties
           cat local.properties
+          # Capacitor 6.2.3 uses Gradle 8.2.1 + JDK 17, while some community plugins (e.g. text-to-speech 6.1.0)
+          # declare JavaVersion.VERSION_21; patch plugin/project build.gradle files to VERSION_17 before assembling.
+          find ../node_modules/@capacitor* . -name "build.gradle" -type f -exec \
+            sed -i 's/JavaVersion\.VERSION_21/JavaVersion.VERSION_17/g; s/VERSION_21/VERSION_17/g; s/jvmTarget = '\''21'\''/jvmTarget = '\''17'\''/g; s/jvmTarget = "21"/jvmTarget = "17"/g' {} + || true
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk ../BOOKHAD-Android.apk

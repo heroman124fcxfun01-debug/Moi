@@ -9,7 +9,6 @@ import {
   Edit3,
   FolderOpen,
   FolderPlus,
-  Globe,
   Headphones,
   Image as ImageIcon,
   Layers,
@@ -20,8 +19,8 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Shield,
   Sparkles,
-  Trash2,
   X,
 } from 'lucide-react';
 import type {
@@ -33,10 +32,9 @@ import type {
 } from '../types/book';
 import { estimateBookStats } from '../utils/textProcessing';
 import { buildEpubBlob } from '../utils/epubBuilder';
-import { buildLibraryCollectionZip } from '../utils/webCrawlerEngine';
 import { downloadBlob, slugifyFilename } from '../utils/fileHelpers';
 import { cleanBookChaptersOnDevice, type BookCleanReport } from '../utils/bookCleaner';
-import { getMonthlyReadingChart, getWeeklyReadingChart } from '../utils/syncAndStats';
+import { computeReadingTimeSummary } from '../utils/syncAndStats';
 import {
   sortBooksByMode,
   sortCollectionsByMode,
@@ -48,6 +46,7 @@ import { CollectionModal } from './CollectionModal';
 import { BookShowcase3D } from './BookShowcase3D';
 import { GlassSelect } from './GlassSelect';
 import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
+import { TwoTapDeleteButton } from './TwoTapDeleteButton';
 
 interface LibraryViewProps {
   books: Book[];
@@ -59,7 +58,7 @@ interface LibraryViewProps {
   onDeleteBook: (bookId: string) => void;
   onUpdateCollections: (collections: UserCollection[]) => void;
   onOpenImportModal: () => void;
-  onGoToWebScraper: () => void;
+  onOpenCongDongSach: () => void;
   onRestoreSamples: () => void;
   focusCollectionSignal?: { name: string; tick: number } | null;
 }
@@ -92,7 +91,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onDeleteBook,
   onUpdateCollections,
   onOpenImportModal,
-  onGoToWebScraper,
+  onOpenCongDongSach,
   onRestoreSamples,
   focusCollectionSignal = null,
 }) => {
@@ -127,10 +126,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     }
   };
 
-  const [chartPeriod, setChartPeriod] = useState<'week' | 'month'>('week');
+  const [showExactReadingHours, setShowExactReadingHours] = useState(false);
   const shelfTabsRef = useRef<HTMLDivElement>(null);
   const viewModeBarRef = useRef<HTMLDivElement>(null);
-  const chartToggleRef = useRef<HTMLDivElement>(null);
   const { thumb: shelfThumb, isGliding: shelfGliding } = useLiquidDropIndicator(
     shelfTab,
     shelfTabsRef
@@ -139,12 +137,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     viewMode,
     viewModeBarRef
   );
-  const { thumb: chartThumb, isGliding: chartGliding } = useLiquidDropIndicator(
-    chartPeriod,
-    chartToggleRef
-  );
   const [exportingId, setExportingId] = useState<string | null>(null);
-  const [isExportingArchive, setIsExportingArchive] = useState(false);
 
   // Three-dot action menu state
   const [menuContext, setMenuContext] = useState<{
@@ -172,13 +165,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   const featuredBook = recentBooks[0];
 
-  const chartData = useMemo(() => {
-    return chartPeriod === 'week'
-      ? getWeeklyReadingChart(readingLogs)
-      : getMonthlyReadingChart(readingLogs);
-  }, [chartPeriod, readingLogs]);
-
-  const maxBucketMinutes = Math.max(10, ...chartData.buckets.map((b) => b.minutes));
+  const readingSummary = useMemo(
+    () => computeReadingTimeSummary(readingLogs),
+    [readingLogs]
+  );
 
   const filteredAndSortedBooks = useMemo(() => {
     const filtered = books.filter((b) => {
@@ -246,28 +236,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       downloadBlob(blob, `${slugifyFilename(book.title)}.epub`);
     } finally {
       setExportingId(null);
-    }
-  };
-
-  const handleExportLibraryZip = async () => {
-    if (books.length === 0) return;
-    setIsExportingArchive(true);
-    try {
-      const bookCollectionMap = new Map<string, string>();
-      for (const col of collections) {
-        for (const id of col.bookIds) {
-          if (!bookCollectionMap.has(id)) bookCollectionMap.set(id, col.name);
-        }
-      }
-      const booksForZip = books.map((b) => ({
-        ...b,
-        collection: bookCollectionMap.get(b.id) || 'Kho-sach-rieng',
-      }));
-      const zipBlob = await buildLibraryCollectionZip(booksForZip);
-      const dateTag = new Date().toISOString().slice(0, 10);
-      downloadBlob(zipBlob, `BOOKHAD-ThuVien-BoSuuTap-${dateTag}.zip`);
-    } finally {
-      setIsExportingArchive(false);
     }
   };
 
@@ -497,80 +465,144 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   return (
     <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-3 pb-4 sm:pt-5 sm:pb-6 space-y-4">
-      {/* 1. TRÊN CÙNG: SÁCH MỚI ĐỌC (Hiển thị dạng danh sách bìa trái — tên phải) */}
-      {recentBooks.length > 0 && (
-        <section aria-label="Sách mới đọc" className="space-y-2">
-          <div className="flex items-center justify-between gap-2 min-w-0">
-            <h1 className="text-[13.5px] sm:text-[15px] font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
+      {/* 1. TRÊN CÙNG: CHIA ĐÔI 2 Ô VUÔNG — GIỜ ĐỌC (3 DÒNG) & SÁCH MỚI ĐỌC */}
+      <section aria-label="Thời gian đọc và Sách mới đọc" className="grid grid-cols-2 gap-2.5 sm:gap-3.5">
+        {/* Ô VUÔNG 1: THỜI GIAN ĐỌC (3 DÒNG ĐƠN GIẢN) */}
+        <div
+          data-testid="reading-time-square"
+          className="ios-floating-shadow rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] p-3 sm:p-4 flex flex-col justify-between min-h-[154px] sm:min-h-[168px] min-w-0"
+        >
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-400">
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Thời gian đọc</span>
+          </div>
+
+          <div className="space-y-2 mt-1.5 min-w-0">
+            {/* Dòng 1: Tổng thời gian đọc (100h / 1kh / 10kh / 10mh — ấn để xem chi tiết) */}
+            <div className="min-w-0">
+              <div className="text-[10px] text-stone-500 dark:text-stone-400 leading-tight">
+                Tổng thời gian đọc
+              </div>
+              <button
+                type="button"
+                data-testid="reading-total-toggle"
+                onClick={() => setShowExactReadingHours((prev) => !prev)}
+                title="Ấn để xem chi tiết giờ đọc chính xác"
+                className="mt-0.5 text-left inline-flex items-baseline gap-1.5 group focus:outline-none"
+              >
+                <span className="text-lg sm:text-xl font-display font-bold text-stone-900 dark:text-stone-100 tabular-nums underline decoration-dotted decoration-amber-700/50 underline-offset-4 group-hover:text-amber-800 dark:group-hover:text-amber-300 transition-colors">
+                  {showExactReadingHours ? readingSummary.totalExact : readingSummary.totalCompact}
+                </span>
+                <span className="text-[9.5px] text-stone-400 shrink-0">
+                  {showExactReadingHours ? '(thu gọn)' : '(chi tiết)'}
+                </span>
+              </button>
+            </div>
+
+            {/* Dòng 2: Ngày / Tuần / Tháng / Tháng trước */}
+            <div className="min-w-0">
+              <div className="text-[9.5px] text-stone-500 dark:text-stone-400 leading-tight truncate">
+                Ngày / Tuần / Tháng / T.trước
+              </div>
+              <div className="text-[11px] sm:text-xs font-semibold text-stone-800 dark:text-stone-200 tabular-nums leading-snug break-words">
+                {readingSummary.todayLabel} / {readingSummary.weekLabel} / {readingSummary.thisMonthLabel} / {readingSummary.prevMonthLabel}
+              </div>
+            </div>
+
+            {/* Dòng 3: Trung bình 1 ngày (tính đến thời điểm hiện tại trong ngày) */}
+            <div className="pt-1 border-t border-stone-100 dark:border-stone-800/80 flex items-baseline justify-between gap-1 text-[10.5px] sm:text-[11px]">
+              <span className="text-stone-500 dark:text-stone-400 truncate">TB 1 ngày:</span>
+              <span className="font-bold text-amber-800 dark:text-amber-400 tabular-nums shrink-0">
+                {readingSummary.dailyAverageLabel}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Ô VUÔNG 2: SÁCH MỚI ĐỌC */}
+        <div
+          data-testid="recent-books-list"
+          className="ios-floating-shadow rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] p-3 sm:p-4 flex flex-col justify-between min-h-[154px] sm:min-h-[168px] min-w-0 relative"
+        >
+          <div className="flex items-center justify-between gap-1 min-w-0">
+            <h1 className="text-[11px] font-semibold text-stone-800 dark:text-stone-200 truncate">
               Sách mới đọc
             </h1>
             {featuredBook && (
               <button
                 type="button"
-                onClick={() => onOpenBook(featuredBook.id)}
-                className="text-[11px] font-medium text-amber-800 dark:text-amber-400 hover:underline whitespace-nowrap shrink-0"
+                onClick={(e) => openBookOptionsMenu(featuredBook, e)}
+                aria-label={`Tùy chọn cho ${featuredBook.title}`}
+                className="p-1 -mr-1 rounded-full text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 shrink-0"
               >
-                Đọc tiếp →
+                <MoreVertical className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          <div className="flex flex-col gap-1.5" data-testid="recent-books-list">
-            {recentBooks.map((b) => (
-              <div
-                key={b.id}
-                className="ios-tap-card relative flex items-center gap-2.5 p-2 rounded-xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] shadow-xs hover:border-amber-800"
-              >
-                <button
-                  type="button"
-                  onClick={() => onOpenBook(b.id)}
-                  className="flex items-center gap-2.5 min-w-0 flex-1 text-left focus:outline-none"
-                >
-                  <div className="w-9 h-12 rounded-md overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0">
-                    {b.coverUrl ? (
-                      <img
-                        src={b.coverUrl}
-                        alt={b.title}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[9px] font-display font-bold p-1 text-center">
-                        {b.title.slice(0, 2)}
-                      </div>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11.5px] sm:text-xs font-semibold text-stone-900 dark:text-stone-100 truncate leading-tight">
-                      {b.title}
+          {featuredBook ? (
+            <button
+              type="button"
+              onClick={() => onOpenBook(featuredBook.id)}
+              className="mt-1.5 flex-1 flex flex-col justify-between text-left focus:outline-none min-w-0 group"
+            >
+              <div className="flex items-start gap-2 min-w-0">
+                <div className="w-11 h-16 sm:w-12 sm:h-16 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0 shadow-xs">
+                  {featuredBook.coverUrl ? (
+                    <img
+                      src={featuredBook.coverUrl}
+                      alt={featuredBook.title}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[9px] font-display font-bold p-1 text-center">
+                      {featuredBook.title.slice(0, 2)}
                     </div>
-                    <div className="text-[10px] text-stone-500 truncate mt-0.5">{b.author}</div>
-                    <div className="mt-1 flex items-center gap-1.5">
-                      <div className="flex-1 h-1 bg-stone-200 dark:bg-stone-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-amber-800 dark:bg-amber-600"
-                          style={{ width: `${b.progressPercent}%` }}
-                        />
-                      </div>
-                      <span className="text-[9.5px] text-stone-500 tabular-nums">
-                        {b.progressPercent}%
-                      </span>
-                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11.5px] sm:text-xs font-semibold text-stone-900 dark:text-stone-100 line-clamp-2 leading-snug group-hover:text-amber-800 dark:group-hover:text-amber-300 transition-colors">
+                    {featuredBook.title}
                   </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => openBookOptionsMenu(b, e)}
-                  aria-label={`Tùy chọn cho ${b.title}`}
-                  className="p-1 rounded-full text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-100 dark:hover:bg-stone-800 shrink-0"
-                >
-                  <MoreVertical className="w-3.5 h-3.5" />
-                </button>
+                  <div className="text-[10px] text-stone-500 truncate mt-0.5">
+                    {featuredBook.author}
+                  </div>
+                </div>
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+
+              <div className="mt-2 space-y-1 w-full">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1 h-1.5 bg-stone-200 dark:bg-stone-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-amber-800 dark:bg-amber-600 rounded-full"
+                      style={{ width: `${featuredBook.progressPercent}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] font-semibold text-stone-600 dark:text-stone-300 tabular-nums">
+                    {featuredBook.progressPercent}%
+                  </span>
+                </div>
+                <div className="text-[10px] font-semibold text-amber-800 dark:text-amber-400">
+                  Đọc tiếp →
+                </div>
+              </div>
+            </button>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-center gap-1.5 py-2">
+              <BookOpen className="w-6 h-6 text-stone-300 dark:text-stone-700" />
+              <p className="text-[10.5px] text-stone-500">Chưa có sách nào</p>
+              <button
+                type="button"
+                onClick={onOpenImportModal}
+                className="text-[10.5px] font-semibold text-amber-800 dark:text-amber-400 hover:underline"
+              >
+                + Thêm sách
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* 2. TIẾP THEO: KHO SÁCH RIÊNG & BỘ SƯU TẬP */}
       <section aria-label="Thư viện riêng và Bộ sưu tập" className="space-y-3">
@@ -581,12 +613,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={onGoToWebScraper}
-              className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
+              onClick={onOpenCongDongSach}
+              className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
             >
-              <Globe className="w-3 h-3 shrink-0" />
-              <span className="hidden sm:inline">Cộng đồng Web</span>
-              <span className="sm:hidden">Web</span>
+              <Shield className="w-3 h-3 shrink-0 text-amber-800 dark:text-amber-400" />
+              <span>Ẩn danh</span>
             </button>
             <button
               type="button"
@@ -836,14 +867,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteCollection(activeCollection.id)}
-                        aria-label={`Xóa bộ sưu tập ${activeCollection.name}`}
-                        className="p-1.5 rounded-xl text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <TwoTapDeleteButton
+                        variant="icon"
+                        title={`Xóa bộ sưu tập ${activeCollection.name}`}
+                        onConfirmDelete={() => handleDeleteCollection(activeCollection.id)}
+                      />
                     </div>
                   </div>
 
@@ -1009,107 +1037,6 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             {filteredAndSortedBooks.map((book) => renderCompactBookCard(book))}
           </div>
         )}
-      </section>
-
-      {/* 3. XUỐNG PHÍA DƯỚI: THỜI GIAN ĐỌC & LƯU TRỮ ZIP GỌN 1 DÒNG */}
-      <section
-        aria-label="Thời gian đọc và kho lưu trữ"
-        className="perf-section pt-4 border-t border-stone-200 dark:border-stone-800 space-y-3"
-      >
-        {/* Weekly / Monthly Reading Time Chart */}
-        <div
-          aria-label="Thống kê thời gian đọc sách"
-          className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-4 flex flex-col justify-between space-y-3"
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-stone-800 dark:text-stone-200">
-                <Clock className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
-                <span>Thời gian đọc</span>
-              </div>
-              <div className="text-lg sm:text-xl font-display font-bold text-stone-900 dark:text-stone-100 tabular-nums mt-0.5">
-                {chartData.totalMinutes} phút
-              </div>
-            </div>
-
-            <div
-              ref={chartToggleRef}
-              className="relative inline-flex p-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium gap-1"
-            >
-              <LiquidDropThumb
-                thumb={chartThumb}
-                isGliding={chartGliding}
-                roundedClass="rounded-full"
-              />
-              <button
-                type="button"
-                data-liquid-key="week"
-                onClick={() => setChartPeriod('week')}
-                className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
-                  chartPeriod === 'week'
-                    ? 'text-amber-800 dark:text-amber-300 font-semibold'
-                    : 'text-stone-600 dark:text-stone-300'
-                }`}
-              >
-                Tuần
-              </button>
-              <button
-                type="button"
-                data-liquid-key="month"
-                onClick={() => setChartPeriod('month')}
-                className={`relative z-10 ios-liquid-pill px-3 py-1 rounded-full ${
-                  chartPeriod === 'month'
-                    ? 'text-amber-800 dark:text-amber-300 font-semibold'
-                    : 'text-stone-600 dark:text-stone-300'
-                }`}
-              >
-                Tháng
-              </button>
-            </div>
-          </div>
-
-          <div
-            className="grid items-end gap-2 h-24 pt-2"
-            style={{ gridTemplateColumns: `repeat(${chartData.buckets.length}, minmax(0, 1fr))` }}
-          >
-            {chartData.buckets.map((bucket) => {
-              const pct = Math.max(8, Math.round((bucket.minutes / maxBucketMinutes) * 100));
-              return (
-                <div key={bucket.label} className="flex flex-col items-center justify-end h-full gap-1">
-                  <span className="text-[10px] text-stone-500 tabular-nums">{bucket.minutes}p</span>
-                  <div className="w-full flex-1 flex items-end">
-                    <div
-                      className="w-full rounded-t-md bg-amber-800/85 dark:bg-amber-600/85 transition-all"
-                      style={{ height: `${pct}%` }}
-                    />
-                  </div>
-                  <span className="text-[10px] text-stone-500 whitespace-nowrap">
-                    {bucket.label === 'Hôm nay' ? 'Nay' : bucket.label}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Concise 1-Line ZIP Archive Row */}
-        <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-stone-200 dark:border-stone-800 bg-white/80 dark:bg-[#16181C]">
-          <div className="flex items-center gap-2 min-w-0">
-            <FolderOpen className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-            <span className="text-[11.5px] font-semibold text-stone-900 dark:text-stone-100 truncate">
-              Lưu trữ kho ({books.length} sách)
-            </span>
-          </div>
-          <button
-            type="button"
-            disabled={isExportingArchive || books.length === 0}
-            onClick={handleExportLibraryZip}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-amber-800 text-amber-900 dark:text-amber-300 text-[11px] font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/30 whitespace-nowrap disabled:opacity-40 active:scale-95 transition-transform shrink-0"
-          >
-            <Download className="w-3 h-3 shrink-0" />
-            <span>{isExportingArchive ? 'Đang nén...' : 'Xuất .ZIP'}</span>
-          </button>
-        </div>
       </section>
 
       {/* Three-Dot Corner Action Sheet Menu for Selected Book */}
@@ -1286,18 +1213,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
                   <div className="my-1 border-t border-stone-200/80 dark:border-stone-800" />
 
-                  <button
-                    type="button"
-                    onClick={() => {
+                  <TwoTapDeleteButton
+                    variant="row"
+                    label="Xóa sách khỏi tủ"
+                    confirmLabel="Ấn lần nữa để xác nhận xóa sách"
+                    onConfirmDelete={() => {
                       const id = menuContext.book.id;
                       setMenuContext(null);
                       onDeleteBook(id);
                     }}
-                    className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/40 text-left font-medium text-red-600 dark:text-red-400"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    <span>Xóa sách khỏi tủ</span>
-                  </button>
+                  />
                 </div>
               ) : menuSubView === 'clean' && cleanReport ? (
                 <div className="p-3.5 pb-5 sm:pb-3.5 space-y-3 text-xs">

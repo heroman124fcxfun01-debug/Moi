@@ -1,0 +1,139 @@
+[
+  {
+    "id": "cds-hanh-trinh-phuong-dong",
+    "title": "Hành Trình Về Phương Đông (Bản Cộng Đồng)",
+    "author": "Baird T. Spalding",
+    "uploaderAlias": "Độc Giả Ẩn Danh #104",
+    "category": "Tản văn & Triết lý",
+    "description": "Bản biên tập sạch lỗi chính tả, tối ưu ngắt câu cho giọng đọc AI tiểu thuyết & tản văn.",
+    "coverGradient": "from-amber-800 via-stone-800 to-zinc-900",
+    "downloads": 1284,
+    "uploadedAt": 1794153163267,
+    "chapters": [
+      {
+        "title": "Chương 1: Khởi hành giữa mùa gió chướng",
+        "paragraphs": [
+          "Đoàn thám hiểm rời bến cảng vào một buổi sáng sương giăng trắng xóa trên mặt biển Ấn Độ Dương.",
+          "Không ai trong chúng tôi nghĩ rằng những trang ghi chép giản dị ban đầu lại mở ra một thế giới tĩnh lặng đến thế.",
+          "\"Khi tâm trí thôi ồn ào, từng nhịp thở cũng trở thành một trang sách,\" vị đạo sư mỉm cười nói."
+        ]
+      },
+      {
+        "title": "Chương 2: Đêm bên chân dãy Himalaya",
+        "paragraphs": [
+          "Gió lạnh từ đỉnh tuyết tràn xuống thung lũng, nhưng ánh lửa nhỏ trong căn nhà đá lại ấm áp lạ thường.",
+          "Chúng tôi ngồi nghe tiếng chuông đồng ngân vang, cảm nhận thời gian như chậm lại từng nhịp."
+        ]
+      }
+    ],
+    "comments": [
+      {
+        "id": "cmt-seed-1",
+        "authorAlias": "Người Đọc Đêm",
+        "content": "Bản này ngắt đoạn cực gọn, bật giọng Tản văn nghe trước khi ngủ rất êm.",
+        "rating": 5,
+        "createdAt": 1794844363267
+      },
+      {
+        "id": "cmt-seed-2",
+        "authorAlias": "Ẩn Danh #892",
+        "content": "Cảm ơn bác đã chia sẻ, tải về BOOKHAD đọc offline trên máy mượt lắm!",
+        "rating": 5,
+        "createdAt": 1795103563267
+      }
+    ]
+  },
+  {
+    "id": "cds-kiem-lai-tien-hiep",
+    "title": "Kiếm Lai - Khởi Nguyên Thôn Quê",
+    "author": "Phong Hỏa Hí Chư Hầu",
+    "uploaderAlias": "Tàng Kinh Các",
+    "category": "Tiên hiệp & Kiếm hiệp",
+    "description": "Tuyển tập các chương mở đầu đã lọc sạch quảng cáo web truyện, giữ trọn hội thoại để AI phân vai nhân vật.",
+    "coverGradient": "from-slate-800 via-indigo-900 to-zinc-950",
+    "downloads": 2540,
+    "uploadedAt": 1794498763267,
+    "chapters": [
+      {
+        "title": "Chương 1: Ngõ nhỏ Nê Bình",
+        "paragraphs": [
+          "Cậu thiếu niên gầy gò ngồi trước hiên nhà gốm cũ, đôi mắt sáng quắc nhìn ra con ngõ lát đá xanh.",
+          "\"Đừng sợ gió lớn,\" lão thợ gốm khẽ gõ tẩu thuốc, \"người rèn kiếm giỏi nhất chưa bao giờ sợ lửa.\"",
+          "Ngoài đầu ngõ, tiếng vó ngựa đột ngột vang dội xé tan buổi chiều yên ả của trấn nhỏ."
+        ]
+      },
+      {
+        "title": "Chương 2: Lời hẹn dưới tán hòe",
+        "paragraphs": [
+          "Trần Bình An siết chặt quai dép cỏ, bước từng bước vững chãi qua cây cầu đá bắc ngang con suối cạn.",
+          "\"Đã quyết chí đi đường xa, một bước cũng không được lùi!\" cậu nói nhỏ nhưng đầy kiên định."
+        ]
+      }
+    ],
+    "comments": [
+      {
+        "id": "cmt-seed-3",
+        "authorAlias": "Kiếm Khách Ẩn Danh",
+        "content": "Nghe bằng giọng Tiểu thuyết AI nhấn nhá đoạn đối thoại cực kỳ cuốn!",
+        "rating": 5,
+        "createdAt": 1795017163267
+      }
+    ]
+  },
+  {
+    "id": "cds-thoi-quen-nguyen-tu",
+    "title": "Ghi Chép Thực Hành: 1% Mỗi Ngày",
+    "author": "Ban Biên Tập Cộng Đồng",
+    "uploaderAlias": "Học Tập Tự Do",
+    "category": "Self-help & Học tập",
+    "description": "Tóm lược chuyên sâu các nguyên lý xây dựng thói quen bền vững, phù hợp phong cách Giọng Học tập.",
+    "coverGradient": "from-emerald-800 via-teal-900 to-zinc-950",
+    "downloads": 942,
+    "uploadedAt": 1794757963267,
+    "chapters": [
+      {
+        "title": "Chương 1: Sức mạnh của những thay đổi nhỏ",
+        "paragraphs": [
+          "Nếu mỗi ngày bạn tốt hơn chỉ 1%, sau một năm bạn sẽ tiến bộ gấp 37 lần so với xuất phát điểm.",
+          "Thói quen là lãi kép của quá trình phát triển bản thân. Đừng đánh giá thấp 15 phút đọc sách mỗi tối."
+        ]
+      },
+      {
+        "title": "Chương 2: Thiết kế môi trường không ma sát",
+        "paragraphs": [
+          "Ý chí có giới hạn, nhưng môi trường thì hoạt động tự động. Hãy đặt cuốn sách ngay nơi dễ nhìn thấy nhất."
+        ]
+      }
+    ],
+    "comments": [
+      {
+        "id": "cmt-seed-4",
+        "authorAlias": "Sinh Viên Bách Khoa",
+        "content": "Ngắn gọn, dễ áp dụng, rất hợp bật nghe lúc đi bộ buổi sáng.",
+        "rating": 4,
+        "createdAt": 1795103563267
+      }
+    ]
+  },
+  {
+    "id": "cds-nhung-la-thu-tu-mua-thu",
+    "title": "Những Lá Thư Gửi Mùa Thu",
+    "author": "Minh An",
+    "uploaderAlias": "Mây Trắng",
+    "category": "Tản văn & Tình cảm",
+    "description": "Tuyển tập tản văn nhẹ nhàng về ký ức phố cũ, mùi hoa sữa và những chuyến tàu đêm.",
+    "coverGradient": "from-rose-900 via-amber-900 to-stone-950",
+    "downloads": 618,
+    "uploadedAt": 1794930763267,
+    "chapters": [
+      {
+        "title": "Thư số 1: Chiều mưa sân ga",
+        "paragraphs": [
+          "Có những cơn mưa mùa thu rơi rất khẽ, đủ để người ta nhớ lại một cái tên đã cất kỹ suốt nhiều năm.",
+          "Tiếng còi tàu vọng lại từ cuối đường ray, mang theo hơi ấm của tách trà gừng còn nghi ngút khói."
+        ]
+      }
+    ],
+    "comments": []
+  }
+]

@@ -355,6 +355,182 @@ export function getMonthlyReadingChart(
   return { buckets, totalMinutes: Math.round(totalSeconds / 60) };
 }
 
+export interface CompactHoursDisplay {
+  compact: string;
+  exact: string;
+  totalHours: number;
+}
+
+/**
+ * Formats total reading seconds into compact hours per BOOKHAD spec:
+ * - < 1,000h: e.g. 0.5h, 12.4h, 100h
+ * - >= 1,000h & < 1,000,000h: e.g. 1kh, 10kh, 10.5kh
+ * - >= 1,000,000h: e.g. 1mh, 10mh
+ * Plus exact detail string shown when the user taps the total hours value (e.g. "10.500h (10.500 giờ 0 phút)").
+ */
+export function formatCompactHours(totalSeconds: number): CompactHoursDisplay {
+  const safeSeconds = Math.max(0, Math.round(totalSeconds));
+  const totalHoursRaw = safeSeconds / 3600;
+  const wholeHours = Math.floor(safeSeconds / 3600);
+  const remMinutes = Math.floor((safeSeconds % 3600) / 60);
+
+  const trimDecimal = (n: number, digits = 1): string => {
+    const fixed = n.toFixed(digits);
+    return fixed.replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+  };
+
+  let compact: string;
+  if (totalHoursRaw >= 1_000_000) {
+    compact = `${trimDecimal(totalHoursRaw / 1_000_000, 1)}mh`;
+  } else if (totalHoursRaw >= 1_000) {
+    compact = `${trimDecimal(totalHoursRaw / 1_000, 1)}kh`;
+  } else if (totalHoursRaw >= 100) {
+    compact = `${Math.round(totalHoursRaw)}h`;
+  } else if (totalHoursRaw >= 1) {
+    compact = `${trimDecimal(totalHoursRaw, 1)}h`;
+  } else if (safeSeconds === 0) {
+    compact = '0h';
+  } else {
+    compact = `${trimDecimal(totalHoursRaw, 1)}h`;
+  }
+
+  const formattedWhole = wholeHours.toLocaleString('vi-VN');
+  const exact =
+    remMinutes > 0
+      ? `${formattedWhole}h ${remMinutes}p`
+      : `${formattedWhole}h`;
+
+  return {
+    compact,
+    exact,
+    totalHours: totalHoursRaw,
+  };
+}
+
+export function formatShortHours(seconds: number): string {
+  const safe = Math.max(0, seconds);
+  const hours = safe / 3600;
+  if (hours === 0) return '0h';
+  if (hours >= 1000) return formatCompactHours(safe).compact;
+  if (hours >= 10) return `${Math.round(hours)}h`;
+  const rounded = Math.round(hours * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}h`;
+}
+
+export interface ReadingTimeSummary {
+  totalSeconds: number;
+  totalCompact: string;
+  totalExact: string;
+  todaySeconds: number;
+  weekSeconds: number;
+  thisMonthSeconds: number;
+  prevMonthSeconds: number;
+  todayLabel: string;
+  weekLabel: string;
+  thisMonthLabel: string;
+  prevMonthLabel: string;
+  dailyAverageSeconds: number;
+  dailyAverageLabel: string;
+}
+
+/**
+ * Computes the 3-line Library Reading Time summary:
+ * - Line 1: Total reading time (compact + exact detail on tap)
+ * - Line 2: Day / Week (last 7 days) / This Month / Previous Calendar Month
+ * - Line 3: Daily average calculated accurately up to the current time of day
+ */
+export function computeReadingTimeSummary(
+  logs: ReadingLogEntry[],
+  referenceDate = new Date()
+): ReadingTimeSummary {
+  const todayKey = formatIsoDateLocal(referenceDate);
+  const refYear = referenceDate.getFullYear();
+  const refMonth = referenceDate.getMonth(); // 0..11
+
+  const prevMonthDate = new Date(refYear, refMonth - 1, 1);
+  const prevYear = prevMonthDate.getFullYear();
+  const prevMonth = prevMonthDate.getMonth();
+
+  const weekKeys = new Set<string>();
+  for (let offset = 0; offset < 7; offset++) {
+    const d = new Date(referenceDate);
+    d.setDate(d.getDate() - offset);
+    weekKeys.add(formatIsoDateLocal(d));
+  }
+
+  let totalSeconds = 0;
+  let todaySeconds = 0;
+  let weekSeconds = 0;
+  let thisMonthSeconds = 0;
+  let prevMonthSeconds = 0;
+  let earliestDate: Date | null = null;
+
+  for (const entry of logs) {
+    const secs = Math.max(0, Number(entry.seconds) || 0);
+    totalSeconds += secs;
+
+    if (entry.date === todayKey) {
+      todaySeconds += secs;
+    }
+    if (weekKeys.has(entry.date)) {
+      weekSeconds += secs;
+    }
+
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(entry.date);
+    if (match) {
+      const y = Number(match[1]);
+      const m = Number(match[2]) - 1;
+      const d = Number(match[3]);
+      if (y === refYear && m === refMonth) {
+        thisMonthSeconds += secs;
+      } else if (y === prevYear && m === prevMonth) {
+        prevMonthSeconds += secs;
+      }
+      if (secs > 0) {
+        const entryDate = new Date(y, m, d, 0, 0, 0, 0);
+        if (!earliestDate || entryDate.getTime() < earliestDate.getTime()) {
+          earliestDate = entryDate;
+        }
+      }
+    }
+  }
+
+  // Daily average up to the exact current time of day:
+  // Number of elapsed days = whole days since earliest log + fraction of today elapsed so far.
+  const todayStart = new Date(refYear, refMonth, referenceDate.getDate(), 0, 0, 0, 0);
+  const fractionOfTodayElapsed = Math.max(
+    1 / 24, // prevent extreme spikes right at 00:01
+    Math.min(1, (referenceDate.getTime() - todayStart.getTime()) / 86_400_000)
+  );
+
+  let elapsedDays = fractionOfTodayElapsed;
+  if (earliestDate && earliestDate.getTime() < todayStart.getTime()) {
+    const wholePastDays = Math.round(
+      (todayStart.getTime() - earliestDate.getTime()) / 86_400_000
+    );
+    elapsedDays = wholePastDays + fractionOfTodayElapsed;
+  }
+
+  const dailyAverageSeconds = totalSeconds > 0 ? totalSeconds / elapsedDays : 0;
+  const totalDisplay = formatCompactHours(totalSeconds);
+
+  return {
+    totalSeconds,
+    totalCompact: totalDisplay.compact,
+    totalExact: totalDisplay.exact,
+    todaySeconds,
+    weekSeconds,
+    thisMonthSeconds,
+    prevMonthSeconds,
+    todayLabel: formatShortHours(todaySeconds),
+    weekLabel: formatShortHours(weekSeconds),
+    thisMonthLabel: formatShortHours(thisMonthSeconds),
+    prevMonthLabel: formatShortHours(prevMonthSeconds),
+    dailyAverageSeconds,
+    dailyAverageLabel: formatShortHours(dailyAverageSeconds),
+  };
+}
+
 export function createSeedReadingLogs(referenceDate = new Date()): ReadingLogEntry[] {
   const sampleMinutes = [22, 35, 18, 42, 28, 50, 31];
   const logs: ReadingLogEntry[] = [];

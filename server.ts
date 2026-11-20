@@ -4,6 +4,13 @@ import dotenv from 'dotenv';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { extractWebChapterFromHtml } from './server/webScraper.ts';
 import { renderDemoChapterHtml } from './server/demoNovel.ts';
+import {
+  addCongDongComment,
+  createCongDongBook,
+  getCongDongBookById,
+  incrementCongDongDownload,
+  listCongDongBooks,
+} from './server/congdongsach.ts';
 
 dotenv.config();
 
@@ -956,6 +963,267 @@ async function startServer() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi phân tích tệp giọng nói ngoài.';
       res.status(500).json({ error: msg });
+    }
+  });
+
+  // =========================================================================
+  // CONGDONGSACH — Anonymous Community Book Sharing Hub (/api/congdongsach/*)
+  // =========================================================================
+  app.get('/api/congdongsach/books', (req, res) => {
+    const q = String(req.query.q || '');
+    res.json({ books: listCongDongBooks(q) });
+  });
+
+  app.get('/api/congdongsach/books/:id', (req, res) => {
+    const book = getCongDongBookById(req.params.id);
+    if (!book) {
+      res.status(404).json({ error: 'Không tìm thấy sách trên congdongsach.' });
+      return;
+    }
+    res.json({ book });
+  });
+
+  app.post('/api/congdongsach/books', (req, res) => {
+    const body = req.body as {
+      title?: string;
+      author?: string;
+      uploaderAlias?: string;
+      category?: string;
+      description?: string;
+      coverGradient?: string;
+      coverImage?: string;
+      chapters?: Array<{ title?: string; paragraphs?: string[] }>;
+    };
+    if (!body?.title?.trim()) {
+      res.status(400).json({ error: 'Vui lòng nhập tên sách trước khi đăng lên congdongsach.' });
+      return;
+    }
+    if (!Array.isArray(body.chapters) || body.chapters.length === 0) {
+      res.status(400).json({ error: 'Sách cần có ít nhất 1 chương nội dung để chia sẻ.' });
+      return;
+    }
+    const created = createCongDongBook({
+      title: body.title,
+      author: body.author,
+      uploaderAlias: body.uploaderAlias,
+      category: body.category,
+      description: body.description,
+      coverGradient: body.coverGradient,
+      coverImage: body.coverImage,
+      chapters: body.chapters.map((c, idx) => ({
+        title: c.title || `Chương ${idx + 1}`,
+        paragraphs: Array.isArray(c.paragraphs) ? c.paragraphs : [],
+      })),
+    });
+    res.status(201).json({ book: created });
+  });
+
+  app.get('/api/congdongsach/books/:id/download', (req, res) => {
+    const book = incrementCongDongDownload(req.params.id);
+    if (!book) {
+      res.status(404).json({ error: 'Không tìm thấy sách để tải về.' });
+      return;
+    }
+    res.json({ book });
+  });
+
+  app.post('/api/congdongsach/books/:id/comments', (req, res) => {
+    const { authorAlias, content, rating } = req.body as {
+      authorAlias?: string;
+      content?: string;
+      rating?: number;
+    };
+    if (!content?.trim()) {
+      res.status(400).json({ error: 'Vui lòng nhập nội dung bình luận.' });
+      return;
+    }
+    const comment = addCongDongComment(req.params.id, {
+      authorAlias,
+      content,
+      rating,
+    });
+    if (!comment) {
+      res.status(404).json({ error: 'Không tìm thấy sách để bình luận.' });
+      return;
+    }
+    res.status(201).json({ comment });
+  });
+
+  // =========================================================================
+  // IN-APP EMBEDDED BROWSER PROXY (/api/web/browse?url=...)
+  // Renders web pages safely inside BOOKHAD's in-app browser window while
+  // reporting the exact live URL back to BOOKHAD via postMessage so
+  // "Bắt đầu AI quét tự động" immediately crawls whatever page the user opened.
+  // =========================================================================
+  app.get('/api/web/browse', async (req, res) => {
+    const rawUrl = String(req.query.url || '').trim();
+    const escapeHtml = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    // Clean built-in start portal inside the embedded browser window when URL is empty
+    if (!rawUrl) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(`<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trình duyệt BOOKHAD</title>
+<style>
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f6f1; color: #1c1917; padding: 20px 16px 40px; }
+  .card { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid #e7e5e4; border-radius: 18px; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,0.05); }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  p { font-size: 12px; color: #57534e; margin: 0 0 14px; line-height: 1.5; }
+  form { display: flex; gap: 6px; margin-bottom: 14px; }
+  input { flex: 1; padding: 10px 12px; border-radius: 12px; border: 1px solid #d6d3d1; font-size: 13px; }
+  button { padding: 10px 14px; border-radius: 12px; border: 0; background: #92400e; color: #fff; font-weight: 600; font-size: 12px; cursor: pointer; }
+  .links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  a.tile { display: block; padding: 10px 12px; border-radius: 12px; background: #fafaf9; border: 1px solid #e7e5e4; color: #292524; text-decoration: none; font-size: 12px; font-weight: 600; }
+  a.tile span { display: block; font-size: 10px; font-weight: 400; color: #78716c; margin-top: 2px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Trình duyệt tìm truyện BOOKHAD</h1>
+    <p>Nhập địa chỉ trang web truyện hoặc từ khóa tìm kiếm ngay tại đây. Khi mở tới Chương 1, bấm <b>Bắt đầu AI quét tự động</b> trên thanh phía trên để AI tự lướt trang và lưu sách.</p>
+    <form id="navForm">
+      <input id="q" type="text" placeholder="Nhập URL (https://...) hoặc tên truyện cần tìm..." autocomplete="off" />
+      <button type="submit">Đi tới</button>
+    </form>
+    <div class="links">
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('/demo-web-book/chuong-1')}">Truyện Mẫu AI (Chương 1)<span>Thử ngay AI quét tự động</span></a>
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://vi.wikipedia.org/wiki/V%C4%83n_h%E1%BB%8Dc_Vi%E1%BB%87t_Nam')}">Wikipedia Văn học<span>Đọc & quét bài viết mở</span></a>
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://html.duckduckgo.com/html/?q=doc+truyen+chu+online')}">Tìm truyện chữ Online<span>Tìm kiếm trang truyện</span></a>
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://gutenberg.org/')}">Project Gutenberg<span>Kho sách mở quốc tế</span></a>
+    </div>
+  </div>
+  <script>
+    document.getElementById('navForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var val = (document.getElementById('q').value || '').trim();
+      if (!val) return;
+      var target = /^https?:\\/\\//i.test(val) || val.startsWith('/')
+        ? val
+        : (val.indexOf('.') !== -1 && val.indexOf(' ') === -1
+            ? 'https://' + val
+            : 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(val));
+      window.location.href = '/api/web/browse?url=' + encodeURIComponent(target);
+    });
+    window.parent.postMessage({ type: 'BOOKHAD_BROWSER_URL', url: '', title: 'Trình duyệt BOOKHAD' }, '*');
+  </script>
+</body>
+</html>`);
+      return;
+    }
+
+    try {
+      const normalizedInput =
+        rawUrl.startsWith('/') || /^https?:\/\//i.test(rawUrl)
+          ? rawUrl
+          : rawUrl.includes('.') && !rawUrl.includes(' ')
+          ? `https://${rawUrl}`
+          : `https://html.duckduckgo.com/html/?q=${encodeURIComponent(rawUrl)}`;
+
+      const resolvedUrl = normalizedInput.startsWith('/')
+        ? `http://127.0.0.1:${PORT}${normalizedInput}`
+        : normalizedInput;
+
+      const parsedUrl = new URL(resolvedUrl);
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+        res.status(400).send('<p>Chỉ hỗ trợ địa chỉ HTTP/HTTPS.</p>');
+        return;
+      }
+
+      const upstream = await fetch(parsedUrl.toString(), {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+
+      const finalUrl = upstream.url || parsedUrl.toString();
+      const displayUrl = normalizedInput.startsWith('/') ? normalizedInput : finalUrl;
+      const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        res.setHeader('Content-Type', contentType);
+        res.send(buf);
+        return;
+      }
+
+      let html = await upstream.text();
+      // Remove frame-busting meta tags so the page stays cleanly inside BOOKHAD's embedded window
+      html = html.replace(/<meta[^>]+http-equiv=["']?(?:Content-Security-Policy|X-Frame-Options)["']?[^>]*>/gi, '');
+
+      const bridgeScript = `<base href="${escapeHtml(finalUrl)}" />
+<script>
+(function(){
+  var CURRENT_URL = ${JSON.stringify(displayUrl)};
+  var FINAL_URL = ${JSON.stringify(finalUrl)};
+  function reportUrl() {
+    try {
+      window.parent.postMessage({
+        type: 'BOOKHAD_BROWSER_URL',
+        url: CURRENT_URL,
+        title: document.title || CURRENT_URL
+      }, '*');
+    } catch (e) {}
+  }
+  reportUrl();
+  window.addEventListener('DOMContentLoaded', reportUrl);
+  document.addEventListener('click', function(e) {
+    var anchor = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!anchor) return;
+    var rawHref = anchor.getAttribute('href') || '';
+    if (!rawHref || rawHref.startsWith('#') || rawHref.startsWith('javascript:')) return;
+    e.preventDefault();
+    try {
+      var abs = new URL(rawHref, FINAL_URL).toString();
+      var localOrigin = 'http://127.0.0.1:${PORT}';
+      var nextParam = abs.startsWith(localOrigin) ? abs.slice(localOrigin.length) : abs;
+      window.location.href = '/api/web/browse?url=' + encodeURIComponent(nextParam);
+    } catch (err) {}
+  }, true);
+  document.addEventListener('submit', function(e) {
+    var form = e.target;
+    if (!form || (form.method && form.method.toLowerCase() === 'post')) return;
+    e.preventDefault();
+    try {
+      var action = form.getAttribute('action') || FINAL_URL;
+      var abs = new URL(action, FINAL_URL);
+      var fd = new FormData(form);
+      fd.forEach(function(v, k){ abs.searchParams.set(k, String(v)); });
+      window.location.href = '/api/web/browse?url=' + encodeURIComponent(abs.toString());
+    } catch (err) {}
+  }, true);
+})();
+</script>`;
+
+      if (/<head[^>]*>/i.test(html)) {
+        html = html.replace(/<head[^>]*>/i, (m) => `${m}\n${bridgeScript}`);
+      } else {
+        html = `${bridgeScript}\n${html}`;
+      }
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Không tải được trang web.';
+      res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(`<!doctype html><html lang="vi"><body style="font-family:sans-serif;padding:24px;background:#fafaf9;color:#1c1917;">
+        <h3 style="margin:0 0 8px;">Không mở được trang web này</h3>
+        <p style="font-size:13px;color:#57534e;">${escapeHtml(msg)}</p>
+        <a href="/api/web/browse" style="display:inline-block;margin-top:12px;padding:8px 14px;background:#92400e;color:#fff;border-radius:10px;text-decoration:none;font-size:12px;">Quay lại trang tìm kiếm</a>
+      </body></html>`);
     }
   });
 

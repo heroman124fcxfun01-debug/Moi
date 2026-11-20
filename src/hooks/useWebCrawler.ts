@@ -377,11 +377,17 @@ export function useWebCrawler(
     [fetchPageData, maxPages, triggerAutoSaveAndEpub]
   );
 
-  const startAiAutoScanAndSave = useCallback(() => {
-    const start = urlInput.trim();
-    if (!start) return;
-    runCrawlerLoop(start, true);
-  }, [urlInput, runCrawlerLoop]);
+  const startAiAutoScanAndSave = useCallback(
+    (overrideStartUrl?: string) => {
+      const start = (typeof overrideStartUrl === 'string' ? overrideStartUrl : urlInput).trim();
+      if (!start) return;
+      if (typeof overrideStartUrl === 'string' && overrideStartUrl.trim()) {
+        setUrlInput(start);
+      }
+      runCrawlerLoop(start, true);
+    },
+    [urlInput, runCrawlerLoop]
+  );
 
   const resumeAfterIssue = useCallback(() => {
     const fixedUrl = urlInput.trim();

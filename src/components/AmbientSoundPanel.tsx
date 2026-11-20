@@ -5,7 +5,6 @@ import {
   Play,
   Search,
   Square,
-  Trash2,
   Upload,
   Volume2,
 } from 'lucide-react';
@@ -18,6 +17,9 @@ import {
 } from '../utils/ambientSoundEngine';
 import { readFileAsDataUrl } from '../utils/fileHelpers';
 import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
+import { useLongPress } from '../hooks/useLongPress';
+import { LongPressActionSheet } from './LongPressActionSheet';
+import { TwoTapDeleteButton } from './TwoTapDeleteButton';
 
 interface AmbientSoundPanelProps {
   customTracks: CustomAmbientTrack[];
@@ -25,6 +27,95 @@ interface AmbientSoundPanelProps {
   onDeleteCustomTrack: (trackId: string) => Promise<void>;
   compact?: boolean;
 }
+
+interface CustomTrackRowProps {
+  track: CustomAmbientTrack;
+  trackVol: number | undefined;
+  isPlaying: boolean;
+  onTogglePlay: () => void;
+  onLongPressOpen: () => void;
+  onDelete: () => void;
+}
+
+const CustomTrackRow: React.FC<CustomTrackRowProps> = ({
+  track,
+  trackVol,
+  isPlaying,
+  onTogglePlay,
+  onLongPressOpen,
+  onDelete,
+}) => {
+  const { handlers, consumeLongPressClick } = useLongPress({
+    onLongPress: onLongPressOpen,
+  });
+
+  return (
+    <div
+      className={`p-3 rounded-xl border transition-colors space-y-2 ${
+        isPlaying
+          ? 'border-amber-700 bg-amber-50/70 dark:bg-amber-950/30'
+          : 'border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          {...handlers}
+          onClick={() => {
+            if (consumeLongPressClick()) return;
+            onTogglePlay();
+          }}
+          title="Nhấn để phát · Nhấn giữ tên để đổi tên hoặc xóa"
+          className="flex items-center gap-2.5 min-w-0 flex-1 text-left select-none"
+        >
+          <span
+            className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+              isPlaying
+                ? 'bg-amber-800 text-white'
+                : 'bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300'
+            }`}
+          >
+            {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          </span>
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
+              {track.name}
+            </div>
+            <div className="text-[10px] text-stone-500 truncate">
+              {track.fileName} · Nhấn giữ để đổi tên / xóa
+            </div>
+          </div>
+        </button>
+
+        <TwoTapDeleteButton
+          variant="icon"
+          title={`Xóa nhạc ${track.name}`}
+          onConfirmDelete={onDelete}
+        />
+      </div>
+
+      {isPlaying && typeof trackVol === 'number' && (
+        <div className="space-y-1 text-[10px] text-stone-600 dark:text-stone-400 pt-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <span>Mức tiếng</span>
+            <span className="tabular-nums font-medium">{Math.round(trackVol * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(trackVol * 100)}
+            onChange={(e) =>
+              ambientSoundManager.setTrackVolume(track.id, Number(e.target.value) / 100)
+            }
+            aria-label={`Âm lượng ${track.name}`}
+            className="block w-full min-w-0 max-w-full accent-amber-800"
+          />
+        </div>
+      )}
+    </div>
+  );
+};
 
 type FilterTab = 'all' | AmbientSoundCategory | 'custom';
 
@@ -43,6 +134,7 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
   );
   const [searchQuery, setSearchQuery] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [actionTrack, setActionTrack] = useState<CustomAmbientTrack | null>(null);
 
   const [playbackSnap, setPlaybackSnap] = useState(() =>
     ambientSoundManager.getSnapshot()
@@ -238,87 +330,45 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
                 const trackVol = playbackSnap.activeVolumes[track.id];
                 const isPlaying = typeof trackVol === 'number';
                 return (
-                  <div
+                  <CustomTrackRow
                     key={track.id}
-                    className={`p-3 rounded-xl border transition-colors space-y-2 ${
-                      isPlaying
-                        ? 'border-amber-700 bg-amber-50/70 dark:bg-amber-950/30'
-                        : 'border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => ambientSoundManager.toggleCustomTrack(track)}
-                        className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
-                      >
-                        <span
-                          className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                            isPlaying
-                              ? 'bg-amber-800 text-white'
-                              : 'bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300'
-                          }`}
-                        >
-                          {isPlaying ? (
-                            <Pause className="w-3.5 h-3.5" />
-                          ) : (
-                            <Play className="w-3.5 h-3.5" />
-                          )}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
-                            {track.name}
-                          </div>
-                          <div className="text-[10px] text-stone-500 truncate">
-                            {track.fileName} · Lặp liên tục
-                          </div>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (isPlaying) ambientSoundManager.stopTrack(track.id);
-                          onDeleteCustomTrack(track.id);
-                        }}
-                        aria-label={`Xóa nhạc ${track.name}`}
-                        className="p-1.5 rounded-lg text-stone-400 hover:text-red-600"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    {isPlaying && (
-                      <div className="space-y-1 text-[10px] text-stone-600 dark:text-stone-400 pt-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>Mức tiếng</span>
-                          <span className="tabular-nums font-medium">
-                            {Math.round(trackVol * 100)}%
-                          </span>
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={Math.round(trackVol * 100)}
-                          onChange={(e) =>
-                            ambientSoundManager.setTrackVolume(
-                              track.id,
-                              Number(e.target.value) / 100
-                            )
-                          }
-                          aria-label={`Âm lượng ${track.name}`}
-                          className="block w-full min-w-0 accent-amber-800"
-                        />
-                      </div>
-                    )}
-                  </div>
+                    track={track}
+                    trackVol={trackVol}
+                    isPlaying={isPlaying}
+                    onTogglePlay={() => ambientSoundManager.toggleCustomTrack(track)}
+                    onLongPressOpen={() => setActionTrack(track)}
+                    onDelete={() => {
+                      if (isPlaying) ambientSoundManager.stopTrack(track.id);
+                      void onDeleteCustomTrack(track.id);
+                    }}
+                  />
                 );
               })}
             </div>
           )}
         </div>
       )}
+
+      {/* Long-Press Rename / 2-Tap Red Delete Sheet (strictly for imported custom tracks) */}
+      <LongPressActionSheet
+        open={Boolean(actionTrack)}
+        itemName={actionTrack?.name || ''}
+        itemSubtitle={actionTrack?.fileName}
+        categoryLabel="Âm thanh đã Import"
+        canDelete={true}
+        onClose={() => setActionTrack(null)}
+        onRename={async (nextName) => {
+          if (!actionTrack) return;
+          await onAddCustomTrack({ ...actionTrack, name: nextName });
+        }}
+        onDelete={async () => {
+          if (!actionTrack) return;
+          if (typeof playbackSnap.activeVolumes[actionTrack.id] === 'number') {
+            ambientSoundManager.stopTrack(actionTrack.id);
+          }
+          await onDeleteCustomTrack(actionTrack.id);
+        }}
+      />
 
       {/* 20 Built-in Ambient & Chill Presets */}
       {category !== 'custom' && (

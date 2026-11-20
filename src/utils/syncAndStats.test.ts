@@ -9,6 +9,8 @@ import {
   addReadingSecondsToLogs,
   getWeeklyReadingChart,
   getMonthlyReadingChart,
+  formatCompactHours,
+  computeReadingTimeSummary,
 } from './syncAndStats';
 import type { Book } from '../types/book';
 
@@ -105,4 +107,30 @@ test('reading time logs aggregate accurately for weekly and monthly charts', () 
   const monthly = getMonthlyReadingChart(logs, ref);
   assert.equal(monthly.buckets.length, 4);
   assert.equal(monthly.totalMinutes, 65);
+});
+
+test('formatCompactHours formats 100h, 1kh, 10.5kh (exact 10.500h), and 10mh cleanly', () => {
+  assert.equal(formatCompactHours(100 * 3600).compact, '100h');
+  assert.equal(formatCompactHours(1000 * 3600).compact, '1kh');
+  const tenPointFiveK = formatCompactHours(10500 * 3600);
+  assert.equal(tenPointFiveK.compact, '10.5kh');
+  assert.match(tenPointFiveK.exact, /10[.,]500h/);
+  assert.equal(formatCompactHours(10_000_000 * 3600).compact, '10mh');
+});
+
+test('computeReadingTimeSummary computes day, week, this month, previous month, and daily average up to current time of day', () => {
+  // Reference: 2026-11-18 at 12:00 noon (0.5 day elapsed today)
+  const ref = new Date(2026, 10, 18, 12, 0, 0);
+  let logs = addReadingSecondsToLogs([], '2026-11-18', 2 * 3600, 'b1'); // 2h today
+  logs = addReadingSecondsToLogs(logs, '2026-11-16', 3 * 3600, 'b1'); // 3h two days ago (in week + this month)
+  logs = addReadingSecondsToLogs(logs, '2026-10-20', 10 * 3600, 'b1'); // 10h previous month
+
+  const summary = computeReadingTimeSummary(logs, ref);
+  assert.equal(summary.todayLabel, '2h');
+  assert.equal(summary.weekLabel, '5h');
+  assert.equal(summary.thisMonthLabel, '5h');
+  assert.equal(summary.prevMonthLabel, '10h');
+  assert.equal(summary.totalCompact, '15h');
+  // Elapsed days from Oct 20 00:00 to Nov 18 12:00 = 29.5 days -> 15h / 29.5 = ~0.5h
+  assert.equal(summary.dailyAverageLabel, '0.5h');
 });

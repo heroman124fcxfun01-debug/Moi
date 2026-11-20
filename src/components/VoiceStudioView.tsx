@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Type,
   Upload,
-  Trash2,
   Volume2,
   Sparkles,
   Loader2,
@@ -59,6 +58,57 @@ import {
   unlockAudioPlaybackSync,
 } from '../utils/deviceTtsEngine';
 import { installOfflineVoicePack } from '../utils/offlineVoicePacks';
+import { useLongPress } from '../hooks/useLongPress';
+import { LongPressActionSheet } from './LongPressActionSheet';
+import { TwoTapDeleteButton } from './TwoTapDeleteButton';
+
+const VOICE_ALIAS_STORAGE_KEY = 'bookhad_voice_aliases_v1';
+const FONT_ALIAS_STORAGE_KEY = 'bookhad_font_aliases_v1';
+
+function loadAliasMap(storageKey: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAliasMap(storageKey: string, map: Record<string, string>) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(map));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+interface LongPressNameLabelProps {
+  text: string;
+  onLongPress: () => void;
+  style?: React.CSSProperties;
+  className?: string;
+}
+
+const LongPressNameLabel: React.FC<LongPressNameLabelProps> = ({
+  text,
+  onLongPress,
+  style,
+  className = '',
+}) => {
+  const { handlers } = useLongPress({ onLongPress });
+  return (
+    <div
+      {...handlers}
+      style={style}
+      title="Nhấn giữ (dí) để đổi tên hoặc xóa"
+      className={`select-none cursor-pointer ${className}`}
+    >
+      {text}
+    </div>
+  );
+};
 
 interface VoiceStudioViewProps {
   customFonts: CustomFontAsset[];
@@ -128,6 +178,53 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   const [deviceVoices, setDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voicePreviewNotice, setVoicePreviewNotice] = useState('');
   const [activeDisclosure, setActiveDisclosure] = useState<StudioDisclosureKey>(null);
+  const [voiceAliases, setVoiceAliases] = useState<Record<string, string>>(() =>
+    loadAliasMap(VOICE_ALIAS_STORAGE_KEY)
+  );
+  const [fontAliases, setFontAliases] = useState<Record<string, string>>(() =>
+    loadAliasMap(FONT_ALIAS_STORAGE_KEY)
+  );
+  const [longPressTarget, setLongPressTarget] = useState<{
+    kind: 'external-voice' | 'gemini-voice' | 'device-voice' | 'custom-font' | 'builtin-font';
+    id: string;
+    name: string;
+    subtitle?: string;
+    canDelete: boolean;
+    externalVoice?: ExternalVoiceAsset;
+    customFont?: CustomFontAsset;
+  } | null>(null);
+
+  const handleRenameLongPressTarget = async (nextName: string) => {
+    if (!longPressTarget) return;
+    if (longPressTarget.kind === 'external-voice' && longPressTarget.externalVoice) {
+      await onAddExternalVoice({ ...longPressTarget.externalVoice, name: nextName });
+      return;
+    }
+    if (longPressTarget.kind === 'gemini-voice' || longPressTarget.kind === 'device-voice') {
+      const updated = { ...voiceAliases, [longPressTarget.id]: nextName };
+      setVoiceAliases(updated);
+      saveAliasMap(VOICE_ALIAS_STORAGE_KEY, updated);
+      return;
+    }
+    if (longPressTarget.kind === 'custom-font' && longPressTarget.customFont) {
+      await onAddCustomFont({ ...longPressTarget.customFont, name: nextName });
+      return;
+    }
+    if (longPressTarget.kind === 'builtin-font') {
+      const updated = { ...fontAliases, [longPressTarget.id]: nextName };
+      setFontAliases(updated);
+      saveAliasMap(FONT_ALIAS_STORAGE_KEY, updated);
+    }
+  };
+
+  const handleDeleteLongPressTarget = async () => {
+    if (!longPressTarget || !longPressTarget.canDelete) return;
+    if (longPressTarget.kind === 'external-voice' && longPressTarget.externalVoice) {
+      await onDeleteExternalVoice(longPressTarget.externalVoice.id);
+    } else if (longPressTarget.kind === 'custom-font' && longPressTarget.customFont) {
+      await onDeleteCustomFont(longPressTarget.customFont.id);
+    }
+  };
 
   const toggleDisclosure = (key: Exclude<StudioDisclosureKey, null>) => {
     setActiveDisclosure((prev) => (prev === key ? null : key));
@@ -928,9 +1025,20 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                   }`}
                 >
                   <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
-                    <div className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1">
-                      {voice.name}
-                    </div>
+                    <LongPressNameLabel
+                      text={voice.name}
+                      onLongPress={() =>
+                        setLongPressTarget({
+                          kind: 'external-voice',
+                          id: key,
+                          name: voice.name,
+                          subtitle: voice.fileName,
+                          canDelete: true,
+                          externalVoice: voice,
+                        })
+                      }
+                      className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1"
+                    />
                     <div className="flex items-center gap-0.5 shrink-0">
                       {onSelectDefaultVoice && (
                         <button
@@ -999,14 +1107,12 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                               ? 'Giọng chế tác Studio'
                               : 'File voice gốc import')}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteExternalVoice(voice.id)}
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 hover:underline"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Xóa voice</span>
-                        </button>
+                        <TwoTapDeleteButton
+                          variant="pill"
+                          label="Xóa voice"
+                          confirmLabel="Xác nhận xóa?"
+                          onConfirmDelete={() => onDeleteExternalVoice(voice.id)}
+                        />
                       </div>
                       <div className="text-[11px] text-stone-500 truncate">
                         {voice.fileName}
@@ -1089,6 +1195,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
 
             {GEMINI_VOICES.map((gv) => {
               const key = `gemini:${gv.name}`;
+              const displayLabel = voiceAliases[key] || gv.label;
               const isSelected = activeDefaultVoice.id === key;
               const isExpanded = Boolean(expandedVoiceIds[key]);
               return (
@@ -1101,9 +1208,19 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                   }`}
                 >
                   <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
-                    <div className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1">
-                      {gv.label}
-                    </div>
+                    <LongPressNameLabel
+                      text={displayLabel}
+                      onLongPress={() =>
+                        setLongPressTarget({
+                          kind: 'gemini-voice',
+                          id: key,
+                          name: displayLabel,
+                          subtitle: `Voice Google AI gốc · ${gv.name}`,
+                          canDelete: false,
+                        })
+                      }
+                      className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1"
+                    />
                     <div className="flex items-center gap-0.5 shrink-0">
                       {onSelectDefaultVoice && (
                         <button
@@ -1112,11 +1229,11 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                             onSelectDefaultVoice({
                               source: 'gemini',
                               id: key,
-                              label: gv.label,
+                              label: displayLabel,
                               geminiVoice: gv.name,
                             })
                           }
-                          aria-label={isSelected ? `Đang chọn ${gv.label}` : `Chọn mặc định ${gv.label}`}
+                          aria-label={isSelected ? `Đang chọn ${displayLabel}` : `Chọn mặc định ${displayLabel}`}
                           title={isSelected ? 'Đang chọn mặc định' : 'Đặt làm mặc định'}
                           className={`touch-manipulation w-7 h-7 rounded-lg inline-flex items-center justify-center transition-transform active:scale-90 shrink-0 ${
                             isSelected
@@ -1178,6 +1295,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
 
             {deviceVoices.map((dv) => {
               const key = `browser:${dv.voiceURI}`;
+              const displayLabel = voiceAliases[key] || dv.name;
               const isSelected = activeDefaultVoice.id === key;
               const isExpanded = Boolean(expandedVoiceIds[key]);
               return (
@@ -1190,9 +1308,19 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                   }`}
                 >
                   <div className="px-2.5 py-1.5 flex items-center justify-between gap-1.5 min-w-0">
-                    <div className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1">
-                      {dv.name}
-                    </div>
+                    <LongPressNameLabel
+                      text={displayLabel}
+                      onLongPress={() =>
+                        setLongPressTarget({
+                          kind: 'device-voice',
+                          id: key,
+                          name: displayLabel,
+                          subtitle: `Giọng thiết bị gốc · ${dv.lang}`,
+                          canDelete: false,
+                        })
+                      }
+                      className="text-[11.5px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1"
+                    />
                     <div className="flex items-center gap-0.5 shrink-0">
                       {onSelectDefaultVoice && (
                         <button
@@ -1201,11 +1329,11 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                             onSelectDefaultVoice({
                               source: 'browser',
                               id: key,
-                              label: dv.name,
+                              label: displayLabel,
                               browserVoiceURI: dv.voiceURI,
                             })
                           }
-                          aria-label={isSelected ? `Đang chọn ${dv.name}` : `Chọn mặc định ${dv.name}`}
+                          aria-label={isSelected ? `Đang chọn ${displayLabel}` : `Chọn mặc định ${displayLabel}`}
                           title={isSelected ? 'Đang chọn mặc định' : 'Đặt làm mặc định'}
                           className={`touch-manipulation w-7 h-7 rounded-lg inline-flex items-center justify-center transition-transform active:scale-90 shrink-0 ${
                             isSelected
@@ -1335,12 +1463,32 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                   }`}
                 >
                   <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 min-w-0">
-                    <div
+                    <LongPressNameLabel
+                      text={
+                        font.kind === 'imported'
+                          ? font.name
+                          : fontAliases[font.id] || font.name
+                      }
+                      onLongPress={() => {
+                        const matchedCustom =
+                          font.kind === 'imported' && font.customFontId
+                            ? customFonts.find((cf) => cf.id === font.customFontId)
+                            : undefined;
+                        setLongPressTarget({
+                          kind: matchedCustom ? 'custom-font' : 'builtin-font',
+                          id: font.id,
+                          name:
+                            font.kind === 'imported'
+                              ? font.name
+                              : fontAliases[font.id] || font.name,
+                          subtitle: font.origin,
+                          canDelete: Boolean(matchedCustom),
+                          customFont: matchedCustom,
+                        });
+                      }}
                       style={{ fontFamily: font.cssValue }}
                       className="text-[12px] font-semibold leading-snug text-stone-900 dark:text-stone-100 truncate min-w-0 flex-1"
-                    >
-                      {font.name}
-                    </div>
+                    />
 
                     <div className="flex items-center gap-1 shrink-0">
                       {onSelectFontFamily && (
@@ -1389,14 +1537,12 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                           {font.origin}
                         </span>
                         {font.kind === 'imported' && font.customFontId && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteCustomFont(font.customFontId!)}
-                            className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 hover:underline"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Xóa phông</span>
-                          </button>
+                          <TwoTapDeleteButton
+                            variant="pill"
+                            label="Xóa phông"
+                            confirmLabel="Xác nhận xóa?"
+                            onConfirmDelete={() => onDeleteCustomFont(font.customFontId!)}
+                          />
                         )}
                       </div>
                       <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
@@ -1457,6 +1603,27 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           onDeleteCustomTrack={onDeleteCustomAmbientTrack}
         />
       </section>
+
+      {/* Long-Press Context Sheet for Voices & Fonts */}
+      <LongPressActionSheet
+        open={Boolean(longPressTarget)}
+        itemName={longPressTarget?.name || ''}
+        itemSubtitle={longPressTarget?.subtitle}
+        categoryLabel={
+          longPressTarget?.kind === 'custom-font' || longPressTarget?.kind === 'builtin-font'
+            ? 'Tùy chọn Phông chữ'
+            : 'Tùy chọn Voice'
+        }
+        canDelete={Boolean(longPressTarget?.canDelete)}
+        protectedDeleteHint={
+          longPressTarget?.kind === 'builtin-font'
+            ? 'Phông chữ gốc hệ thống — được phép đổi tên, không được phép xóa.'
+            : 'Voice Google AI / hệ thống gốc — được phép đổi tên, không được phép xóa.'
+        }
+        onClose={() => setLongPressTarget(null)}
+        onRename={handleRenameLongPressTarget}
+        onDelete={longPressTarget?.canDelete ? handleDeleteLongPressTarget : undefined}
+      />
     </main>
   );
 };

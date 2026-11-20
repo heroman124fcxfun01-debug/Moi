@@ -96,6 +96,9 @@ const GlobalSearchModal = lazy(() =>
 const AppInfoModal = lazy(() =>
   import('./components/AppInfoModal').then((m) => ({ default: m.AppInfoModal }))
 );
+const CongDongSachModal = lazy(() =>
+  import('./components/CongDongSachModal').then((m) => ({ default: m.CongDongSachModal }))
+);
 import {
   getDriveAccessToken,
   getDriveAuthSnapshot,
@@ -132,6 +135,7 @@ export default function App() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
   const [isAppInfoOpen, setIsAppInfoOpen] = useState(false);
+  const [isCongDongSachOpen, setIsCongDongSachOpen] = useState(false);
   const [focusCollectionSignal, setFocusCollectionSignal] = useState<{
     name: string;
     tick: number;
@@ -611,7 +615,10 @@ export default function App() {
 
   const handleAddCustomFont = async (font: CustomFontAsset) => {
     await saveCustomFont(font);
-    setCustomFonts((prev) => [font, ...prev]);
+    setCustomFonts((prev) => {
+      const exists = prev.some((f) => f.id === font.id);
+      return exists ? prev.map((f) => (f.id === font.id ? font : f)) : [font, ...prev];
+    });
   };
 
   const handleDeleteCustomFont = async (fontId: string) => {
@@ -634,7 +641,10 @@ export default function App() {
 
   const handleAddCustomAmbientTrack = async (track: CustomAmbientTrack) => {
     await saveCustomAmbientTrack(track);
-    setCustomAmbientTracks((prev) => [track, ...prev]);
+    setCustomAmbientTracks((prev) => {
+      const exists = prev.some((t) => t.id === track.id);
+      return exists ? prev.map((t) => (t.id === track.id ? track : t)) : [track, ...prev];
+    });
   };
 
   const handleDeleteCustomAmbientTrack = async (trackId: string) => {
@@ -918,7 +928,7 @@ export default function App() {
                   onDeleteBook={handleDeleteBook}
                   onUpdateCollections={handleUpdateCollections}
                   onOpenImportModal={() => setIsImportOpen(true)}
-                  onGoToWebScraper={() => setActiveTab('web')}
+                  onOpenCongDongSach={() => setIsCongDongSachOpen(true)}
                   onRestoreSamples={handleRestoreSamples}
                   onDuplicateAsNewBook={(copy) =>
                     handleAddBook(copy, false, { bypassDuplicateCheck: true })
@@ -1154,6 +1164,15 @@ export default function App() {
           <AppInfoModal
             isOpen={isAppInfoOpen}
             onClose={() => setIsAppInfoOpen(false)}
+          />
+        )}
+
+        {isCongDongSachOpen && (
+          <CongDongSachModal
+            open={isCongDongSachOpen}
+            localBooks={books}
+            onClose={() => setIsCongDongSachOpen(false)}
+            onImportBook={handleAddBook}
           />
         )}
       </Suspense>

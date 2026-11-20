@@ -7,7 +7,6 @@ import {
   Download,
   BookPlus,
   ChevronRight,
-  Trash2,
   Loader2,
   CheckCircle2,
   Minimize2,
@@ -27,6 +26,8 @@ import type { WebCrawlerController } from '../hooks/useWebCrawler';
 import { isNativeAndroidApp } from '../utils/apiClient';
 import { buildNativeBrowserHref, type WebIssueReason } from '../utils/webCrawlerEngine';
 import { GlassSelect } from './GlassSelect';
+import { InAppBrowserWindow } from './InAppBrowserWindow';
+import { TwoTapDeleteButton } from './TwoTapDeleteButton';
 
 interface WebScraperViewProps {
   crawler: WebCrawlerController;
@@ -89,6 +90,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
   const [copiedLink, setCopiedLink] = useState(false);
   const [pasteNotice, setPasteNotice] = useState('');
   const [showAiHelp, setShowAiHelp] = useState(false);
+  const [isBrowserWindowOpen, setIsBrowserWindowOpen] = useState(false);
 
   const isRunning = crawlStatus === 'running';
   const isPaused = crawlStatus === 'paused';
@@ -176,15 +178,14 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
                 <span>Đọc tại đây</span>
               </button>
 
-              <a
-                href={externalBrowserHref}
-                target={isNativeAndroidApp() ? '_system' : '_blank'}
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => setIsBrowserWindowOpen(true)}
                 className="ios-liquid-pill flex-1 sm:flex-none inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full border border-amber-700/40 bg-amber-50/90 dark:bg-amber-950/35 text-amber-900 dark:text-amber-200 text-[11px] font-semibold whitespace-nowrap shrink-0 min-h-[34px] hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
               >
                 <ExternalLink className="w-3 h-3 shrink-0" />
                 <span>Trình duyệt gốc</span>
-              </a>
+              </button>
             </div>
           </div>
 
@@ -265,7 +266,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
               {!isRunning && !isPaused && (
                 <button
                   type="button"
-                  onClick={startAiAutoScanAndSave}
+                  onClick={() => startAiAutoScanAndSave()}
                   aria-label="AI Tự Quét và lưu EPUB"
                   className="ios-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 shadow-xs shrink-0"
                 >
@@ -412,15 +413,14 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
                 className="flex-1 min-w-0 px-3 py-1.5 rounded-xl border border-red-300 dark:border-red-800 bg-white dark:bg-stone-900 text-xs"
               />
               <div className="flex flex-wrap items-center gap-1.5">
-                <a
-                  href={externalBrowserHref}
-                  target={isNativeAndroidApp() ? '_system' : '_blank'}
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => setIsBrowserWindowOpen(true)}
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-amber-700/40 bg-white dark:bg-stone-900 text-amber-900 dark:text-amber-300 text-[11px] font-medium"
                 >
                   <ExternalLink className="w-3 h-3" />
                   <span>Tự kiểm tra</span>
-                </a>
+                </button>
                 <button
                   type="button"
                   disabled={scrapedList.length === 0}
@@ -509,15 +509,14 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {currentPage && (
-                  <a
-                    href={buildNativeBrowserHref(currentPage.url, isNativeAndroidApp(), currentOrigin)}
-                    target={isNativeAndroidApp() ? '_system' : '_blank'}
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => setIsBrowserWindowOpen(true)}
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-stone-300 dark:border-stone-700 text-[11px] font-medium hover:bg-stone-100 dark:hover:bg-stone-800 whitespace-nowrap"
                   >
                     <ExternalLink className="w-3 h-3" />
                     <span>Trình duyệt gốc</span>
-                  </a>
+                  </button>
                 )}
                 {currentPage?.nextUrl && (
                   <button
@@ -582,13 +581,12 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
                 </p>
               </div>
               {scrapedList.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setScrapedList([])}
-                  className="text-[11px] text-stone-500 hover:text-red-600 shrink-0"
-                >
-                  Xóa hết
-                </button>
+                <TwoTapDeleteButton
+                  variant="pill"
+                  label="Xóa hết"
+                  confirmLabel="Xác nhận xóa hết"
+                  onConfirmDelete={() => setScrapedList([])}
+                />
               )}
             </div>
 
@@ -655,16 +653,13 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
                         {item.wordCount} từ · {item.paragraphs.length} đoạn
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() =>
+                    <TwoTapDeleteButton
+                      variant="icon"
+                      title={`Xóa chương ${item.title}`}
+                      onConfirmDelete={() =>
                         setScrapedList((prev) => prev.filter((c) => c.id !== item.id))
                       }
-                      aria-label={`Xóa chương ${item.title}`}
-                      className="p-1.5 rounded text-stone-400 hover:text-red-600 shrink-0"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    />
                   </div>
                 ))
               )}
@@ -693,6 +688,15 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
           </section>
         </div>
       )}
+
+      {/* Full-Screen In-App Native Browser Window (opened by "Trình duyệt gốc") */}
+      <InAppBrowserWindow
+        open={isBrowserWindowOpen}
+        initialUrl={activeUrlForBrowser}
+        crawler={crawler}
+        onClose={() => setIsBrowserWindowOpen(false)}
+        onUrlChange={(nextUrl) => setUrlInput(nextUrl)}
+      />
     </main>
   );
 };
