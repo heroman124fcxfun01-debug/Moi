@@ -931,12 +931,12 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           >
             <div className="flex items-center gap-1.5">
               <Settings className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-[13px] font-semibold">Đọc sách cơ bản</h2>
+              <h2 className="text-[13px] font-semibold">Cơ bản</h2>
             </div>
 
             <div className="space-y-1.5">
               <span className="block text-[11px] font-medium text-stone-600 dark:text-stone-400">
-                Giao diện ứng dụng
+                Giao diện
               </span>
               <div
                 ref={themeBarRef}
@@ -949,8 +949,8 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 />
                 {(
                   [
-                    { id: 'light', label: 'Sáng giấy', icon: Sun },
-                    { id: 'dark', label: 'Tối dịu', icon: Moon },
+                    { id: 'light', label: 'Sáng', icon: Sun },
+                    { id: 'dark', label: 'Tối', icon: Moon },
                     { id: 'amoled', label: 'AMOLED', icon: Smartphone },
                   ] as const
                 ).map((item) => {
@@ -978,7 +978,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
 
             <div className="space-y-2 pt-2 border-t border-stone-100 dark:border-stone-800 text-[11px]">
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Chạm cạnh trái / phải để lật trang</span>
+                <span>Chạm lật trang</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.tapToTurnPage}
@@ -990,7 +990,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Giữ màn hình luôn sáng khi đọc</span>
+                <span>Giữ sáng màn</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.keepScreenAwake}
@@ -1002,7 +1002,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Tự mở sách đang đọc dở khi vào app</span>
+                <span>Tự mở sách cũ</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.autoResumeLastBook}
@@ -1014,7 +1014,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Rung xúc giác khi lật trang &amp; thao tác</span>
+                <span>Rung phản hồi</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.hapticFeedback !== false}
@@ -1027,7 +1027,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Dùng phím Âm lượng / PageUp-Down lật trang</span>
+                <span>Phím âm lượng</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.volumeKeyPageTurn !== false}
@@ -1047,7 +1047,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           >
             <div className="flex items-center gap-1.5">
               <Palette className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-[13px] font-semibold">Màu giao diện &amp; Ảnh nền</h2>
+              <h2 className="text-[13px] font-semibold">Màu &amp; Ảnh nền</h2>
             </div>
 
             {(() => {
@@ -1262,7 +1262,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   ) : (
                     <Download className="w-3.5 h-3.5 shrink-0" />
                   )}
-                  <span>Tải đầy đủ giọng Offline</span>
+                  <span>Tải tất cả</span>
                 </button>
 
                 {GEMINI_VOICES.map((gv) => {

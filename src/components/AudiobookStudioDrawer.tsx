@@ -51,6 +51,7 @@ import {
 } from '../utils/deviceTtsEngine';
 import {
   analyzeChapterOnDevice,
+  applyNarratorVoiceToCharacters,
   buildAutoVoiceAssignments,
   CHARACTER_VOICE_POOL,
   computeReadingStyleModulation,
@@ -62,7 +63,12 @@ import {
   resolveActiveHighlightInBatch,
   type PlaybackBatchUnit,
 } from '../utils/audiobookPrefetch';
-import { resolveNarratorAssignmentFromDefault } from '../utils/studioCatalog';
+import {
+  HIDDEN_SYSTEM_VOICES_EVENT,
+  loadHiddenSystemVoiceKeys,
+  resolveNarratorAssignmentFromDefault,
+} from '../utils/studioCatalog';
+import { resolveApiUrl } from '../utils/apiClient';
 import { AmbientSoundPanel } from './AmbientSoundPanel';
 import { GlassSelect, type GlassSelectOption } from './GlassSelect';
 
@@ -84,6 +90,7 @@ interface AudiobookStudioDrawerProps {
   ttsLanguageCode?: string;
   autoPlaySignal?: number;
   togglePlaySignal?: number;
+  audioCommandSignal?: { action: 'toggle' | 'next' | 'stop'; tick: number } | null;
   onSaveChapterAnalysis: (
     chapterId: string,
     analysis: ChapterAnalysis,
@@ -97,12 +104,17 @@ interface AudiobookStudioDrawerProps {
     assignments: Record<string, CharacterVoiceAssignment>
   ) => void;
   onUpdateReadingStyle?: (style: BookReadingStyle) => void;
+  onToggleCharacterVoices?: (enabled: boolean) => void;
   externalVoices: ExternalVoiceAsset[];
   onAddExternalVoice?: (voice: ExternalVoiceAsset) => Promise<void>;
   customAmbientTracks?: CustomAmbientTrack[];
   onAddCustomAmbientTrack?: (track: CustomAmbientTrack) => Promise<void>;
   onDeleteCustomAmbientTrack?: (trackId: string) => Promise<void>;
-  onHighlightParagraph: (paragraphIndex: number | null, progressRatio?: number) => void;
+  onHighlightParagraph: (
+    paragraphIndex: number | null,
+    progressRatio?: number,
+    charOffsetInParagraph?: number
+  ) => void;
   onSyncReadingParagraph?: (paragraphIndex: number) => void;
   onPlaybackStateChange?: (isPlaying: boolean) => void;
   onNextChapter: () => void;
@@ -129,12 +141,12 @@ const VALID_PRESET_VOICES: GeminiVoiceName[] = [
 ];
 
 const BUILTIN_VOICE_LABELS: Record<GeminiVoiceName, string> = {
-  Kore: 'Giọng mặc định · Nữ truyền cảm',
-  Charon: 'Nam trầm ấm',
-  Zephyr: 'Nữ nhẹ nhàng',
-  Fenrir: 'Nam mạnh mẽ',
-  Puck: 'Nam trẻ trung',
-  Aoede: 'Nữ du dương',
+  Kore: 'Nữ ấm (Gốc)',
+  Charon: 'Nam trầm',
+  Zephyr: 'Nữ dịu',
+  Fenrir: 'Nam vang',
+  Puck: 'Nam trẻ',
+  Aoede: 'Nữ thanh',
 };
 
 export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
@@ -155,10 +167,12 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   ttsLanguageCode,
   autoPlaySignal = 0,
   togglePlaySignal = 0,
+  audioCommandSignal = null,
   onSaveChapterAnalysis,
   onUpdateVoiceAssignment,
   onBatchUpdateVoiceAssignments,
   onUpdateReadingStyle,
+  onToggleCharacterVoices,
   externalVoices,
   customAmbientTracks = [],
   onAddCustomAmbientTrack = async () => {},
@@ -199,6 +213,9 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   const [currentBatchIndex, setCurrentBatchIndex] = useState(0);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [hiddenSystemVoices, setHiddenSystemVoices] = useState<string[]>(() =>
+    loadHiddenSystemVoiceKeys()
+  );
   const [isDesktop, setIsDesktop] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
   );
@@ -208,11 +225,20 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   >({});
   const [hasPendingCharEdits, setHasPendingCharEdits] = useState(false);
 
+  const characterVoicesEnabled = book.characterVoicesEnabled !== false;
+  const characterVoicesEnabledRef = useRef(characterVoicesEnabled);
+  characterVoicesEnabledRef.current = characterVoicesEnabled;
+
   const filteredPlayerRef = useRef<FilteredAudioPlayer | null>(null);
+  const aiTtsCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
+  const activeAiTtsAbortRef = useRef<AbortController | null>(null);
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const aiTtsCooldownUntilRef = useRef<number>(0);
   const isPlayingRef = useRef(false);
   const playbackRunIdRef = useRef(0);
   const handledSignalRef = useRef(0);
   const handledToggleSignalRef = useRef(0);
+  const handledAudioCmdTickRef = useRef(0);
   const autoContinueChapterRef = useRef(false);
   const speedRef = useRef(playbackSpeed);
   const currentBatchIndexRef = useRef(currentBatchIndex);
@@ -286,6 +312,17 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncHidden = () => setHiddenSystemVoices(loadHiddenSystemVoiceKeys());
+    window.addEventListener(HIDDEN_SYSTEM_VOICES_EVENT, syncHidden);
+    window.addEventListener('storage', syncHidden);
+    return () => {
+      window.removeEventListener(HIDDEN_SYSTEM_VOICES_EVENT, syncHidden);
+      window.removeEventListener('storage', syncHidden);
+    };
+  }, []);
+
   const analysis = chapter.analysis;
   const readingStyle: BookReadingStyle = book.readingStyle || 'novel';
   const isTranslatedView = Boolean(
@@ -307,6 +344,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   useEffect(() => {
     return () => {
       playbackRunIdRef.current += 1;
+      activeAiTtsAbortRef.current?.abort();
+      previewAbortRef.current?.abort();
       filteredPlayerRef.current?.dispose();
       clearMediaSession();
       stopOnDeviceSpeech();
@@ -315,21 +354,30 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   }, []);
 
   const effectiveScript = useMemo(() => {
+    const narratorLabel =
+      readingStyle === 'selfhelp' ? 'Diễn giả chính' : 'Người dẫn chuyện';
     if (analysis?.script && analysis.script.length > 0 && !isTranslatedView) {
+      if (!characterVoicesEnabled) {
+        return analysis.script.map((seg) => ({
+          ...seg,
+          speakerId: 'narrator',
+          speakerName: narratorLabel,
+        }));
+      }
       return analysis.script;
     }
     return activeParagraphs.map((p, idx) => ({
       id: `para-${idx}`,
       paragraphIndex: idx,
       speakerId: 'narrator',
-      speakerName: readingStyle === 'selfhelp' ? 'Diễn giả chính' : 'Người dẫn chuyện',
+      speakerName: narratorLabel,
       emotionStyle: 'Truyền cảm, tự nhiên',
       text: p,
     }));
-  }, [analysis?.script, isTranslatedView, activeParagraphs, readingStyle]);
+  }, [analysis?.script, isTranslatedView, activeParagraphs, readingStyle, characterVoicesEnabled]);
 
   const batchedUnits = useMemo(
-    () => buildBatchedPlaybackUnits(effectiveScript, 650),
+    () => buildBatchedPlaybackUnits(effectiveScript, 260),
     [effectiveScript]
   );
 
@@ -352,12 +400,12 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         liveBook.voiceAssignments?.narrator ||
         resolveNarratorAssignmentFromDefault(defaultVoiceRef.current, liveExt),
     };
-    // Assign distinct voices to each discovered character (never flatten everyone to 1 voice)
+    // Default ALL newly discovered characters to the current Narrator voice; preserve any character user manually overrode
     const autoMap = buildAutoVoiceAssignments(localAnalysis.characters, seededAssignments, {
-      inheritNarratorVoice: false,
+      inheritNarratorVoice: true,
     });
     onSaveChapterAnalysis(chapter.id, localAnalysis, autoMap);
-    // Pre-populate local draft map so user can review/edit voices and tap "Xác nhận"
+    // Pre-populate local draft map so user can customize only the characters they want and tap "Xác nhận"
     const nextDrafts: Record<string, CharacterVoiceAssignment> = {};
     for (const ch of localAnalysis.characters) {
       if (ch.id !== 'narrator' && autoMap[ch.id]) {
@@ -365,7 +413,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       }
     }
     setDraftCharAssignments(nextDrafts);
-    setHasPendingCharEdits(Object.keys(nextDrafts).length > 0);
+    setHasPendingCharEdits(false);
     return localAnalysis;
   };
 
@@ -380,11 +428,13 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
           defaultVoice,
           externalVoicesRef.current
         );
+        const nextMap = applyNarratorVoiceToCharacters(
+          bookRef.current.voiceAssignments || {},
+          nextNarrator
+        );
+        bookRef.current = { ...bookRef.current, voiceAssignments: nextMap };
         hotReloadCurrentPlayback({
-          voiceOverrides: {
-            ...(bookRef.current.voiceAssignments || {}),
-            narrator: nextNarrator,
-          },
+          voiceOverrides: nextMap,
         });
       }
     }
@@ -444,6 +494,36 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [togglePlaySignal]);
 
+  // Handle remote commands from merged FloatingBookDisc on the main screen (Play/Pause, Next, Stop)
+  useEffect(() => {
+    if (!audioCommandSignal || audioCommandSignal.tick === handledAudioCmdTickRef.current) return;
+    handledAudioCmdTickRef.current = audioCommandSignal.tick;
+    if (audioCommandSignal.action === 'stop') {
+      stopAllAudio(true);
+      return;
+    }
+    if (audioCommandSignal.action === 'toggle') {
+      unlockAudioPlaybackSync();
+      if (isPlayingRef.current) {
+        stopAllAudio(false);
+      } else {
+        startPlaybackAt(currentBatchIndexRef.current);
+      }
+      return;
+    }
+    if (audioCommandSignal.action === 'next') {
+      unlockAudioPlaybackSync();
+      const next = Math.min(
+        Math.max(0, batchedUnitsRef.current.length - 1),
+        currentBatchIndexRef.current + 1
+      );
+      setCurrentBatchIndex(next);
+      currentBatchIndexRef.current = next;
+      startPlaybackAt(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioCommandSignal?.tick]);
+
   useEffect(() => {
     onPlaybackStateChange?.(isPlaying);
   }, [isPlaying, onPlaybackStateChange]);
@@ -452,15 +532,17 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     onSessionActiveChange?.(showMiniBar || isPlaying);
   }, [showMiniBar, isPlaying, onSessionActiveChange]);
 
-  // Inside ReaderView, NEVER render bottom mini-player (spinning disc handles access cleanly).
-  // Outside ReaderView (background listening across Library/Community/Studio), keep slim mini-bar.
-  const miniPlayerVisible = (showMiniBar || isPlaying) && !isReaderActive;
+  // Mini-bar is now unified directly into FloatingBookDisc — never render a duplicate bar here
   useEffect(() => {
-    onMiniPlayerVisibilityChange?.(miniPlayerVisible);
-  }, [miniPlayerVisible, onMiniPlayerVisibilityChange]);
+    onMiniPlayerVisibilityChange?.(false);
+  }, [onMiniPlayerVisibilityChange]);
 
   const stopAllAudio = (hideBar = true) => {
     playbackRunIdRef.current += 1;
+    activeAiTtsAbortRef.current?.abort();
+    activeAiTtsAbortRef.current = null;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
     isPlayingRef.current = false;
     setIsPlaying(false);
     setPreviewingId(null);
@@ -476,7 +558,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     }
     filteredPlayerRef.current?.stop();
     stopOnDeviceSpeech();
-    onHighlightParagraph(null, 0);
+    onHighlightParagraph(null, 0, 0);
   };
 
   const getAssignment = (
@@ -545,8 +627,10 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     }> = [];
 
     for (const gv of GEMINI_VOICES) {
+      const key = `gemini:${gv.name}`;
+      if (hiddenSystemVoices.includes(key)) continue;
       items.push({
-        key: `gemini:${gv.name}`,
+        key,
         label: BUILTIN_VOICE_LABELS[gv.name] || gv.label,
         source: 'gemini',
         geminiVoice: gv.name,
@@ -562,8 +646,10 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       });
     }
     for (const bv of browserVoices) {
+      const key = `browser:${bv.voiceURI}`;
+      if (hiddenSystemVoices.includes(key)) continue;
       items.push({
-        key: `browser:${bv.voiceURI}`,
+        key,
         label: bv.name,
         source: 'browser',
         geminiVoice: 'Kore',
@@ -571,7 +657,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       });
     }
     return items;
-  }, [externalVoices, browserVoices]);
+  }, [externalVoices, browserVoices, hiddenSystemVoices]);
 
   const voiceSelectOptions = useMemo<GlassSelectOption[]>(
     () =>
@@ -615,7 +701,9 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     const liveBook = bookRef.current;
     const liveExt = externalVoicesRef.current;
     const activeStyle: BookReadingStyle = overrideStyle || liveBook.readingStyle || 'novel';
-    const assign = overrideAssign || getAssignment(speakerId, undefined, overrideMap);
+    const effectiveSpeakerId =
+      overrideAssign || characterVoicesEnabledRef.current ? speakerId : 'narrator';
+    const assign = overrideAssign || getAssignment(effectiveSpeakerId, undefined, overrideMap);
     const assignTone: VoiceToneSettings = assign.toneSettings || {
       ...DEFAULT_VOICE_TONE,
       pitch: assign.browserPitch,
@@ -632,16 +720,27 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
           extSpeech.pitch,
           extSpeech.rate
         );
+        const mergedTone: VoiceToneSettings = {
+          ...DEFAULT_VOICE_TONE,
+          warmthDb: extSpeech.warmthDb,
+          clarityDb: extSpeech.clarityDb,
+          pitch: modulated.pitch,
+          rate: modulated.rate,
+          styleDirection: extSpeech.stylePrompt,
+          ...(ext.toneSettings || {}),
+        };
         return {
           voiceName: extSpeech.baseVoice,
-          stylePrompt: `${ext.analyzedProfile?.stylePrompt || assign.stylePrompt}. ${modulated.stylePrompt}`,
+          stylePrompt: `${extSpeech.stylePrompt}. ${modulated.stylePrompt}`,
           pitch: modulated.pitch,
           rate: modulated.rate,
           preferGender: extSpeech.preferGender,
           voiceSlotIndex: extSpeech.voiceSlotIndex,
           voiceURI: undefined as string | undefined,
-          tone: ext.toneSettings || assignTone,
+          tone: mergedTone,
           externalAsset: ext,
+          useAiTts: true,
+          useVoiceDesign: true,
         };
       }
     }
@@ -663,16 +762,25 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         voiceURI: assign.browserVoiceURI,
         tone: assignTone,
         externalAsset: undefined,
+        useAiTts: false,
+        useVoiceDesign: false,
       };
     }
 
     const presetTone = getOnDeviceVoiceTone(assign.geminiVoice as GeminiVoiceName);
-    // Always use the chosen preset's distinct acoustic pitch/rate/gender/voiceSlotIndex!
+    const customPitch =
+      assign.toneSettings && Number.isFinite(assign.toneSettings.pitch) && assign.toneSettings.pitch !== 1.0
+        ? assign.toneSettings.pitch
+        : presetTone.pitch;
+    const customRate =
+      assign.toneSettings && Number.isFinite(assign.toneSettings.rate) && assign.toneSettings.rate !== 1.0
+        ? assign.toneSettings.rate
+        : presetTone.rate;
     const modulated = computeReadingStyleModulation(
       activeStyle,
       emotionStyle,
-      presetTone.pitch,
-      presetTone.rate
+      customPitch,
+      customRate
     );
 
     return {
@@ -683,9 +791,106 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       preferGender: presetTone.preferGender,
       voiceSlotIndex: presetTone.voiceSlotIndex,
       voiceURI: assign.browserVoiceURI,
-      tone: assignTone,
+      tone: {
+        ...assignTone,
+        pitch: modulated.pitch,
+        rate: modulated.rate,
+      },
       externalAsset: undefined,
+      useAiTts: true,
+      useVoiceDesign: false,
     };
+  };
+
+  /**
+   * Fetches real Gemini AI TTS / Voice Design WAV audio when online (with caching & instant offline cooldown).
+   * Returns null immediately if offline, browser-voice selected, or quota temporarily reached so on-device TTS runs with 0ms lag.
+   */
+  const fetchAiTtsAudio = (
+    text: string,
+    params: ReturnType<typeof resolveTtsParamsForSpeaker>,
+    styleOverride?: BookReadingStyle,
+    opts?: { bypassCooldown?: boolean; timeoutMs?: number; abortSlot?: 'playback' | 'preview' }
+  ): Promise<string | null> => {
+    if (!params.useAiTts || !text.trim()) return Promise.resolve(null);
+    if (!opts?.bypassCooldown && Date.now() < aiTtsCooldownUntilRef.current) {
+      return Promise.resolve(null);
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return Promise.resolve(null);
+    }
+
+    const activeStyle = styleOverride || bookRef.current.readingStyle || 'novel';
+    const targetLang = mapLangCodeToSpeechLocale(
+      ttsLanguageCodeRef.current || bookRef.current.language
+    );
+    const cacheKey = `${params.voiceName}|${params.useVoiceDesign ? 1 : 0}|${activeStyle}|${params.stylePrompt.slice(0, 80)}|${text}`;
+    const existing = aiTtsCacheRef.current.get(cacheKey);
+    if (existing) return existing;
+
+    // Cap cache size to keep RAM low on mobile phones
+    if (aiTtsCacheRef.current.size > 32) {
+      const oldestKey = aiTtsCacheRef.current.keys().next().value;
+      if (oldestKey) aiTtsCacheRef.current.delete(oldestKey);
+    }
+
+    const promise = (async () => {
+      const controller = new AbortController();
+      if (opts?.abortSlot === 'preview') {
+        previewAbortRef.current?.abort();
+        previewAbortRef.current = controller;
+      } else if (opts?.abortSlot === 'playback') {
+        activeAiTtsAbortRef.current?.abort();
+        activeAiTtsAbortRef.current = controller;
+      }
+      const timer = window.setTimeout(() => controller.abort(), opts?.timeoutMs ?? 4200);
+      try {
+        const resp = await fetch(resolveApiUrl('/api/ai/tts'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            text,
+            voiceName: params.voiceName,
+            stylePrompt: params.stylePrompt,
+            expressive: true,
+            useVoiceDesign: params.useVoiceDesign,
+            readingStyle: activeStyle,
+            lang: targetLang,
+          }),
+        });
+        if (!resp.ok) {
+          aiTtsCooldownUntilRef.current = Date.now() + 8000;
+          aiTtsCacheRef.current.delete(cacheKey);
+          return null;
+        }
+        const data = await resp.json();
+        if (data?.quotaExceeded || !data?.audioBase64) {
+          aiTtsCooldownUntilRef.current = Date.now() + 45000;
+          aiTtsCacheRef.current.delete(cacheKey);
+          return null;
+        }
+        return `data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`;
+      } catch (err) {
+        const isAbort = err instanceof Error && err.name === 'AbortError';
+        if (!isAbort) {
+          aiTtsCooldownUntilRef.current = Date.now() + 8000;
+        }
+        aiTtsCacheRef.current.delete(cacheKey);
+        return null;
+      } finally {
+        window.clearTimeout(timer);
+        if (opts?.abortSlot === 'preview' && previewAbortRef.current === controller) {
+          previewAbortRef.current = null;
+        }
+        if (opts?.abortSlot === 'playback' && activeAiTtsAbortRef.current === controller) {
+          activeAiTtsAbortRef.current = null;
+        }
+      }
+    })();
+
+    aiTtsCacheRef.current.set(cacheKey, promise);
+    return promise;
   };
 
   const playBrowserBatch = async (
@@ -709,10 +914,14 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     );
     let lastSyncedPara = -1;
 
-    const applyRatio = (ratio: number) => {
+    const applyProgress = (ratio: number, explicitCharIndex?: number) => {
       if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
-      const resolved = resolveActiveHighlightInBatch(unit, ratio);
-      onHighlightParagraphRef.current(resolved.paragraphIndex, resolved.paragraphRatio);
+      const resolved = resolveActiveHighlightInBatch(unit, ratio, explicitCharIndex);
+      onHighlightParagraphRef.current(
+        resolved.paragraphIndex,
+        resolved.paragraphRatio,
+        resolved.charOffsetInParagraph
+      );
       if (resolved.paragraphIndex !== lastSyncedPara) {
         lastSyncedPara = resolved.paragraphIndex;
         onSyncReadingParagraphRef.current?.(resolved.paragraphIndex);
@@ -728,18 +937,20 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       preferGender,
       voiceSlotIndex,
       onStart: () => {
-        applyRatio(0.03);
+        applyProgress(0, 0);
       },
       onBoundary: (charIndex) => {
         if (text.length > 0) {
-          applyRatio(Math.min(0.99, (charIndex + 8) / text.length));
+          applyProgress(Math.min(0.99, charIndex / text.length), charIndex);
         }
       },
     });
 
     if (ok && playbackRunIdRef.current === runId && isPlayingRef.current) {
       const lastSpan = unit.spans[unit.spans.length - 1];
-      if (lastSpan) onHighlightParagraphRef.current(lastSpan.paragraphIndex, 1);
+      if (lastSpan) {
+        onHighlightParagraphRef.current(lastSpan.paragraphIndex, 1, lastSpan.text.length);
+      }
     }
     return ok;
   };
@@ -798,6 +1009,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
     playbackRunIdRef.current += 1;
     const runId = playbackRunIdRef.current;
+    activeAiTtsAbortRef.current?.abort();
+    activeAiTtsAbortRef.current = null;
     filteredPlayerRef.current?.stop();
     stopOnDeviceSpeech();
     void playBatchAt(idx, runId, units, opts);
@@ -820,6 +1033,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     startAudioFocusKeepalive();
     playbackRunIdRef.current += 1;
     const runId = playbackRunIdRef.current;
+    activeAiTtsAbortRef.current?.abort();
+    activeAiTtsAbortRef.current = null;
     filteredPlayerRef.current?.stop();
     stopOnDeviceSpeech();
     isPlayingRef.current = true;
@@ -858,7 +1073,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     currentBatchIndexRef.current = index;
     syncMediaSessionForUnit(unit, 'playing');
 
-    onHighlightParagraphRef.current(unit.firstParagraphIndex, 0.04);
+    onHighlightParagraphRef.current(unit.firstParagraphIndex, 0, 0);
     onSyncReadingParagraphRef.current?.(unit.firstParagraphIndex);
 
     const params = resolveTtsParamsForSpeaker(
@@ -869,16 +1084,67 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       opts?.styleOverride
     );
 
-    const spokeOk = await playBrowserBatch(
-      unit,
-      params.pitch,
-      params.rate,
-      params.voiceURI,
-      runId,
-      params.preferGender,
-      params.voiceSlotIndex,
-      opts?.speedOverride
-    );
+    // Background prefetch next batch so transitions between AI TTS batches are instant
+    const nextUnit = units[index + 1];
+    if (nextUnit && params.useAiTts) {
+      const nextParams = resolveTtsParamsForSpeaker(
+        nextUnit.speakerId,
+        nextUnit.emotionStyle,
+        undefined,
+        opts?.voiceOverrides,
+        opts?.styleOverride
+      );
+      if (nextParams.useAiTts) {
+        void fetchAiTtsAudio(nextUnit.combinedText, nextParams, opts?.styleOverride);
+      }
+    }
+
+    let spokeOk = false;
+
+    // Engine 1: Real Gemini AI TTS / Voice Design + Web Audio EQ (when online)
+    if (params.useAiTts) {
+      const aiAudioUrl = await fetchAiTtsAudio(unit.combinedText, params, opts?.styleOverride, {
+        timeoutMs: 4200,
+        abortSlot: 'playback',
+      });
+      if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
+      if (aiAudioUrl) {
+        try {
+          const activeSpeed = opts?.speedOverride ?? speedRef.current;
+          let lastSyncedPara = unit.firstParagraphIndex;
+          await getPlayer().play(aiAudioUrl, params.tone, activeSpeed, (ratio) => {
+            if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
+            const resolved = resolveActiveHighlightInBatch(unit, ratio);
+            onHighlightParagraphRef.current(
+              resolved.paragraphIndex,
+              resolved.paragraphRatio,
+              resolved.charOffsetInParagraph
+            );
+            if (resolved.paragraphIndex !== lastSyncedPara) {
+              lastSyncedPara = resolved.paragraphIndex;
+              onSyncReadingParagraphRef.current?.(resolved.paragraphIndex);
+            }
+          });
+          spokeOk = playbackRunIdRef.current === runId && isPlayingRef.current;
+        } catch {
+          spokeOk = false;
+        }
+      }
+    }
+
+    // Engine 2: Multi-voice on-device TTS fallback (100% offline Android/WebView)
+    if (!spokeOk && playbackRunIdRef.current === runId && isPlayingRef.current) {
+      spokeOk = await playBrowserBatch(
+        unit,
+        params.pitch,
+        params.rate,
+        params.voiceURI,
+        runId,
+        params.preferGender,
+        params.voiceSlotIndex,
+        opts?.speedOverride
+      );
+    }
 
     if (!spokeOk && isPlayingRef.current && playbackRunIdRef.current === runId) {
       stopAllAudio(false);
@@ -907,7 +1173,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     startPlaybackAt(currentBatchIndex);
   };
 
-  // Preview uses the EXACT same speakOnDevice voice/pitch/rate/slot pipeline as actual audiobook playback!
+  // Preview uses the EXACT same AI Voice Design + EQ / on-device pipeline as actual audiobook playback!
   const handlePreviewVoiceChoice = async (
     charId: string,
     sampleText: string,
@@ -924,6 +1190,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     }
     setErrorMsg('');
     setPreviewingId(charId);
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
     const runId = playbackRunIdRef.current;
     const base = draftCharAssignments[charId] || getAssignment(charId);
     const assign = override ? { ...base, ...override } : base;
@@ -931,24 +1199,43 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     const textToSpeak = sampleText || 'Xin chào, đây là giọng đọc thử của BOOKHAD.';
 
     try {
-      const finalRate = Math.min(
-        MAX_READING_SPEED,
-        Math.max(MIN_READING_SPEED, params.rate * speedRef.current)
-      );
-      const spokeOk = await speakOnDevice({
-        text: textToSpeak,
-        lang: mapLangCodeToSpeechLocale(ttsLanguageCodeRef.current || bookRef.current.language),
-        pitch: params.pitch,
-        rate: finalRate,
-        voiceURI: params.voiceURI,
-        preferGender: params.preferGender,
-        voiceSlotIndex: params.voiceSlotIndex,
-      });
-      if (!spokeOk && playbackRunIdRef.current === runId) {
-        setErrorMsg('Không thể phát thử giọng TTS trên thiết bị này.');
+      let played = false;
+      if (params.useAiTts) {
+        const aiAudioUrl = await fetchAiTtsAudio(textToSpeak, params, undefined, {
+          timeoutMs: 3000,
+          abortSlot: 'preview',
+        });
+        if (aiAudioUrl && playbackRunIdRef.current === runId) {
+          try {
+            await getPlayer().play(aiAudioUrl, params.tone, speedRef.current);
+            played = true;
+          } catch {
+            played = false;
+          }
+        }
+      }
+      if (!played && playbackRunIdRef.current === runId) {
+        const finalRate = Math.min(
+          MAX_READING_SPEED,
+          Math.max(MIN_READING_SPEED, params.rate * speedRef.current)
+        );
+        const spokeOk = await speakOnDevice({
+          text: textToSpeak,
+          lang: mapLangCodeToSpeechLocale(ttsLanguageCodeRef.current || bookRef.current.language),
+          pitch: params.pitch,
+          rate: finalRate,
+          voiceURI: params.voiceURI,
+          preferGender: params.preferGender,
+          voiceSlotIndex: params.voiceSlotIndex,
+        });
+        if (!spokeOk && playbackRunIdRef.current === runId) {
+          setErrorMsg('Không thể phát thử giọng TTS trên thiết bị này.');
+        }
       }
     } finally {
-      setPreviewingId(null);
+      if (playbackRunIdRef.current === runId) {
+        setPreviewingId(null);
+      }
     }
   };
 
@@ -957,66 +1244,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     (c) => c.id !== 'narrator'
   );
 
-  // Half-width left-anchored Floating Mini-Bar when browsing outside ReaderView (never collides with right FloatingBookDisc)
-  const floatingMiniPlayer =
-    miniPlayerVisible && typeof document !== 'undefined'
-      ? createPortal(
-          <div
-            role="region"
-            aria-label="Thanh điều khiển nghe sách chạy nền"
-            className="fixed left-3 z-[60] w-[calc(50%-0.5rem)] max-w-[225px] bottom-[78px] sm:bottom-[86px] ios-sheet-enter"
-          >
-            <div className="ios-glass-dock rounded-full border border-white/75 dark:border-zinc-700/70 pl-2.5 pr-1.5 py-1.5 shadow-xl flex items-center justify-between gap-1.5 text-stone-900 dark:text-stone-100">
-              <button
-                type="button"
-                onClick={() => onOpenPanel?.()}
-                className="min-w-0 flex-1 text-left"
-                title={`Mở bảng giọng đọc · ${book.title}`}
-              >
-                <div className="text-[10.5px] font-semibold truncate flex items-center gap-1 leading-tight">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      isPlaying ? 'bg-amber-600 animate-pulse' : 'bg-stone-400'
-                    }`}
-                  />
-                  <span className="truncate">{book.title}</span>
-                </div>
-                <div className="text-[9.5px] text-stone-500 dark:text-stone-400 truncate tabular-nums leading-tight">
-                  {currentBatchIndex + 1}/{Math.max(1, batchedUnits.length)}
-                </div>
-              </button>
-
-              <div className="flex items-center gap-0.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleTogglePlay}
-                  aria-label={isPlaying ? 'Tạm dừng' : 'Phát'}
-                  className="w-7 h-7 rounded-full bg-amber-800 text-white flex items-center justify-center hover:bg-amber-900 shadow-sm active:scale-90 transition-transform"
-                >
-                  {isPlaying ? (
-                    <Pause className="w-3.5 h-3.5" />
-                  ) : (
-                    <Play className="w-3.5 h-3.5 ml-0.5" />
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => stopAllAudio(true)}
-                  aria-label="Dừng và ẩn thanh nghe"
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-stone-500 hover:text-red-600 active:scale-90 transition-transform"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )
-      : null;
-
   if (!isOpen || !isReaderActive) {
-    return floatingMiniPlayer;
+    return null;
   }
 
   const panelBody = (
@@ -1039,7 +1268,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             </button>
           )}
           <h2 className="text-[14px] font-display font-semibold truncate">
-            Cài đặt Nghe &amp; Giọng đọc
+            Nghe sách
           </h2>
         </div>
         <button
@@ -1170,7 +1399,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
           <label className="flex items-center justify-between gap-2 cursor-pointer pt-2 border-t border-stone-100 dark:border-stone-800">
             <span className="text-[11px] font-medium text-stone-700 dark:text-stone-300">
-              Bôi sáng chữ đang đọc trên trang sách
+              Sáng chữ đang đọc
             </span>
             <input
               type="checkbox"
@@ -1201,13 +1430,13 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
           </div>
         )}
 
-        {/* 2. Reading Voice Style Selector (placed right above Giọng dẫn truyện) */}
+        {/* 2. Reading Voice Style Selector */}
         <section className="p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-2">
           <div className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-            Phong cách giọng
+            Phong cách
           </div>
           <GlassSelect<BookReadingStyle>
-            title="Chọn phong cách giọng"
+            title="Chọn phong cách"
             ariaLabel="Chọn phong cách giọng đọc"
             value={readingStyle}
             options={readingStyleOptions}
@@ -1216,16 +1445,13 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
               hotReloadCurrentPlayback({ styleOverride: nextStyle });
             }}
           />
-          <p className="text-[10.5px] text-stone-500 dark:text-stone-400 leading-relaxed">
-            {READING_VOICE_STYLES.find((s) => s.id === readingStyle)?.description}
-          </p>
         </section>
 
-        {/* 3. Narrator Voice Selector (hot-reloads voice immediately while listening) */}
+        {/* 3. Narrator Voice Selector */}
         <section className="p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-              Giọng dẫn truyện
+              Dẫn truyện
             </span>
             <button
               type="button"
@@ -1271,51 +1497,113 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                   : { ...DEFAULT_VOICE_TONE, pitch: presetTone.pitch, rate: presetTone.rate },
                 isCustomOverride: true,
               };
-              const nextMap: Record<string, CharacterVoiceAssignment> = {
-                ...(bookRef.current.voiceAssignments || {}),
-                narrator: nextNarratorAssign,
-              };
+              const nextMap = applyNarratorVoiceToCharacters(
+                bookRef.current.voiceAssignments || {},
+                nextNarratorAssign
+              );
+              bookRef.current = { ...bookRef.current, voiceAssignments: nextMap };
+              // Sync non-overridden character drafts to follow the updated Narrator voice
+              setDraftCharAssignments((prevDraft) => {
+                const synced: Record<string, CharacterVoiceAssignment> = {};
+                for (const [cid, assign] of Object.entries(prevDraft)) {
+                  synced[cid] = assign.isCustomOverride
+                    ? assign
+                    : { ...nextNarratorAssign, characterId: cid, isCustomOverride: false };
+                }
+                return synced;
+              });
               if (onBatchUpdateVoiceAssignments) {
                 onBatchUpdateVoiceAssignments(nextMap);
               } else {
                 onUpdateVoiceAssignment('narrator', nextNarratorAssign);
               }
-              setInfoNotice(`Đã đổi giọng dẫn truyện: ${chosen.label}`);
+              setInfoNotice(`Dẫn truyện: ${chosen.label}`);
               hotReloadCurrentPlayback({ voiceOverrides: nextMap });
             }}
           />
         </section>
 
-        {/* 4. On-Device Character Voice Scan & Draft Selection + Confirm Button */}
+        {/* 4. On-Device Character Voice Scan, ON/OFF Toggle & Draft Selection + Confirm Button */}
         <section className="p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 text-[11.5px] font-semibold text-stone-800 dark:text-stone-200 min-w-0">
               <Users className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
               <span className="truncate">
-                Giọng nhân vật
+                Nhân vật
                 {discoveredCharacters.length > 0 ? ` (${discoveredCharacters.length})` : ''}
               </span>
             </div>
-            <button
-              type="button"
-              data-testid="scan-characters-btn"
-              onClick={() => {
-                const res = runOnDeviceCharacterScan();
-                const found = Math.max(0, res.characters.length - 1);
-                setInfoNotice(
-                  found > 0
-                    ? `Đã quét thấy ${found} nhân vật. Chọn giọng rồi bấm "Xác nhận" bên dưới.`
-                    : 'Chưa phát hiện lời thoại nhân vật riêng trong chương này.'
-                );
-              }}
-              className="px-3 py-1.5 rounded-lg bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 shrink-0"
-            >
-              Quét
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={characterVoicesEnabled}
+                data-testid="toggle-character-voices-btn"
+                onClick={() => {
+                  const nextEnabled = !characterVoicesEnabled;
+                  characterVoicesEnabledRef.current = nextEnabled;
+                  bookRef.current = {
+                    ...bookRef.current,
+                    characterVoicesEnabled: nextEnabled,
+                  };
+                  onToggleCharacterVoices?.(nextEnabled);
+                  setInfoNotice(
+                    nextEnabled ? 'Đã bật giọng nhân vật.' : 'Đang đọc theo giọng dẫn truyện.'
+                  );
+                  hotReloadCurrentPlayback();
+                }}
+                aria-label={
+                  characterVoicesEnabled ? 'Tắt giọng nhân vật' : 'Bật giọng nhân vật'
+                }
+                className={`inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full border text-[10.5px] font-semibold transition-colors ${
+                  characterVoicesEnabled
+                    ? 'border-amber-700/40 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200'
+                    : 'border-stone-300 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400'
+                }`}
+              >
+                <span>{characterVoicesEnabled ? 'Bật' : 'Tắt'}</span>
+                <span
+                  className={`relative inline-flex w-7 h-4 rounded-full transition-colors ${
+                    characterVoicesEnabled
+                      ? 'bg-amber-800'
+                      : 'bg-stone-300 dark:bg-stone-600'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-xs transition-transform ${
+                      characterVoicesEnabled ? 'translate-x-3.5' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="scan-characters-btn"
+                onClick={() => {
+                  const res = runOnDeviceCharacterScan();
+                  const found = Math.max(0, res.characters.length - 1);
+                  setInfoNotice(
+                    found > 0
+                      ? `Tìm thấy ${found} nhân vật (mặc định theo dẫn truyện).`
+                      : 'Không có lời thoại nhân vật riêng.'
+                  );
+                }}
+                className="px-3 py-1.5 rounded-lg bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 shrink-0"
+              >
+                Quét
+              </button>
+            </div>
           </div>
 
+          {!characterVoicesEnabled && (
+            <p className="text-[10.5px] text-stone-500 dark:text-stone-400 leading-snug">
+              Đang dùng giọng dẫn truyện cho mọi lời thoại.
+            </p>
+          )}
+
           {discoveredCharacters.length > 0 && (
-            <div className="space-y-2">
+            <div className={`space-y-2 ${!characterVoicesEnabled ? 'opacity-60' : ''}`}>
               {discoveredCharacters.map((char, idx) => {
                 const charAssign =
                   draftCharAssignments[char.id] ||
@@ -1414,9 +1702,10 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                     committed[char.id] = {
                       ...chosenAssign,
                       characterId: char.id,
-                      isCustomOverride: true,
+                      isCustomOverride: Boolean(chosenAssign.isCustomOverride),
                     };
                   }
+                  bookRef.current = { ...bookRef.current, voiceAssignments: committed };
                   if (onBatchUpdateVoiceAssignments) {
                     onBatchUpdateVoiceAssignments(committed);
                   } else {
@@ -1425,7 +1714,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                     });
                   }
                   setHasPendingCharEdits(false);
-                  setInfoNotice('Đã xác nhận & áp dụng giọng nhân vật mới.');
+                  setInfoNotice('Đã lưu giọng nhân vật.');
                   hotReloadCurrentPlayback({ voiceOverrides: committed });
                 }}
                 className={`w-full py-2 rounded-xl text-[11.5px] font-semibold transition-colors ${
@@ -1478,39 +1767,31 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
   // Mobile (<1024px): iPhone frosted-glass half-height bottom sheet
   if (!isDesktop && typeof document !== 'undefined') {
-    return (
-      <>
-        {createPortal(
-          <div className="fixed inset-0 z-[70] flex items-end justify-center">
-            <div
-              className="fixed inset-0 ios-frosted-backdrop"
-              onClick={onClose}
-              aria-hidden="true"
-            />
-            <aside
-              aria-label="Cài đặt nghe sách nói và giọng đọc"
-              className="ios-sheet-enter ios-frosted-surface relative z-10 w-full max-w-lg h-auto max-h-[72dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden"
-            >
-              <div className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70 mx-auto mt-2 shrink-0" />
-              {panelBody}
-            </aside>
-          </div>,
-          document.body
-        )}
-        {floatingMiniPlayer}
-      </>
+    return createPortal(
+      <div className="fixed inset-0 z-[70] flex items-end justify-center">
+        <div
+          className="fixed inset-0 ios-frosted-backdrop"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+        <aside
+          aria-label="Cài đặt nghe sách nói và giọng đọc"
+          className="ios-sheet-enter ios-frosted-surface relative z-10 w-full max-w-lg h-auto max-h-[72dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden"
+        >
+          <div className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70 mx-auto mt-2 shrink-0" />
+          {panelBody}
+        </aside>
+      </div>,
+      document.body
     );
   }
 
   return (
-    <>
-      <aside
-        aria-label="Cài đặt nghe sách nói và giọng đọc"
-        className="ios-frosted-surface w-[390px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden"
-      >
-        {panelBody}
-      </aside>
-      {floatingMiniPlayer}
-    </>
+    <aside
+      aria-label="Cài đặt nghe sách nói và giọng đọc"
+      className="ios-frosted-surface w-[390px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden"
+    >
+      {panelBody}
+    </aside>
   );
 };

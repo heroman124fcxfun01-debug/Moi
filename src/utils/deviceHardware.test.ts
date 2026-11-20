@@ -18,14 +18,17 @@ test('analyzePcmVoiceMetrics accurately distinguishes deep male vs bright female
   const deepMale = analyzePcmVoiceMetrics(makeSineWave(105, 16000, 1.5, 0.2), 16000, 'nam.wav');
   assert.ok(deepMale.estimatedF0Hz && deepMale.estimatedF0Hz >= 95 && deepMale.estimatedF0Hz <= 120);
   assert.ok(['Charon', 'Fenrir'].includes(deepMale.recommendedBaseVoice));
-  assert.ok(deepMale.pitchHint < 1.0);
+  assert.equal(deepMale.gender, 'male');
+  assert.ok(deepMale.pitchHint < 0.85);
+  assert.equal(typeof deepMale.warmthDb, 'number');
 
-  const gentleFemale = analyzePcmVoiceMetrics(makeSineWave(210, 16000, 1.5, 0.12), 16000, 'nu.wav');
+  const gentleFemale = analyzePcmVoiceMetrics(makeSineWave(220, 16000, 1.5, 0.12), 16000, 'nu.wav');
   assert.ok(
-    gentleFemale.estimatedF0Hz && gentleFemale.estimatedF0Hz >= 195 && gentleFemale.estimatedF0Hz <= 225
+    gentleFemale.estimatedF0Hz && gentleFemale.estimatedF0Hz >= 205 && gentleFemale.estimatedF0Hz <= 235
   );
   assert.equal(gentleFemale.recommendedBaseVoice, 'Zephyr');
-  assert.ok(gentleFemale.pitchHint > 1.0);
+  assert.equal(gentleFemale.gender, 'female');
+  assert.ok(gentleFemale.pitchHint > 1.1);
 });
 
 test('extractWebChapterClientSide parses HTML chapter title, paragraphs, and next link offline', () => {

@@ -2,26 +2,28 @@ import { Capacitor } from '@capacitor/core';
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import type { ExternalVoiceAsset, GeminiVoiceName } from '../types/book';
 import { MAX_READING_SPEED, MIN_READING_SPEED } from './audioFilterEngine';
+import { mapTimeRatioToWeightedCharIndex } from './audiobookPrefetch';
 import { normalizeVietnameseForSpeech } from './vietnameseTtsNormalizer';
 
 /**
  * Distinct on-device acoustic profiles for each voice preset so every voice
- * sounds unmistakably differentiated using the phone's built-in TTS engine (100% offline).
+ * sounds unmistakably differentiated using the phone's built-in TTS engine (100% offline),
+ * even on Android phones with only 1 local Vietnamese TTS voice installed.
  */
 export const ON_DEVICE_VOICE_TONES: Record<
   GeminiVoiceName,
   { pitch: number; rate: number; preferGender: 'female' | 'male' | 'neutral'; voiceSlotIndex: number }
 > = {
   Kore: { pitch: 1.04, rate: 1.0, preferGender: 'female', voiceSlotIndex: 0 },
-  Charon: { pitch: 0.78, rate: 0.94, preferGender: 'male', voiceSlotIndex: 1 },
-  Zephyr: { pitch: 1.18, rate: 0.97, preferGender: 'female', voiceSlotIndex: 2 },
-  Fenrir: { pitch: 0.68, rate: 0.92, preferGender: 'male', voiceSlotIndex: 3 },
-  Puck: { pitch: 0.92, rate: 1.08, preferGender: 'male', voiceSlotIndex: 4 },
-  Aoede: { pitch: 1.28, rate: 1.03, preferGender: 'female', voiceSlotIndex: 5 },
+  Charon: { pitch: 0.72, rate: 0.93, preferGender: 'male', voiceSlotIndex: 1 },
+  Zephyr: { pitch: 1.26, rate: 0.97, preferGender: 'female', voiceSlotIndex: 2 },
+  Fenrir: { pitch: 0.56, rate: 0.9, preferGender: 'male', voiceSlotIndex: 3 },
+  Puck: { pitch: 0.88, rate: 1.08, preferGender: 'male', voiceSlotIndex: 4 },
+  Aoede: { pitch: 1.46, rate: 1.04, preferGender: 'female', voiceSlotIndex: 5 },
 };
 
 /**
- * Computes consistent acoustic parameters for an imported/Studio ExternalVoiceAsset
+ * Computes consistent acoustic & Voice Design parameters for an imported/Studio ExternalVoiceAsset
  * so previewing in Studio/Drawer and live audiobook playback sound 100% identical.
  */
 export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
@@ -30,17 +32,29 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
   rate: number;
   preferGender: 'female' | 'male' | 'neutral';
   voiceSlotIndex: number;
+  warmthDb: number;
+  clarityDb: number;
+  stylePrompt: string;
 } {
   const baseVoice = ext.analyzedProfile?.recommendedBaseVoice || 'Kore';
   const preset = ON_DEVICE_VOICE_TONES[baseVoice] || ON_DEVICE_VOICE_TONES.Kore;
   const tone = ext.toneSettings;
-  const rawPitch = tone?.pitch ?? ext.analyzedProfile?.pitchHint ?? preset.pitch;
-  const rawRate = tone?.rate ?? ext.analyzedProfile?.rateHint ?? preset.rate;
+  const analyzed = ext.analyzedProfile;
 
-  // Reflect Studio EQ warmth/clarity subtly in on-device pitch so EQ-tuned voices are audibly distinct
-  const warmthShift = tone ? -(tone.warmthDb || 0) * 0.012 : 0;
-  const clarityShift = tone ? (tone.clarityDb || 0) * 0.008 : 0;
-  const pitch = Math.min(1.65, Math.max(0.6, Math.round((rawPitch + warmthShift + clarityShift) * 100) / 100));
+  const preferGender =
+    analyzed?.gender === 'male' || analyzed?.gender === 'female' || analyzed?.gender === 'neutral'
+      ? analyzed.gender
+      : preset.preferGender;
+
+  const rawPitch = tone?.pitch ?? analyzed?.pitchHint ?? preset.pitch;
+  const rawRate = tone?.rate ?? analyzed?.rateHint ?? preset.rate;
+  const warmthDb = tone?.warmthDb ?? analyzed?.warmthDb ?? (preferGender === 'male' ? 3 : 0);
+  const clarityDb = tone?.clarityDb ?? analyzed?.clarityDb ?? 1;
+
+  // Reflect EQ warmth/clarity subtly in on-device pitch so EQ-tuned voices are audibly distinct even offline
+  const warmthShift = -warmthDb * 0.014;
+  const clarityShift = clarityDb * 0.01;
+  const pitch = Math.min(1.68, Math.max(0.58, Math.round((rawPitch + warmthShift + clarityShift) * 100) / 100));
   const rate = Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, Math.round(rawRate * 100) / 100));
 
   // Deterministic slot offset from voice id so distinct custom voices rotate through device voices
@@ -54,17 +68,28 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
     baseVoice,
     pitch,
     rate,
-    preferGender: preset.preferGender,
+    preferGender,
     voiceSlotIndex,
+    warmthDb,
+    clarityDb,
+    stylePrompt:
+      analyzed?.stylePrompt ||
+      `Đọc theo âm sắc giọng ${ext.name}, giữ nhịp tự nhiên và truyền cảm`,
   };
 }
 
-let cachedNativeVoices: Array<{ voiceURI?: string; name?: string; lang?: string }> | null = null;
+let cachedNativeVoices: Array<{ voiceURI?: string; name?: string; lang?: string; localService?: boolean }> | null =
+  null;
+
+// Adaptive speaking speed calibration learned from actual completed sentences on this phone
+let observedBaseCharsPerSec = 13.4;
 
 let sharedAudioCtx: AudioContext | null = null;
 let keepaliveGain: GainNode | null = null;
 let keepaliveOsc: OscillatorNode | null = null;
 let activeSpeechCancelled = false;
+let speechGeneration = 0;
+let activeWebSpeechCancelResolver: (() => void) | null = null;
 
 function getSharedAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
@@ -210,7 +235,7 @@ export function listDeviceSpeechVoices(): SpeechSynthesisVoice[] {
   }
 }
 
-export async function waitForSpeechVoices(timeoutMs = 700): Promise<SpeechSynthesisVoice[]> {
+export async function waitForSpeechVoices(timeoutMs = 250): Promise<SpeechSynthesisVoice[]> {
   const immediate = listDeviceSpeechVoices();
   if (immediate.length > 0) return immediate;
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return [];
@@ -243,9 +268,26 @@ export function checkSpeechAudioAvailable(): {
 }
 
 const MALE_VOICE_HINT_RE =
-  /nam|male|man|minh|hung|an|david|daniel|mark|vi-vn-x-vid|vi-vn-x-vic|vnm/i;
+  /nam|male|man|minh|hung|david|daniel|mark|vi-vn-x-vid|vi-vn-x-vic|vnm|-(c|d)-local|-(c|d)-network/i;
 const FEMALE_VOICE_HINT_RE =
-  /nu|nữ|female|woman|linh|lan|mai|hoai|samantha|victoria|vi-vn-x-vif|vi-vn-x-vie|vi-vn-x-gft|vnf/i;
+  /nu|nữ|female|woman|linh|lan|mai|hoai|samantha|victoria|vi-vn-x-vif|vi-vn-x-vie|vi-vn-x-gft|vnf|-(a|b|e|f)-local|-(a|b|e|f)-network/i;
+
+function matchesLangLocale(voiceLang: string | undefined, targetLang: string): boolean {
+  const v = (voiceLang || '').toLowerCase().replace(/_/g, '-');
+  const t = (targetLang || 'vi-VN').toLowerCase().replace(/_/g, '-');
+  const prefix = t.split('-')[0];
+  if (!v) return false;
+  if (v === t || v.startsWith(`${prefix}-`) || v === prefix) return true;
+  if (prefix === 'vi' && (v.startsWith('vie') || v.includes('viet'))) return true;
+  return false;
+}
+
+function isLocalOfflineVoice(v: { voiceURI?: string; name?: string; localService?: boolean }): boolean {
+  const tag = `${v.name || ''} ${v.voiceURI || ''}`.toLowerCase();
+  if (tag.includes('-network') || tag.includes('network')) return false;
+  if (tag.includes('-local') || v.localService === true) return true;
+  return true;
+}
 
 export function pickBestDeviceVoice(
   voices: SpeechSynthesisVoice[],
@@ -260,11 +302,10 @@ export function pickBestDeviceVoice(
     if (exact) return exact;
   }
 
-  const langPrefix = (lang || 'vi-VN').split('-')[0].toLowerCase();
-  const langMatches = voices.filter((v) =>
-    v.lang.toLowerCase().startsWith(langPrefix)
-  );
-  const pool = langMatches.length > 0 ? langMatches : voices;
+  const langMatches = voices.filter((v) => matchesLangLocale(v.lang, lang));
+  const basePool = langMatches.length > 0 ? langMatches : voices;
+  const localPool = basePool.filter((v) => isLocalOfflineVoice(v));
+  const pool = localPool.length > 0 ? localPool : basePool;
 
   if (preferGender === 'male') {
     const males = pool.filter((v) => MALE_VOICE_HINT_RE.test(`${v.name} ${v.voiceURI}`));
@@ -278,7 +319,7 @@ export function pickBestDeviceVoice(
 }
 
 export function pickBestNativeVoiceIndex(
-  voices: Array<{ voiceURI?: string; name?: string; lang?: string }>,
+  voices: Array<{ voiceURI?: string; name?: string; lang?: string; localService?: boolean }>,
   lang: string,
   voiceURI?: string,
   preferGender?: 'female' | 'male' | 'neutral',
@@ -293,22 +334,26 @@ export function pickBestNativeVoiceIndex(
     if (exactIdx >= 0) return exactIdx;
   }
 
-  const langPrefix = (lang || 'vi-VN').split('-')[0].toLowerCase();
   const indexedLangMatches = voices
     .map((v, index) => ({ v, index }))
-    .filter(({ v }) => (v.lang || '').toLowerCase().startsWith(langPrefix));
+    .filter(({ v }) => matchesLangLocale(v.lang, lang));
 
   if (indexedLangMatches.length === 0) return -1;
 
+  // Strongly prioritize -local offline Android TTS voices because -network voices
+  // silently fall back to the single default Android voice when network synthesis lags/fails.
+  const localMatches = indexedLangMatches.filter(({ v }) => isLocalOfflineVoice(v));
+  const pool = localMatches.length > 0 ? localMatches : indexedLangMatches;
+
   if (preferGender === 'male') {
-    const males = indexedLangMatches.filter(({ v }) =>
+    const males = pool.filter(({ v }) =>
       MALE_VOICE_HINT_RE.test(`${v.name || ''} ${v.voiceURI || ''}`)
     );
     if (males.length > 0) {
       return males[Math.abs(voiceSlotIndex) % males.length].index;
     }
   } else if (preferGender === 'female') {
-    const females = indexedLangMatches.filter(({ v }) =>
+    const females = pool.filter(({ v }) =>
       FEMALE_VOICE_HINT_RE.test(`${v.name || ''} ${v.voiceURI || ''}`)
     );
     if (females.length > 0) {
@@ -316,29 +361,32 @@ export function pickBestNativeVoiceIndex(
     }
   }
 
-  return indexedLangMatches[Math.abs(voiceSlotIndex) % indexedLangMatches.length].index;
+  return pool[Math.abs(voiceSlotIndex) % pool.length].index;
 }
 
 async function getNativeSupportedVoices(): Promise<
-  Array<{ voiceURI?: string; name?: string; lang?: string }>
+  Array<{ voiceURI?: string; name?: string; lang?: string; localService?: boolean }>
 > {
-  if (cachedNativeVoices !== null) return cachedNativeVoices;
+  if (cachedNativeVoices && cachedNativeVoices.length > 0) return cachedNativeVoices;
   if (!isCapacitorNativeTtsReady()) return [];
   try {
     const res = await TextToSpeech.getSupportedVoices();
-    cachedNativeVoices = Array.isArray(res?.voices) ? res.voices : [];
-    return cachedNativeVoices;
+    const list = Array.isArray(res?.voices) ? res.voices : [];
+    // Never cache an empty list — Android TTS service may still be initializing on first call
+    if (list.length > 0) {
+      cachedNativeVoices = list;
+    }
+    return list;
   } catch {
-    cachedNativeVoices = [];
     return [];
   }
 }
 
 /**
- * Splits long text into natural sentence-bounded chunks so native Android TextToSpeech
- * and Web Speech never drop long chapters and support clean word/character progress.
+ * Splits long text into crisp sentence-bounded chunks so native Android TextToSpeech
+ * and Web Speech stay locked in sync (zero highlight drift) and switch voices responsively.
  */
-export function splitSpeechIntoChunks(text: string, maxLen = 190): string[] {
+export function splitSpeechIntoChunks(text: string, maxLen = 115): string[] {
   const normalized = (text || '').replace(/\s+/g, ' ').trim();
   if (!normalized) return [];
   if (normalized.length <= maxLen) return [normalized];
@@ -354,14 +402,29 @@ export function splitSpeechIntoChunks(text: string, maxLen = 190): string[] {
         chunks.push(current.trim());
         current = '';
       }
-      const words = sentence.split(/\s+/);
+      // Also split overly long sentences on commas if possible
+      const clauses = sentence.split(/(?<=,)\s+/);
       let buf = '';
-      for (const word of words) {
-        if ((buf + ' ' + word).trim().length > maxLen && buf) {
+      for (const clause of clauses) {
+        if (clause.length > maxLen) {
+          if (buf.trim()) {
+            chunks.push(buf.trim());
+            buf = '';
+          }
+          const words = clause.split(/\s+/);
+          for (const word of words) {
+            if ((buf + ' ' + word).trim().length > maxLen && buf) {
+              chunks.push(buf.trim());
+              buf = word;
+            } else {
+              buf = buf ? `${buf} ${word}` : word;
+            }
+          }
+        } else if ((buf + ' ' + clause).trim().length > maxLen && buf) {
           chunks.push(buf.trim());
-          buf = word;
+          buf = clause;
         } else {
-          buf = buf ? `${buf} ${word}` : word;
+          buf = buf ? `${buf} ${clause}` : clause;
         }
       }
       if (buf.trim()) chunks.push(buf.trim());
@@ -381,6 +444,12 @@ export function splitSpeechIntoChunks(text: string, maxLen = 190): string[] {
 
 export function stopOnDeviceSpeech(): void {
   activeSpeechCancelled = true;
+  speechGeneration += 1;
+  if (activeWebSpeechCancelResolver) {
+    const cancelFn = activeWebSpeechCancelResolver;
+    activeWebSpeechCancelResolver = null;
+    cancelFn();
+  }
   if (isCapacitorNativeTtsReady()) {
     TextToSpeech.stop().catch(() => {});
   }
@@ -408,25 +477,47 @@ export interface SpeakOnDeviceOptions {
 /**
  * Speaks text cleanly on the user's phone / browser using native Capacitor Android/iOS TTS
  * (directly bridging android.speech.tts.TextToSpeech) or hardened Web Speech API with
- * voice readiness wait, Vietnamese OCR normalization, & sentence chunking.
- * Returns false if no audio output started.
+ * adaptive sentence-anchored timing & original-text index remapping so highlight never drifts.
  */
 export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<boolean> {
   const lang = options.lang || 'vi-VN';
-  const cleanText = normalizeVietnameseForSpeech(options.text || '', lang);
+  const originalText = options.text || '';
+  const cleanText = normalizeVietnameseForSpeech(originalText, lang);
   if (!cleanText) return false;
 
+  if (activeWebSpeechCancelResolver) {
+    const cancelFn = activeWebSpeechCancelResolver;
+    activeWebSpeechCancelResolver = null;
+    cancelFn();
+  }
+  const gen = ++speechGeneration;
   activeSpeechCancelled = false;
-  const pitch = Math.min(1.8, Math.max(0.55, options.pitch ?? 1.0));
+  const isStale = () => activeSpeechCancelled || gen !== speechGeneration;
+  const pitch = Math.min(1.75, Math.max(0.55, options.pitch ?? 1.0));
   const rate = Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, options.rate ?? 1.0));
   const voiceSlotIndex = options.voiceSlotIndex ?? 0;
-  const chunks = splitSpeechIntoChunks(cleanText, 210);
+  // Short sentence-bounded chunks re-anchor highlight to 0ms drift on every sentence
+  const chunks = splitSpeechIntoChunks(cleanText, 115);
+
+  const totalCleanLen = Math.max(
+    1,
+    chunks.reduce((sum, c, idx) => sum + c.length + (idx > 0 ? 1 : 0), 0)
+  );
+  const originalLen = Math.max(1, originalText.length);
+  const emitMappedBoundary = (cleanCharIndex: number) => {
+    if (isStale()) return;
+    const ratio = Math.max(0, Math.min(1, cleanCharIndex / totalCleanLen));
+    const mapped = Math.min(originalLen, Math.floor(ratio * originalLen));
+    options.onBoundary?.(mapped);
+  };
 
   // 1. Native Capacitor Android/iOS TextToSpeech bridge (always prioritized inside APK)
   if (isCapacitorNativeTtsReady()) {
     try {
       await TextToSpeech.stop().catch(() => {});
+      if (isStale()) return false;
       const nativeVoices = await getNativeSupportedVoices();
+      if (isStale()) return false;
       const nativeVoiceIdx = pickBestNativeVoiceIndex(
         nativeVoices,
         lang,
@@ -438,20 +529,25 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
       let charCursor = 0;
       options.onStart?.();
       for (const chunk of chunks) {
-        if (activeSpeechCancelled) return false;
+        if (isStale()) return false;
         const chunkBase = charCursor;
-        options.onBoundary?.(chunkBase);
-        const charsPerMs = (11.5 * rate) / 1000;
+        emitMappedBoundary(chunkBase);
+
+        // Compensate for ~200ms Android TTS audio-onset latency + adaptive speaking speed
+        const onsetDelayMs = 200;
+        const expectedDurationMs = Math.max(
+          450,
+          (chunk.length / Math.max(6, observedBaseCharsPerSec * rate)) * 1000
+        );
         const startedAt = Date.now();
         const cadenceTimer = window.setInterval(() => {
           if (activeSpeechCancelled) return;
-          const elapsed = Date.now() - startedAt;
-          const approxOffset = Math.min(
-            Math.max(1, chunk.length - 2),
-            Math.floor(elapsed * charsPerMs)
-          );
-          options.onBoundary?.(chunkBase + approxOffset);
-        }, 75);
+          const elapsed = Math.max(0, Date.now() - startedAt - onsetDelayMs);
+          const estRatio = Math.min(0.96, elapsed / expectedDurationMs);
+          const localOffset = mapTimeRatioToWeightedCharIndex(chunk, estRatio);
+          emitMappedBoundary(chunkBase + localOffset);
+        }, 65);
+
         try {
           await TextToSpeech.speak({
             text: chunk,
@@ -460,11 +556,21 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
             pitch,
             volume: 1.0,
             category: 'playback',
-            ...(nativeVoiceIdx >= 0 ? { voice: nativeVoiceIdx } : {}),
+            ...(nativeVoiceIdx >= 0 && nativeVoices.length > 1 ? { voice: nativeVoiceIdx } : {}),
           });
         } finally {
           window.clearInterval(cadenceTimer);
         }
+
+        // Learn actual speaking speed of this Android phone's TTS voice for zero drift
+        const actualMs = Date.now() - startedAt - onsetDelayMs;
+        if (!activeSpeechCancelled && chunk.length >= 18 && actualMs > 450 && actualMs < 20000) {
+          const measuredBaseCps = (chunk.length / (actualMs / 1000)) / Math.max(0.5, rate);
+          if (measuredBaseCps >= 6 && measuredBaseCps <= 26) {
+            observedBaseCharsPerSec = observedBaseCharsPerSec * 0.65 + measuredBaseCps * 0.35;
+          }
+        }
+
         charCursor += chunk.length + 1;
       }
       return !activeSpeechCancelled;
@@ -478,14 +584,14 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
     return false;
   }
 
-  const voices = await waitForSpeechVoices(700);
-  if (activeSpeechCancelled) return false;
+  const voices = await waitForSpeechVoices(250);
+  if (isStale()) return false;
 
   let charCursor = 0;
   let anyStarted = false;
 
   for (let i = 0; i < chunks.length; i++) {
-    if (activeSpeechCancelled) return false;
+    if (isStale()) return false;
     const chunk = chunks[i];
     const chunkBaseCursor = charCursor;
 
@@ -499,23 +605,38 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
       const done = (result: boolean) => {
         if (settled) return;
         settled = true;
+        if (activeWebSpeechCancelResolver === forceCancel) {
+          activeWebSpeechCancelResolver = null;
+        }
         if (cadenceTimer !== null) {
           window.clearInterval(cadenceTimer);
           cadenceTimer = null;
         }
         window.clearTimeout(safetyTimer);
         window.clearTimeout(noStartTimer);
+        if (result && chunkStartedAt > 0 && chunk.length >= 18) {
+          const actualMs = Date.now() - chunkStartedAt;
+          if (actualMs > 450 && actualMs < 20000) {
+            const measuredBaseCps = (chunk.length / (actualMs / 1000)) / Math.max(0.5, rate);
+            if (measuredBaseCps >= 6 && measuredBaseCps <= 26) {
+              observedBaseCharsPerSec = observedBaseCharsPerSec * 0.65 + measuredBaseCps * 0.35;
+            }
+          }
+        }
         resolve(result);
       };
 
-      const estimatedMs = Math.max(3500, (chunk.length / (9 * rate)) * 1000 + 2500);
+      const forceCancel = () => done(false);
+      activeWebSpeechCancelResolver = forceCancel;
+
+      const estimatedMs = Math.max(3500, (chunk.length / (8 * rate)) * 1000 + 2500);
       const safetyTimer = window.setTimeout(() => done(started), estimatedMs);
       // Fail fast if browser/WebView never starts speechSynthesis (avoids fake silent ticking)
       const noStartTimer = window.setTimeout(() => {
         if (!started) {
           done(false);
         }
-      }, 2200);
+      }, 1200);
 
       try {
         const synth = window.speechSynthesis;
@@ -545,30 +666,35 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
         utter.volume = 1.0;
 
         utter.onstart = () => {
+          if (isStale()) {
+            done(false);
+            return;
+          }
           started = true;
           chunkStartedAt = Date.now();
           if (!anyStarted) {
             anyStarted = true;
             options.onStart?.();
           }
-          options.onBoundary?.(chunkBaseCursor);
-          const charsPerMs = (11.5 * rate) / 1000;
+          emitMappedBoundary(chunkBaseCursor);
+          const expectedDurationMs = Math.max(
+            450,
+            (chunk.length / Math.max(6, observedBaseCharsPerSec * rate)) * 1000
+          );
           cadenceTimer = window.setInterval(() => {
-            if (!started || settled || activeSpeechCancelled) return;
+            if (!started || settled || isStale()) return;
             // Defer to native browser onboundary whenever it fires actively
-            if (Date.now() - lastNativeBoundaryAt < 180) return;
-            const elapsed = Date.now() - chunkStartedAt;
-            const approxOffset = Math.min(
-              Math.max(1, chunk.length - 2),
-              Math.floor(elapsed * charsPerMs)
-            );
-            options.onBoundary?.(chunkBaseCursor + approxOffset);
-          }, 75);
+            if (Date.now() - lastNativeBoundaryAt < 220) return;
+            const elapsed = Math.max(0, Date.now() - chunkStartedAt - 100);
+            const estRatio = Math.min(0.96, elapsed / expectedDurationMs);
+            const localOffset = mapTimeRatioToWeightedCharIndex(chunk, estRatio);
+            emitMappedBoundary(chunkBaseCursor + localOffset);
+          }, 65);
         };
         utter.onboundary = (ev) => {
-          if (typeof ev.charIndex === 'number') {
+          if (!isStale() && typeof ev.charIndex === 'number') {
             lastNativeBoundaryAt = Date.now();
-            options.onBoundary?.(chunkBaseCursor + ev.charIndex);
+            emitMappedBoundary(chunkBaseCursor + ev.charIndex);
           }
         };
         utter.onend = () => done(true);
@@ -580,11 +706,11 @@ export async function speakOnDevice(options: SpeakOnDeviceOptions): Promise<bool
       }
     });
 
-    if (!ok) {
-      return anyStarted && !activeSpeechCancelled;
+    if (!ok || isStale()) {
+      return anyStarted && !isStale();
     }
     charCursor += chunk.length + 1;
   }
 
-  return anyStarted && !activeSpeechCancelled;
+  return anyStarted && !isStale();
 }

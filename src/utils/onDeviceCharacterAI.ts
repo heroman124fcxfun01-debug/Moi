@@ -273,28 +273,27 @@ export interface ReadingVoiceStyleOption {
 export const READING_VOICE_STYLES: ReadingVoiceStyleOption[] = [
   {
     id: 'novel',
-    label: 'Giọng tiểu thuyết — Nhấn nhá tình huống & cảm xúc',
+    label: 'Tiểu thuyết',
     shortLabel: 'Tiểu thuyết',
-    description:
-      'Tự động nhấn nhá theo từng tình huống: hoảng sợ, bất ngờ, kiên định, đĩnh đạc, dọa nạt, hùng hồn, quyết chí, đau thương, buồn khổ, vui mừng, cười lớn, khóc.',
+    description: 'Nhấn nhá tình huống & cảm xúc nhân vật.',
   },
   {
     id: 'essay',
-    label: 'Giọng tản văn — Nhẹ nhàng, tình cảm',
+    label: 'Tản văn',
     shortLabel: 'Tản văn',
-    description: 'Nhịp đọc êm ái, nhẹ nhàng, giàu cảm xúc lắng đọng.',
+    description: 'Nhẹ nhàng, êm ái, lắng đọng.',
   },
   {
     id: 'selfhelp',
-    label: 'Giọng học tập — Phong cách sách Self-help',
+    label: 'Học tập',
     shortLabel: 'Học tập',
-    description: 'Rõ ràng, mạch lạc, giàu năng lượng truyền động lực như sách phát triển bản thân.',
+    description: 'Rõ ràng, mạch lạc, giàu năng lượng.',
   },
   {
     id: 'research',
-    label: 'Giọng nghiên cứu — Chuẩn xác, điềm tĩnh',
+    label: 'Nghiên cứu',
     shortLabel: 'Nghiên cứu',
-    description: 'Nhịp ổn định, nhấn mạnh thuật ngữ và số liệu rõ ràng.',
+    description: 'Điềm tĩnh, chuẩn xác, nhấn thuật ngữ.',
   },
 ];
 

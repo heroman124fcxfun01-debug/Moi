@@ -11,6 +11,7 @@ import {
   incrementCongDongDownload,
   listCongDongBooks,
 } from './server/congdongsach.ts';
+import { normalizeVietnameseForSpeech } from './src/utils/vietnameseTtsNormalizer.ts';
 
 dotenv.config();
 
@@ -753,12 +754,16 @@ async function startServer() {
         voiceName = 'Kore',
         stylePrompt = 'Đọc truyền cảm, rõ ràng, tự nhiên như sách nói',
         expressive = true,
+        useVoiceDesign = false,
+        lang = 'vi-VN',
         readingStyle = 'novel',
       } = req.body as {
         text: string;
         voiceName?: string;
         stylePrompt?: string;
         expressive?: boolean;
+        useVoiceDesign?: boolean;
+        lang?: string;
         readingStyle?: 'novel' | 'selfhelp' | 'essay' | 'research';
       };
 
@@ -766,6 +771,10 @@ async function startServer() {
         res.status(400).json({ error: 'Thiếu văn bản để tạo giọng đọc AI.' });
         return;
       }
+
+      const spokenText = (lang || 'vi-VN').toLowerCase().startsWith('vi')
+        ? normalizeVietnameseForSpeech(text.trim())
+        : text.trim();
 
       const genrePrefix: Record<string, string> = {
         novel:
@@ -780,7 +789,9 @@ async function startServer() {
 
       const validVoices = ['Kore', 'Charon', 'Zephyr', 'Fenrir', 'Puck', 'Aoede'];
       const chosenVoice = validVoices.includes(voiceName) ? voiceName : 'Kore';
-      const combinedStyle = `${genrePrefix[readingStyle] || ''} ${stylePrompt}. Phát âm tiếng Việt tự nhiên, truyền cảm, rõ chữ.`.trim();
+      const combinedStyle = useVoiceDesign
+        ? `Voice persona: ${stylePrompt}. ${genrePrefix[readingStyle] || ''} Giữ đúng âm sắc, giới tính, độ trầm bổng và phong cách giọng mẫu xuyên suốt câu đọc tiếng Việt tự nhiên, rõ chữ.`.trim()
+        : `${genrePrefix[readingStyle] || ''} ${stylePrompt}. Phát âm tiếng Việt tự nhiên, truyền cảm, rõ chữ.`.trim();
 
       const isQuotaExceeded = (err: unknown): boolean => {
         const s = String(err instanceof Error ? err.message : err || '');
@@ -789,18 +800,23 @@ async function startServer() {
 
       // Gemini TTS speechConfig / speechMetadata require v1beta endpoint
       const ai = getAiClient('v1beta');
-      const primaryModel = expressive ? 'gemini-3.8-flash-lite-tts' : 'gemini-3.8-flash-lite-tts';
+      // Use gemini-3.8-flash-tts for Voice Design (custom/imported voices), flash-lite for fast standard TTS
+      const primaryModel = useVoiceDesign
+        ? 'gemini-3.8-flash-tts'
+        : expressive
+          ? 'gemini-3.8-flash-lite-tts'
+          : 'gemini-3.8-flash-lite-tts';
 
       const callTts = async (modelName: string, voice: string, useMetadata: boolean) => {
         const part = useMetadata
           ? {
-              text: text.trim(),
+              text: spokenText,
               speechMetadata: {
                 style: combinedStyle,
               },
             }
           : {
-              text: text.trim(),
+              text: spokenText,
             };
         return ai.models.generateContent({
           model: modelName,
@@ -834,10 +850,11 @@ async function startServer() {
           });
           return;
         }
-        // Retry once without speechMetadata (and fallback Aoede -> Zephyr if voice name unsupported)
+        // Fallback to flash-lite-tts (with metadata if flash-tts failed, or without metadata if lite failed)
+        const fallbackModel = 'gemini-3.8-flash-lite-tts';
         const safeVoice = chosenVoice === 'Aoede' ? 'Zephyr' : chosenVoice;
         try {
-          response = await callTts(primaryModel, safeVoice, false);
+          response = await callTts(fallbackModel, chosenVoice, useVoiceDesign);
         } catch (secondErr) {
           if (isQuotaExceeded(secondErr)) {
             res.status(200).json({
@@ -848,7 +865,20 @@ async function startServer() {
             });
             return;
           }
-          throw secondErr;
+          try {
+            response = await callTts(fallbackModel, safeVoice, false);
+          } catch (thirdErr) {
+            if (isQuotaExceeded(thirdErr)) {
+              res.status(200).json({
+                quotaExceeded: true,
+                code: 'QUOTA_EXCEEDED',
+                error:
+                  'Hạn mức giọng Google AI miễn phí tạm hết trong ngày. Đã tự động chuyển sang giọng đọc thiết bị để bạn nghe liên tục.',
+              });
+              return;
+            }
+            throw thirdErr;
+          }
         }
       }
 
@@ -937,7 +967,23 @@ async function startServer() {
               },
             },
             {
-              text: `Analyze this uploaded voice sample ("${fileName}") for audiobook character dubbing. Describe the voice timbre, gender/age feel, pace, and emotional tone in Vietnamese. Recommend the closest Gemini TTS base voice from [Kore, Charon, Zephyr, Fenrir], a stylePrompt to imitate this voice style, pitchHint (0.6 to 1.5), rateHint (0.75 to 1.35), and a short transcriptPreview.`,
+              text: `Listen carefully to this uploaded voice sample ("${fileName}") and analyze its vocal fingerprint for audiobook voice cloning / Voice Design.
+Return JSON with:
+1. "description": Vietnamese description of the voice's gender, apparent age, timbre (trầm ấm / khàn / trong trẻo / dày / nhẹ), accent (Bắc / Trung / Nam / khác), speaking cadence, and emotional character.
+2. "stylePrompt": A detailed Voice Design persona prompt (combining concise English acoustic cues + Vietnamese delivery cues) so a TTS Voice Design model replicates this exact voice's timbre, gender, age, warmth, resonance, breathiness, accent, and pacing.
+3. "recommendedBaseVoice": Choose the closest match among ALL 6 voices:
+   - "Fenrir": deep, resonant, dramatic male voice
+   - "Charon": warm, calm, steady medium-low male narrator
+   - "Puck": bright, youthful, expressive agile male voice
+   - "Kore": balanced, warm, clear medium female narrator
+   - "Zephyr": soft, gentle, airy, melodic female voice
+   - "Aoede": crisp, bright, high-clarity expressive female voice
+4. "gender": "male", "female", or "neutral".
+5. "pitchHint": number between 0.65 and 1.45 matching the speaker's pitch relative to average (deep male ~0.70-0.82, medium male ~0.85-0.96, medium female ~1.02-1.15, high/bright female ~1.18-1.38).
+6. "rateHint": number between 0.80 and 1.25 matching the speaker's natural speaking tempo.
+7. "warmthDb": number between -6 and 10 representing bass/chest warmth EQ adjustment.
+8. "clarityDb": number between -4 and 8 representing vocal treble/clarity EQ adjustment.
+9. "transcriptPreview": short transcript of what is spoken in the sample (or empty string if non-speech).`,
             },
           ],
         },
@@ -949,19 +995,165 @@ async function startServer() {
               description: { type: Type.STRING },
               stylePrompt: { type: Type.STRING },
               recommendedBaseVoice: { type: Type.STRING },
+              gender: { type: Type.STRING },
               pitchHint: { type: Type.NUMBER },
               rateHint: { type: Type.NUMBER },
+              warmthDb: { type: Type.NUMBER },
+              clarityDb: { type: Type.NUMBER },
               transcriptPreview: { type: Type.STRING },
             },
-            required: ['description', 'stylePrompt', 'recommendedBaseVoice', 'pitchHint', 'rateHint'],
+            required: [
+              'description',
+              'stylePrompt',
+              'recommendedBaseVoice',
+              'gender',
+              'pitchHint',
+              'rateHint',
+              'warmthDb',
+              'clarityDb',
+            ],
           },
         },
       });
 
-      const parsed = JSON.parse(response.text || '{}');
-      res.json(parsed);
+      const raw = JSON.parse(response.text || '{}') as Record<string, unknown>;
+      const validVoices = ['Kore', 'Charon', 'Zephyr', 'Fenrir', 'Puck', 'Aoede'];
+      const recommendedBaseVoice = validVoices.includes(String(raw.recommendedBaseVoice))
+        ? String(raw.recommendedBaseVoice)
+        : 'Kore';
+      const rawGender = String(raw.gender || '').toLowerCase();
+      const gender =
+        rawGender === 'male' || rawGender === 'female' || rawGender === 'neutral'
+          ? rawGender
+          : recommendedBaseVoice === 'Fenrir' ||
+              recommendedBaseVoice === 'Charon' ||
+              recommendedBaseVoice === 'Puck'
+            ? 'male'
+            : 'female';
+      const clamp = (v: unknown, min: number, max: number, fallback: number) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return fallback;
+        return Number(Math.max(min, Math.min(max, n)).toFixed(2));
+      };
+      res.json({
+        description: String(raw.description || `AI đã phân tích đặc trưng giọng mẫu (${fileName}).`),
+        stylePrompt: String(raw.stylePrompt || 'Đọc truyền cảm, giữ nguyên âm sắc tự nhiên của giọng mẫu'),
+        recommendedBaseVoice,
+        gender,
+        pitchHint: clamp(raw.pitchHint, 0.65, 1.45, gender === 'male' ? 0.86 : 1.08),
+        rateHint: clamp(raw.rateHint, 0.8, 1.25, 1.0),
+        warmthDb: Math.round(clamp(raw.warmthDb, -6, 10, gender === 'male' ? 4 : 1)),
+        clarityDb: Math.round(clamp(raw.clarityDb, -4, 8, 2)),
+        transcriptPreview: String(raw.transcriptPreview || ''),
+        analyzedBy: 'gemini-ai',
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi phân tích tệp giọng nói ngoài.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // Download an audio voice sample from a public web URL (MP3/WAV/M4A/OGG) so AI can analyze it directly
+  app.post('/api/ai/fetch-voice-url', async (req, res) => {
+    try {
+      const { url } = req.body as { url?: string };
+      const rawUrl = String(url || '').trim();
+      if (!rawUrl) {
+        res.status(400).json({ error: 'Vui lòng nhập link tệp âm thanh (.mp3, .wav, .m4a, .ogg).' });
+        return;
+      }
+
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(rawUrl);
+      } catch {
+        res.status(400).json({ error: 'Đường dẫn link giọng nói không hợp lệ.' });
+        return;
+      }
+
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        res.status(400).json({ error: 'Chỉ hỗ trợ đường dẫn http:// hoặc https://.' });
+        return;
+      }
+
+      const host = parsedUrl.hostname.toLowerCase();
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '::1' ||
+        host.startsWith('10.') ||
+        host.startsWith('192.168.') ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
+        host === '169.254.169.254'
+      ) {
+        res.status(400).json({ error: 'Không hỗ trợ tải tệp từ địa chỉ nội bộ.' });
+        return;
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      let fetchResp: Response;
+      try {
+        fetchResp = await fetch(parsedUrl.toString(), {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; BOOKHAD/1.0)',
+            Accept: 'audio/*,application/octet-stream,*/*',
+          },
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!fetchResp.ok) {
+        res.status(502).json({ error: `Không tải được tệp âm thanh (HTTP ${fetchResp.status}).` });
+        return;
+      }
+
+      const rawType = (fetchResp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const pathname = decodeURIComponent(parsedUrl.pathname || '');
+      const baseName = path.basename(pathname) || 'voice-sample.mp3';
+      const ext = path.extname(baseName).toLowerCase();
+      const mimeByExt: Record<string, string> = {
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.m4a': 'audio/mp4',
+        '.ogg': 'audio/ogg',
+        '.aac': 'audio/aac',
+        '.flac': 'audio/flac',
+        '.webm': 'audio/webm',
+      };
+      const mimeType = rawType.startsWith('audio/')
+        ? rawType
+        : mimeByExt[ext] || (rawType === 'application/octet-stream' ? 'audio/mpeg' : '');
+
+      if (!mimeType) {
+        res.status(400).json({
+          error: 'Link này không trỏ trực tiếp tới tệp âm thanh (.mp3, .wav, .m4a, .ogg).',
+        });
+        return;
+      }
+
+      const arrBuf = await fetchResp.arrayBuffer();
+      const maxBytes = 12 * 1024 * 1024;
+      if (arrBuf.byteLength === 0) {
+        res.status(400).json({ error: 'Tệp âm thanh tải về bị rỗng.' });
+        return;
+      }
+      if (arrBuf.byteLength > maxBytes) {
+        res.status(413).json({ error: 'Tệp âm thanh vượt quá giới hạn 12 MB.' });
+        return;
+      }
+
+      const audioBase64 = Buffer.from(arrBuf).toString('base64');
+      res.json({
+        fileName: baseName,
+        mimeType,
+        audioBase64,
+        dataUrl: `data:${mimeType};base64,${audioBase64}`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Không thể tải tệp âm thanh từ link đã nhập.';
       res.status(500).json({ error: msg });
     }
   });

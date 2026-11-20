@@ -57,8 +57,8 @@ function createTextWidthMeasurer(
         return (text: string) => {
           if (!text) return 0;
           const base = ctx.measureText(text).width;
-          // Apply a small 1.03 safety factor for subpixel kerning & Android WebView font metrics
-          return base * 1.03 + Math.max(0, text.length - 1) * extraPerChar;
+          // Apply realistic 1.08 safety factor for Vietnamese diacritics, justified spacing & WebView webfonts
+          return base * 1.08 + Math.max(0, text.length - 1) * extraPerChar;
         };
       }
     } catch {
@@ -72,13 +72,13 @@ function createTextWidthMeasurer(
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
       if (ch === ' ') {
-        width += fontSize * 0.28;
+        width += fontSize * 0.29;
       } else if ('iljtI1.,;:\'"!|'.includes(ch)) {
-        width += fontSize * 0.34;
+        width += fontSize * 0.36;
       } else if ('mwMW@%'.includes(ch)) {
-        width += fontSize * 0.82;
+        width += fontSize * 0.85;
       } else {
-        width += fontSize * 0.56;
+        width += fontSize * 0.58;
       }
     }
     return width + Math.max(0, text.length - 1) * extraPerChar;
@@ -92,7 +92,8 @@ export function wrapTextToLines(
   text: string,
   maxLineWidth: number,
   measureWidth: (s: string) => number,
-  firstLineIndentPx = 0
+  firstLineIndentPx = 0,
+  dropCapReservePx = 0
 ): string[] {
   const clean = text.trim();
   if (!clean) return [];
@@ -102,8 +103,12 @@ export function wrapTextToLines(
   const lines: string[] = [];
   let currentLine = '';
 
-  const getAvailWidth = (lineIndex: number) =>
-    lineIndex === 0 ? Math.max(80, safeWidth - firstLineIndentPx) : safeWidth;
+  const getAvailWidth = (lineIndex: number) => {
+    if (dropCapReservePx > 0 && lineIndex < 3) {
+      return Math.max(72, safeWidth - dropCapReservePx);
+    }
+    return lineIndex === 0 ? Math.max(80, safeWidth - firstLineIndentPx) : safeWidth;
+  };
 
   for (const word of words) {
     const avail = getAvailWidth(lines.length);
@@ -163,15 +168,15 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
   const columns = settings.columnsInPaginated === 2 && viewportWidth >= 768 ? 2 : 1;
   const colGap = columns === 2 ? 40 : 0;
 
-  // Inner column text width (subtracting horizontal paragraph padding)
+  // Inner column text width (subtracting horizontal paragraph padding px-1.5 + safety margin)
   const effectiveColumnWidth = Math.max(
-    180,
-    (Math.max(220, viewportWidth) - colGap) / columns - 16
+    160,
+    (Math.max(200, viewportWidth) - colGap) / columns - 22
   );
 
-  // Available vertical text height per column (leave ~1.2 lines safety buffer so text never clips on Android WebView)
-  const safetyBuffer = Math.max(24, lineHeightPx * 1.15);
-  const singleColumnBudget = Math.max(lineHeightPx * 3, viewportHeight - safetyBuffer);
+  // Available vertical text height per column (leave ~1.25 lines safety buffer so large fonts NEVER clip)
+  const safetyBuffer = Math.max(26, lineHeightPx * 1.25);
+  const singleColumnBudget = Math.max(lineHeightPx * 2, viewportHeight - safetyBuffer);
   const fullPageBudget = singleColumnBudget * columns;
 
   const measureWidth = createTextWidthMeasurer(
@@ -181,11 +186,11 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
     settings.letterSpacing || 0
   );
 
-  // Estimate chapter header height on Page 1
-  const titleFontSize = viewportWidth >= 640 ? 28 : 22;
-  const titleCharsPerLine = Math.max(14, Math.floor(Math.max(220, viewportWidth) / (titleFontSize * 0.56)));
+  // Estimate chapter header height on Page 1 (accounting for book title eyebrow + wrapped h1 + border/margin)
+  const titleFontSize = viewportWidth >= 640 ? 24 : 20;
+  const titleCharsPerLine = Math.max(12, Math.floor(Math.max(200, viewportWidth) / (titleFontSize * 0.6)));
   const titleLines = Math.max(1, Math.ceil((chapterTitle || '').length / titleCharsPerLine));
-  const chapterHeaderHeight = 26 + titleLines * (titleFontSize * 1.32) + 22;
+  const chapterHeaderHeight = 32 + titleLines * (titleFontSize * 1.4) + 28;
 
   const pages: ScreenPage[] = [];
   let currentChunks: ScreenPageChunk[] = [];
@@ -206,11 +211,13 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
   for (const pair of paragraphs) {
     const useDropCap = settings.dropCap && pair.index === 0;
     const indentPx = settings.firstLineIndent && !useDropCap ? 28 : 0;
+    const dropCapReservePx = useDropCap ? Math.min(effectiveColumnWidth * 0.36, fontSize * 2.35) : 0;
     const wrappedOriginal = wrapTextToLines(
       pair.original,
       effectiveColumnWidth,
       measureWidth,
-      indentPx
+      indentPx,
+      dropCapReservePx
     );
 
     const wrappedTranslated = pair.translated
@@ -303,7 +310,7 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
         dropCapExtra +
         6 +
         (attachTrans ? translatedHeight : 0) +
-        (finalIsLast ? paraSpacingPx : 6);
+        paraSpacingPx;
 
       remainingHeight = Math.max(0, remainingHeight - consumed);
       lineOffset += takeLines;

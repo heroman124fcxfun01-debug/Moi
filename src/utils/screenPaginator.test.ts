@@ -108,4 +108,45 @@ describe('screenPaginator exact page resume', () => {
     });
     assert.equal(resumed, exitIdx);
   });
+
+  it('reflows overflowed text onto additional screen pages when fontSize increases with zero word loss', () => {
+    const paragraphs: BilingualParagraphPair[] = Array.from({ length: 18 }, (_, i) => ({
+      index: i,
+      original: `Đoạn văn thứ ${i + 1}: Ánh đèn vàng ấm áp rọi qua khung cửa sổ nhỏ, phản chiếu những trang giấy thơm mùi gỗ cũ giữa đêm mưa rơi rả rích bên hiên nhà.`,
+      translated: null,
+    }));
+
+    const smallPages = paginateChapterForViewport({
+      paragraphs,
+      chapterTitle: 'Chương 2: Đêm Mưa',
+      viewportWidth: 358,
+      viewportHeight: 620,
+      settings: { ...BASE_SETTINGS, fontSize: 16, dropCap: true },
+    });
+
+    const largePages = paginateChapterForViewport({
+      paragraphs,
+      chapterTitle: 'Chương 2: Đêm Mưa',
+      viewportWidth: 358,
+      viewportHeight: 620,
+      settings: { ...BASE_SETTINGS, fontSize: 28, dropCap: true },
+    });
+
+    assert.ok(
+      largePages.length > smallPages.length * 1.5,
+      `Expected large font pages (${largePages.length}) to be much greater than small font pages (${smallPages.length})`
+    );
+
+    // Every single word across all paragraphs must be preserved across largePages
+    const expectedWords = paragraphs
+      .map((p) => p.original.trim())
+      .join(' ')
+      .split(/\s+/);
+    const actualWords = largePages
+      .flatMap((page) => page.chunks.map((c) => c.original.trim()))
+      .join(' ')
+      .split(/\s+/);
+    assert.deepEqual(actualWords, expectedWords);
+  });
 });
+

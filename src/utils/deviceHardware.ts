@@ -5,11 +5,15 @@ export interface OnDeviceVoiceProfile {
   description: string;
   stylePrompt: string;
   recommendedBaseVoice: GeminiVoiceName;
+  gender?: 'male' | 'female' | 'neutral';
   pitchHint: number;
   rateHint: number;
+  warmthDb?: number;
+  clarityDb?: number;
   transcriptPreview?: string;
   estimatedF0Hz?: number;
   durationSec?: number;
+  analyzedBy?: 'gemini-ai' | 'device-dsp';
 }
 
 export interface ClientExtractedWebChapter {
@@ -39,8 +43,8 @@ export interface DeviceHardwareSnapshot {
 
 /**
  * Pure acoustic DSP analysis on raw mono PCM samples (runs 100% on-device with zero server).
- * Computes RMS loudness, speaking density, zero-crossing rate, and autocorrelation F0 pitch
- * to classify vocal timbre and suggest matching voice parameters.
+ * Computes RMS loudness, speaking density, zero-crossing rate, spectral warmth/clarity,
+ * and normalized autocorrelation F0 pitch to classify vocal timbre accurately.
  */
 export function analyzePcmVoiceMetrics(
   samples: Float32Array,
@@ -55,9 +59,13 @@ export function analyzePcmVoiceMetrics(
       description: `Mẫu âm thanh (${fileName}) đã nạp trực tiếp trên thiết bị — giọng đọc cân bằng tự nhiên.`,
       stylePrompt: 'Đọc tự nhiên, truyền cảm, rõ chữ và ổn định nhịp thở',
       recommendedBaseVoice: 'Kore',
+      gender: 'female',
       pitchHint: 1.0,
       rateHint: 1.0,
+      warmthDb: 1,
+      clarityDb: 2,
       durationSec,
+      analyzedBy: 'device-dsp',
     };
   }
 
@@ -68,15 +76,26 @@ export function analyzePcmVoiceMetrics(
   let activeFrames = 0;
   const frameSize = Math.max(256, Math.floor(sampleRate * 0.03));
 
+  // Simple 1-pole low-pass / high-pass energy split for spectral warmth vs clarity
+  let lpState = 0;
+  const lpAlpha = Math.min(0.35, Math.max(0.05, 800 / sampleRate));
+  let lowBandSq = 0;
+  let highBandSq = 0;
+
   for (let i = 0; i < maxAnalyze; i++) {
     const v = samples[i];
     sumSq += v * v;
+    lpState += lpAlpha * (v - lpState);
+    const hp = v - lpState;
+    lowBandSq += lpState * lpState;
+    highBandSq += hp * hp;
     if (i > 0 && ((samples[i - 1] >= 0 && v < 0) || (samples[i - 1] < 0 && v >= 0))) {
       zeroCrossings++;
     }
   }
   const rms = Math.sqrt(sumSq / maxAnalyze);
   const zcrPerSec = (zeroCrossings / maxAnalyze) * sampleRate;
+  const lowToHighRatio = lowBandSq / Math.max(1e-7, highBandSq);
 
   // Estimate active speech density across 30ms frames
   const totalFrames = Math.max(1, Math.floor(maxAnalyze / frameSize));
@@ -94,19 +113,18 @@ export function analyzePcmVoiceMetrics(
   }
   const speechDensity = activeFrames / totalFrames;
 
-  // Fundamental pitch (F0) via bounded autocorrelation on a voiced 2048-sample window
-  const minLag = Math.max(20, Math.floor(sampleRate / 340)); // ~340 Hz upper human speech
-  const maxLag = Math.min(Math.floor(sampleRate / 75), 1024); // ~75 Hz lower human speech
+  // Fundamental pitch (F0) via normalized autocorrelation with peak-picking
+  // (avoids latching onto lag=minLag or higher harmonics)
+  const minLag = Math.max(24, Math.floor(sampleRate / 340)); // ~340 Hz upper human speech
+  const maxLag = Math.min(Math.floor(sampleRate / 72), 1400); // ~72 Hz lower human speech
   const winSize = Math.min(2048, maxAnalyze - maxLag - 1);
   let bestLag = 0;
-  let bestCorr = -Infinity;
 
   if (winSize > 256 && maxLag > minLag) {
-    // Pick the loudest window offset so we measure voiced speech instead of silence
     let bestOffset = 0;
     let maxWinEnergy = -1;
-    const step = Math.max(winSize, Math.floor((maxAnalyze - winSize - maxLag) / 6));
-    for (let off = 0; off + winSize + maxLag < maxAnalyze; off += step) {
+    const step = Math.max(Math.floor(winSize / 2), Math.floor((maxAnalyze - winSize - maxLag) / 8));
+    for (let off = 0; off + winSize + maxLag < maxAnalyze; off += Math.max(1, step)) {
       let e = 0;
       for (let k = 0; k < winSize; k += 4) {
         const v = samples[off + k];
@@ -118,14 +136,53 @@ export function analyzePcmVoiceMetrics(
       }
     }
 
+    // Remove DC mean from the selected window
+    let mean = 0;
+    for (let k = 0; k < winSize; k++) {
+      mean += samples[bestOffset + k];
+    }
+    mean /= winSize;
+
+    const corrByLag = new Float32Array(maxLag + 1);
+    let globalMaxCorr = -1;
+
     for (let lag = minLag; lag <= maxLag; lag++) {
-      let corr = 0;
+      let num = 0;
+      let denA = 0;
+      let denB = 0;
       for (let k = 0; k < winSize; k += 2) {
-        corr += samples[bestOffset + k] * samples[bestOffset + k + lag];
+        const a = samples[bestOffset + k] - mean;
+        const b = samples[bestOffset + k + lag] - mean;
+        num += a * b;
+        denA += a * a;
+        denB += b * b;
       }
-      if (corr > bestCorr) {
-        bestCorr = corr;
+      const norm = denA > 1e-9 && denB > 1e-9 ? num / Math.sqrt(denA * denB) : 0;
+      corrByLag[lag] = norm;
+      if (norm > globalMaxCorr) {
+        globalMaxCorr = norm;
+      }
+    }
+
+    // Pick the FIRST strong local peak (>= 88% of globalMaxCorr and >= 0.35)
+    // which reliably corresponds to the fundamental period rather than 2x/3x sub-period
+    const peakThreshold = Math.max(0.35, globalMaxCorr * 0.88);
+    for (let lag = minLag + 1; lag < maxLag; lag++) {
+      const c = corrByLag[lag];
+      if (c >= peakThreshold && c >= corrByLag[lag - 1] && c >= corrByLag[lag + 1]) {
         bestLag = lag;
+        break;
+      }
+    }
+
+    // Fallback to global argmax if boundary peak
+    if (bestLag === 0 && globalMaxCorr >= 0.25) {
+      let bestVal = -Infinity;
+      for (let lag = minLag; lag <= maxLag; lag++) {
+        if (corrByLag[lag] > bestVal) {
+          bestVal = corrByLag[lag];
+          bestLag = lag;
+        }
       }
     }
   }
@@ -133,47 +190,72 @@ export function analyzePcmVoiceMetrics(
   const estimatedF0Hz = bestLag > 0 ? Math.round(sampleRate / bestLag) : 165;
 
   let recommendedBaseVoice: GeminiVoiceName = 'Kore';
+  let gender: 'male' | 'female' | 'neutral' = 'female';
   let pitchHint = 1.0;
   let timbreLabel = 'trung tính ấm áp';
   let stylePrompt = 'Đọc truyền cảm, nhịp thở tự nhiên và rõ nét từng câu chữ';
 
-  if (estimatedF0Hz < 130) {
-    recommendedBaseVoice = rms > 0.14 ? 'Fenrir' : 'Charon';
-    pitchHint = 0.84;
-    timbreLabel = rms > 0.14 ? 'nam trầm nội lực, mạnh mẽ' : 'nam trầm ấm, điềm đạm';
-    stylePrompt =
-      rms > 0.14
-        ? 'Giọng nam trầm nội lực, dứt khoát và giàu chiều sâu kịch tính'
-        : 'Giọng nam trầm ấm, chậm rãi, sâu lắng như người kể chuyện đêm khuya';
-  } else if (estimatedF0Hz < 175) {
-    recommendedBaseVoice = zcrPerSec > 1800 ? 'Puck' : 'Charon';
-    pitchHint = 0.94;
-    timbreLabel = 'nam trung linh hoạt, rõ chữ';
-    stylePrompt = 'Giọng nam trung sáng rõ, nhịp kể linh hoạt, dễ nghe lâu dài';
-  } else if (estimatedF0Hz < 225) {
+  if (estimatedF0Hz < 120) {
+    recommendedBaseVoice = 'Fenrir';
+    gender = 'male';
+    pitchHint = 0.72;
+    timbreLabel = 'nam trầm nội lực, sâu dày';
+    stylePrompt = 'Deep resonant male voice. Giọng nam trầm nội lực, dứt khoát, ấm dày và giàu chiều sâu';
+  } else if (estimatedF0Hz < 148) {
+    recommendedBaseVoice = 'Charon';
+    gender = 'male';
+    pitchHint = 0.82;
+    timbreLabel = 'nam trầm ấm, điềm đạm';
+    stylePrompt = 'Warm calm baritone male narrator. Giọng nam trầm ấm, chậm rãi, sâu lắng kể chuyện';
+  } else if (estimatedF0Hz < 176) {
+    recommendedBaseVoice = 'Puck';
+    gender = 'male';
+    pitchHint = 0.92;
+    timbreLabel = 'nam trung sáng rõ, linh hoạt';
+    stylePrompt = 'Youthful expressive male voice. Giọng nam trung sáng rõ, nhịp kể linh hoạt và sinh động';
+  } else if (estimatedF0Hz < 208) {
+    recommendedBaseVoice = 'Kore';
+    gender = 'female';
+    pitchHint = 1.05;
+    timbreLabel = 'nữ trung ấm áp, tự nhiên';
+    stylePrompt = 'Warm natural female narrator. Giọng nữ trung ấm áp, truyền cảm và rõ nét từng câu chữ';
+  } else if (estimatedF0Hz < 245) {
     recommendedBaseVoice = 'Zephyr';
-    pitchHint = 1.08;
+    gender = 'female';
+    pitchHint = 1.2;
     timbreLabel = 'nữ dịu dàng, thanh thoát';
-    stylePrompt = 'Giọng nữ nhẹ nhàng, truyền cảm, giàu cảm xúc cho tiểu thuyết';
+    stylePrompt = 'Soft airy gentle female voice. Giọng nữ dịu dàng, thanh thoát, giàu cảm xúc tiểu thuyết';
   } else {
     recommendedBaseVoice = 'Aoede';
-    pitchHint = 1.18;
-    timbreLabel = 'nữ trong trẻo, sắc sảo';
-    stylePrompt = 'Giọng nữ sáng trong, biểu cảm tinh tế và rõ từng âm tiết';
+    gender = 'female';
+    pitchHint = 1.34;
+    timbreLabel = 'nữ cao trong trẻo, sắc sảo';
+    stylePrompt = 'Bright crisp high-clarity female voice. Giọng nữ sáng trong, biểu cảm sắc nét từng âm tiết';
   }
+
+  const warmthDb = Math.round(
+    Math.max(-5, Math.min(8, Math.log2(Math.max(0.15, lowToHighRatio)) * 2.1 + (gender === 'male' ? 2 : -1)))
+  );
+  const clarityDb = Math.round(
+    Math.max(-3, Math.min(7, (zcrPerSec > 1600 ? 3 : 1) + (gender === 'female' ? 1 : 0)))
+  );
 
   const rateHint = Number(
     Math.max(0.86, Math.min(1.18, 0.92 + speechDensity * 0.22)).toFixed(2)
   );
 
   return {
-    description: `Phân tích trực tiếp bằng DSP thiết bị (${durationSec}s · ~${estimatedF0Hz}Hz): chất giọng ${timbreLabel}.`,
+    description: `Phân tích DSP thiết bị (${durationSec}s · ~${estimatedF0Hz}Hz): chất giọng ${timbreLabel}.`,
     stylePrompt,
     recommendedBaseVoice,
+    gender,
     pitchHint,
     rateHint,
+    warmthDb,
+    clarityDb,
     estimatedF0Hz,
     durationSec,
+    analyzedBy: 'device-dsp',
   };
 }
 

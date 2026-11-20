@@ -134,5 +134,28 @@ test('computeReadingStyleModulation differentiates novel, essay, and selfhelp an
   for (const k of charKeys) {
     assert.equal(updated[k].geminiVoice, 'Aoede');
   }
+
+  // If user manually customized 1 character, updating narrator keeps that override intact while syncing others
+  if (charKeys.length >= 2) {
+    const withCustom = {
+      ...updated,
+      [charKeys[0]]: {
+        ...updated[charKeys[0]],
+        geminiVoice: 'Fenrir' as const,
+        isCustomOverride: true,
+      },
+    };
+    const afterSecondUpdate = applyNarratorVoiceToCharacters(withCustom, {
+      characterId: 'narrator',
+      source: 'gemini',
+      geminiVoice: 'Puck',
+      stylePrompt: 'Narrator third',
+      browserPitch: 0.9,
+      browserRate: 1.0,
+    });
+    assert.equal(afterSecondUpdate[charKeys[0]].geminiVoice, 'Fenrir');
+    assert.equal(afterSecondUpdate[charKeys[1]].geminiVoice, 'Puck');
+  }
 });
+
 

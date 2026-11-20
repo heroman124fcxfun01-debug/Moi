@@ -52,3 +52,15 @@ test('findBatchIndexForParagraph locates the exact batch containing a tapped par
   assert.equal(findBatchIndexForParagraph(batches, 1), 0);
   assert.equal(findBatchIndexForParagraph(batches, 2), 1);
 });
+
+test('resolveActiveHighlightInBatch returns exact charOffsetInParagraph for multi-page paragraphs', () => {
+  const longPara = 'Đây là một đoạn văn rất dài được tách ra nhiều trang trên màn hình điện thoại. '.repeat(5).trim();
+  const script: ScriptSegment[] = [
+    { id: 's0', paragraphIndex: 4, speakerId: 'narrator', speakerName: 'Người dẫn', emotionStyle: '', text: longPara },
+  ];
+  const batches = buildBatchedPlaybackUnits(script, 500);
+  const mid = resolveActiveHighlightInBatch(batches[0], 0.5, 180);
+  assert.equal(mid.paragraphIndex, 4);
+  assert.equal(mid.charOffsetInParagraph, 180);
+  assert.ok(mid.paragraphRatio > 0.35 && mid.paragraphRatio < 0.65);
+});

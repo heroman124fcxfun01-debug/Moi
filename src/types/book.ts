@@ -135,6 +135,7 @@ export interface Book {
   bookmarks: BookmarkItem[];
   highlights: HighlightItem[];
   voiceAssignments: Record<string, CharacterVoiceAssignment>;
+  characterVoicesEnabled?: boolean;
   addedAt: number;
   lastReadAt: number;
   sourceUrl?: string;
@@ -159,14 +160,19 @@ export interface ExternalVoiceAsset {
   durationSec?: number;
   originType?: 'imported' | 'studio';
   originLabel?: string;
+  readingStyle?: BookReadingStyle;
   toneSettings?: VoiceToneSettings;
   analyzedProfile?: {
     description: string;
     stylePrompt: string;
     recommendedBaseVoice: GeminiVoiceName;
+    gender?: 'male' | 'female' | 'neutral';
     pitchHint: number;
     rateHint: number;
+    warmthDb?: number;
+    clarityDb?: number;
     transcriptPreview?: string;
+    analyzedBy?: 'gemini-ai' | 'device-dsp';
   };
   addedAt: number;
 }

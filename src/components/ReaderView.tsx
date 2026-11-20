@@ -70,6 +70,11 @@ import {
 } from '../utils/bookTranslator';
 import { triggerDeviceHaptic } from '../utils/deviceHardware';
 import { unlockAudioPlaybackSync } from '../utils/deviceTtsEngine';
+import {
+  evaluateRightEdgeBackSwipe,
+  isInRightEdgeBackZone,
+  type EdgeSwipeStart,
+} from '../utils/edgeSwipeBack';
 import { ReaderSettingsDrawer } from './ReaderSettingsDrawer';
 import { AudiobookStudioDrawer } from './AudiobookStudioDrawer';
 import { AmbientSoundDrawer } from './AmbientSoundDrawer';
@@ -93,6 +98,8 @@ interface ReaderViewProps {
   onAddCustomAmbientTrack?: (track: CustomAmbientTrack) => Promise<void>;
   onDeleteCustomAmbientTrack?: (trackId: string) => Promise<void>;
   onAudioPlayingChange?: (playing: boolean) => void;
+  onAudioSessionActiveChange?: (active: boolean) => void;
+  audioCommandSignal?: { action: 'toggle' | 'next' | 'stop'; tick: number } | null;
   audioDrawerToggleSignal?: number;
   isReaderActive?: boolean;
 }
@@ -201,6 +208,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onAddCustomAmbientTrack = async () => {},
   onDeleteCustomAmbientTrack = async () => {},
   onAudioPlayingChange,
+  onAudioSessionActiveChange,
+  audioCommandSignal = null,
   audioDrawerToggleSignal = 0,
   isReaderActive = true,
 }) => {
@@ -265,12 +274,13 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [turnTick, setTurnTick] = useState(0);
   const [dragCurlDeltaX, setDragCurlDeltaX] = useState<number | null>(null);
   const [spokenParaIndex, setSpokenParaIndex] = useState<number | null>(null);
-  const [spokenProgressRatio, setSpokenProgressRatio] = useState(0);
+  const [spokenCharOffset, setSpokenCharOffset] = useState(0);
   const [activeParaAction, setActiveParaAction] = useState<{
     paragraphIndex: number;
     copied?: boolean;
   } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [fontsLoadedTick, setFontsLoadedTick] = useState(0);
   const [stageSize, setStageSize] = useState<{ width: number; height: number }>(() => {
     if (typeof window === 'undefined') return { width: 360, height: 600 };
     const widthLimitMap: Record<ReaderSettings['pageWidth'], number> = {
@@ -296,6 +306,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const dragStartYRef = useRef<number | null>(null);
   const isHorizontalDragRef = useRef(false);
   const suppressNextClickRef = useRef(false);
+  const readerEdgeSwipeRef = useRef<EdgeSwipeStart | null>(null);
+  const [readerEdgeSwipeProgress, setReaderEdgeSwipeProgress] = useState(0);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const longPressOriginRef = useRef<{ x: number; y: number } | null>(null);
@@ -482,6 +494,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [settings.pageWidth, settings.readingMode, showAudio, showSettings, showAmbient, isReaderActive]);
 
+  // Re-run screen pagination once webfonts finish loading so exact glyph widths are measured
+  useEffect(() => {
+    if (typeof document === 'undefined' || !('fonts' in document)) return;
+    let cancelled = false;
+    void document.fonts.ready.then(() => {
+      if (!cancelled) setFontsLoadedTick((t) => t + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.fontFamily]);
+
   // True screen-fitted pagination: recalculates total pages automatically when fontSize/lineHeight/viewport changes
   const screenPages = useMemo(() => {
     return paginateChapterForViewport({
@@ -506,6 +530,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     settings.firstLineIndent,
     settings.dropCap,
     settings.columnsInPaginated,
+    fontsLoadedTick,
   ]);
 
   // Keep user anchored on their exact reading page & character offset whenever fontSize or viewport re-paginates
@@ -556,29 +581,46 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setCurrentPageIndex((prev) => (prev === clamped ? prev : clamped));
   }, [screenPages, settings.readingMode]);
 
-  // Keep spoken paragraph visible (auto-flip page in paginated mode + smooth scroll in scroll mode)
+  // Keep exact spoken word visible (auto-flip smoothly to the exact screen page containing spokenCharOffset)
   useEffect(() => {
     if (spokenParaIndex === null) return;
     anchorParagraphRef.current = spokenParaIndex;
-    anchorCharOffsetRef.current = 0;
+    anchorCharOffsetRef.current = spokenCharOffset;
     if (settings.readingMode === 'paginated') {
-      const targetPageIdx = findScreenPageForParagraph(screenPages, spokenParaIndex);
+      const targetPageIdx = findScreenPageForPosition(screenPages, {
+        paragraphIndex: spokenParaIndex,
+        charOffset: spokenCharOffset,
+      });
       if (targetPageIdx >= 0) {
         anchorPageIndexRef.current = targetPageIdx;
-        if (targetPageIdx !== currentPageIndex) {
+        if (targetPageIdx !== currentPageIndexRef.current) {
+          hasUserTurnedRef.current = true;
+          setTurnDirection(targetPageIdx > currentPageIndexRef.current ? 'next' : 'prev');
+          setTurnTick((t) => t + 1);
+          currentPageIndexRef.current = targetPageIdx;
           setCurrentPageIndex(targetPageIdx);
+          syncReadingPosition({
+            paragraphIndex: spokenParaIndex,
+            pageIndex: targetPageIdx,
+            charOffset: spokenCharOffset,
+          });
         }
       }
-    } else {
-      const timer = window.setTimeout(() => {
-        const el = paraRefs.current.get(spokenParaIndex);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      }, 60);
-      return () => window.clearTimeout(timer);
     }
-  }, [spokenParaIndex, settings.readingMode, screenPages]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spokenParaIndex, spokenCharOffset, settings.readingMode, screenPages]);
+
+  // Smoothly scroll to active paragraph in scroll mode only when paragraph changes
+  useEffect(() => {
+    if (spokenParaIndex === null || settings.readingMode === 'paginated') return;
+    const timer = window.setTimeout(() => {
+      const el = paraRefs.current.get(spokenParaIndex);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [spokenParaIndex, settings.readingMode]);
 
   useEffect(() => {
     hasUserTurnedRef.current = false;
@@ -1147,10 +1189,50 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
+  const handleReaderRootPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (typeof window === 'undefined') return;
+    if (isInRightEdgeBackZone(e.clientX, window.innerWidth)) {
+      readerEdgeSwipeRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        viewportWidth: window.innerWidth,
+      };
+      setReaderEdgeSwipeProgress(0);
+    }
+  };
+
+  const handleReaderRootPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!readerEdgeSwipeRef.current) return;
+    if (e.pointerType === 'mouse' && e.buttons !== 1) return;
+    const res = evaluateRightEdgeBackSwipe(readerEdgeSwipeRef.current, e.clientX, e.clientY);
+    if (res.isHorizontalBack) {
+      clearLongPressTimer();
+      setReaderEdgeSwipeProgress(res.progress);
+    }
+  };
+
+  const finishReaderRootEdgeSwipe = (clientX?: number, clientY?: number) => {
+    const start = readerEdgeSwipeRef.current;
+    readerEdgeSwipeRef.current = null;
+    setReaderEdgeSwipeProgress(0);
+    if (!start || typeof clientX !== 'number' || typeof clientY !== 'number') return;
+    const res = evaluateRightEdgeBackSwipe(start, clientX, clientY);
+    if (res.shouldNavigateBack) {
+      suppressNextClickRef.current = true;
+      triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
+      handleBackToLibraryClick();
+    }
+  };
+
   const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (settings.readingMode !== 'paginated') return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if ((e.target as HTMLElement).closest('button, select, input')) return;
+    // Right-edge inward swipe is reserved for global Back-to-Main-Screen gesture
+    if (typeof window !== 'undefined' && isInRightEdgeBackZone(e.clientX, window.innerWidth)) {
+      return;
+    }
     dragStartXRef.current = e.clientX;
     dragStartYRef.current = e.clientY;
     isHorizontalDragRef.current = false;
@@ -1205,31 +1287,49 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  const renderIlluminatedText = (text: string, isSpoken: boolean) => {
-    if (!isSpoken || settings.highlightSpokenText === false) return text;
-    const words = text.split(/(\s+)/);
-    const nonSpaceTotal = words.filter((w) => w.trim().length > 0).length;
-    const currentWordIdx = Math.min(
-      nonSpaceTotal,
-      Math.max(1, Math.ceil(nonSpaceTotal * Math.max(0.02, spokenProgressRatio)))
-    );
-    let wordCounter = 0;
+  const renderIlluminatedText = (
+    text: string,
+    isChunkSpoken: boolean,
+    localCharOffset: number
+  ) => {
+    if (!isChunkSpoken || settings.highlightSpokenText === false) return text;
+    const tokens = text.split(/(\s+)/);
+    const clampedChar = Math.max(0, Math.min(Math.max(0, text.length - 1), localCharOffset));
 
-    return words.map((token, idx) => {
-      if (token.trim().length === 0) return token;
-      wordCounter += 1;
-      const isCurrent = wordCounter === currentWordIdx;
-      const isPast = wordCounter < currentWordIdx;
+    // Locate the EXACT single word token covering clampedChar (no box, no yellow block, no underline)
+    let cursor = 0;
+    let activeTokenIdx = -1;
+    let lastWordTokenIdx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      const start = cursor;
+      const end = cursor + tok.length;
+      cursor = end;
+      if (tok.trim().length > 0) {
+        lastWordTokenIdx = i;
+        if (clampedChar >= start && clampedChar <= end) {
+          activeTokenIdx = i;
+          break;
+        }
+        if (activeTokenIdx === -1 && clampedChar < start) {
+          activeTokenIdx = i;
+          break;
+        }
+      }
+    }
+    if (activeTokenIdx === -1) activeTokenIdx = lastWordTokenIdx;
+
+    return tokens.map((token, idx) => {
+      if (idx !== activeTokenIdx || token.trim().length === 0) return token;
       return (
         <span
           key={idx}
-          className={
-            isCurrent
-              ? 'bg-amber-400/90 dark:bg-amber-500/85 text-stone-950 font-semibold rounded px-0.5 transition-colors duration-75'
-              : isPast
-              ? 'bg-amber-200/55 dark:bg-amber-700/35 rounded-xs transition-colors duration-100'
-              : 'opacity-80'
-          }
+          data-testid="spoken-active-word"
+          style={{
+            textShadow: '0 0 10px rgba(245, 158, 11, 0.55)',
+            textDecoration: 'none',
+          }}
+          className="text-amber-600 dark:text-amber-300 font-semibold no-underline transition-colors duration-100"
         >
           {token}
         </span>
@@ -1318,6 +1418,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   return (
     <div
       data-testid="reader-surface"
+      onPointerDown={handleReaderRootPointerDown}
+      onPointerMove={handleReaderRootPointerMove}
+      onPointerUp={(e) => finishReaderRootEdgeSwipe(e.clientX, e.clientY)}
+      onPointerCancel={() => finishReaderRootEdgeSwipe()}
       style={{
         backgroundColor: activeTheme.bg,
         color: activeTheme.text,
@@ -1326,8 +1430,22 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       }}
       className={`${
         isPaginatedMode ? 'h-[100dvh] overflow-hidden' : 'min-h-screen'
-      } w-full flex flex-col transition-colors duration-200`}
+      } w-full flex flex-col transition-colors duration-200 relative`}
     >
+      {/* Right-Edge Swipe-Back Visual Pill Indicator */}
+      {readerEdgeSwipeProgress > 0.08 && (
+        <div
+          data-testid="reader-edge-back-indicator"
+          aria-hidden="true"
+          style={{
+            transform: `translateY(-50%) translateX(${Math.round(-readerEdgeSwipeProgress * 18)}px) scale(${0.85 + readerEdgeSwipeProgress * 0.2})`,
+            opacity: Math.min(1, readerEdgeSwipeProgress * 1.35),
+          }}
+          className="fixed right-1 top-1/2 z-[120] pointer-events-none w-9 h-12 rounded-l-full bg-stone-900/90 dark:bg-white/90 text-white dark:text-stone-900 shadow-lg flex items-center justify-center"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </div>
+      )}
       {/* Slim Top Bar: Back | 3-bar Menu TOC | Per-Page Bookmark + Play/Pause + Quick Actions (!) + Settings */}
       <div
         style={{
@@ -1475,23 +1593,28 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-1">
                 <button
                   type="button"
-                  disabled={settings.fontSize <= 14}
+                  data-testid="quick-font-dec-btn"
+                  disabled={settings.fontSize <= 12}
                   onClick={() =>
-                    onUpdateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })
+                    onUpdateSettings({ fontSize: Math.max(12, settings.fontSize - 1) })
                   }
                   aria-label="Giảm cỡ chữ"
                   className="px-2.5 py-1 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors"
                 >
                   A-
                 </button>
-                <span className="px-1 text-[11px] font-semibold tabular-nums min-w-[36px] text-center opacity-80">
+                <span
+                  data-testid="quick-font-size-label"
+                  className="px-1 text-[11px] font-semibold tabular-nums min-w-[36px] text-center opacity-80"
+                >
                   {settings.fontSize}px
                 </span>
                 <button
                   type="button"
-                  disabled={settings.fontSize >= 32}
+                  data-testid="quick-font-inc-btn"
+                  disabled={settings.fontSize >= 36}
                   onClick={() =>
-                    onUpdateSettings({ fontSize: Math.min(32, settings.fontSize + 1) })
+                    onUpdateSettings({ fontSize: Math.min(36, settings.fontSize + 1) })
                   }
                   aria-label="Tăng cỡ chữ"
                   className="px-2.5 py-1 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors"
@@ -1517,7 +1640,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               >
                 <Languages className="w-3.5 h-3.5 shrink-0" />
                 <span>
-                  {settings.translationMode === 'override' ? 'Đang dịch' : 'Dịch nhanh'}
+                  {settings.translationMode === 'override' ? 'Đã dịch' : 'Dịch'}
                 </span>
               </button>
             </div>
@@ -1547,7 +1670,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
               <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
                 <h2 className="text-[13px] font-display font-semibold truncate">
-                  Tùy chọn đọc sách
+                  Tùy chọn
                 </h2>
                 <button
                   type="button"
@@ -1824,6 +1947,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     (h) => h.chapterId === currentChapter?.id && h.paragraphIndex === chunk.paragraphIndex
                   );
                   const isSpoken = spokenParaIndex === chunk.paragraphIndex;
+                  const chunkStart = chunk.charOffset ?? 0;
+                  const chunkEnd = chunkStart + chunk.original.length;
+                  const isChunkSpoken =
+                    isSpoken &&
+                    (!isPaginatedMode ||
+                      (spokenCharOffset >= Math.max(0, chunkStart - 1) &&
+                        spokenCharOffset <= chunkEnd + 1));
+                  const localCharOffset = Math.max(0, spokenCharOffset - chunkStart);
                   const isLongPressed = activeParaAction?.paragraphIndex === chunk.paragraphIndex;
                   const useDropCap =
                     settings.dropCap &&
@@ -1854,11 +1985,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                         setActiveParaAction({ paragraphIndex: chunk.paragraphIndex });
                       }}
                       className={`relative rounded-lg px-1.5 py-0.5 transition-colors select-none ${
-                        isSpoken && settings.highlightSpokenText !== false
-                          ? 'ring-2 ring-amber-700/70 bg-amber-500/10'
-                          : isLongPressed
-                          ? 'ring-1 ring-amber-700/60 bg-amber-500/10'
-                          : ''
+                        isLongPressed ? 'ring-1 ring-amber-700/60 bg-amber-500/10' : ''
                       } ${highlight ? HIGHLIGHT_CLASSES[highlight.color] : ''}`}
                     >
                       <p
@@ -1868,7 +1995,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                             : ''
                         }`}
                       >
-                        {renderIlluminatedText(chunk.original, isSpoken)}
+                        {renderIlluminatedText(chunk.original, isChunkSpoken, localCharOffset)}
                       </p>
 
                       {chunk.translated && (
@@ -2008,7 +2135,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-800 hover:bg-amber-900 text-white font-semibold"
                   >
                     <Play className="w-3.5 h-3.5 shrink-0" />
-                    <span>Nghe từ đây</span>
+                    <span>Nghe tiếp</span>
                   </button>
                   <button
                     type="button"
@@ -2019,7 +2146,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 font-medium"
                   >
                     <Bookmark className="w-3.5 h-3.5 shrink-0" />
-                    <span>{isCurrentPageBookmarked ? 'Bỏ lưu dấu' : 'Lưu dấu trang'}</span>
+                    <span>{isCurrentPageBookmarked ? 'Bỏ dấu' : 'Đánh dấu'}</span>
                   </button>
                 </div>
 
@@ -2068,7 +2195,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
                 </div>
                 <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
-                  <h2 className="text-base font-display font-semibold">Mục lục &amp; Đánh dấu</h2>
+                  <h2 className="text-base font-display font-semibold">Mục lục</h2>
                   <button
                     type="button"
                     onClick={() => setShowToc(false)}
@@ -2166,7 +2293,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             hasPaginatedFooter={isPaginatedMode}
             highlightSpokenText={settings.highlightSpokenText !== false}
             onToggleHighlightSpoken={(next) => onUpdateSettings({ highlightSpokenText: next })}
-            onSessionActiveChange={setIsAudioSessionActive}
+            onSessionActiveChange={(active) => {
+              setIsAudioSessionActive(active);
+              onAudioSessionActiveChange?.(active);
+            }}
             book={book}
             chapter={currentChapter}
             hasNextChapter={chapterIndex < book.chapters.length - 1}
@@ -2180,6 +2310,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             }
             autoPlaySignal={autoPlaySignal}
             togglePlaySignal={togglePlaySignal}
+            audioCommandSignal={audioCommandSignal}
             onSaveChapterAnalysis={handleSaveAnalysis}
             onUpdateVoiceAssignment={handleUpdateVoiceAssignment}
             onBatchUpdateVoiceAssignments={(nextMap) =>
@@ -2197,14 +2328,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 readingStyle: style,
               }))
             }
+            onToggleCharacterVoices={(enabled) =>
+              patchActiveBook((prev) => ({
+                ...prev,
+                characterVoicesEnabled: enabled,
+              }))
+            }
             externalVoices={externalVoices}
             onAddExternalVoice={onAddExternalVoice}
             customAmbientTracks={customAmbientTracks}
             onAddCustomAmbientTrack={onAddCustomAmbientTrack}
             onDeleteCustomAmbientTrack={onDeleteCustomAmbientTrack}
-            onHighlightParagraph={(paraIdx, ratio = 0) => {
+            onHighlightParagraph={(paraIdx, _ratio = 0, charOffset = 0) => {
               setSpokenParaIndex(paraIdx);
-              setSpokenProgressRatio(ratio);
+              setSpokenCharOffset(charOffset);
             }}
             onSyncReadingParagraph={(paraIdx) => {
               syncParagraphPosition(paraIdx);

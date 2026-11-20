@@ -773,7 +773,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-stone-500 dark:text-stone-400">
-                Tự tạo bộ sưu tập theo chủ đề của bạn — hỗ trợ sắp xếp A → Z, mới đọc &amp; mới thêm
+                Sắp xếp sách theo chủ đề riêng
               </p>
               <button
                 type="button"
@@ -785,7 +785,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900"
               >
                 <FolderPlus className="w-3.5 h-3.5" />
-                <span>Tạo bộ sưu tập mới</span>
+                <span>Tạo mới</span>
               </button>
             </div>
 
@@ -795,10 +795,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <FolderPlus className="w-5 h-5" />
                 </div>
                 <p className="text-sm font-semibold text-stone-800 dark:text-stone-200">
-                  Chưa có bộ sưu tập nào
-                </p>
-                <p className="text-xs text-stone-500 max-w-md mx-auto">
-                  Mục bộ sưu tập đang để trống để bạn tự đặt tên, tìm kiếm và tích chọn các cuốn sách yêu thích thêm vào.
+                  Chưa có bộ sưu tập
                 </p>
                 <button
                   type="button"
@@ -810,7 +807,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Tạo bộ sưu tập đầu tiên</span>
+                  <span>Tạo mới</span>
                 </button>
               </div>
             ) : !activeCollection ? (
@@ -980,7 +977,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                             className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-2xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900"
                           >
                             <FolderPlus className="w-3.5 h-3.5" />
-                            <span>Tạo bộ sưu tập mới</span>
+                            <span>Tạo mới</span>
                           </button>
                         </div>
                       </div>
@@ -993,10 +990,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         ) : filteredAndSortedBooks.length === 0 ? (
           <div className="border border-stone-200 dark:border-stone-800 rounded-2xl p-10 text-center bg-white/50 dark:bg-stone-900/30 space-y-3">
             <p className="text-sm font-medium text-stone-800 dark:text-stone-200">
-              Chưa có cuốn sách nào khớp với bộ lọc hiện tại.
-            </p>
-            <p className="text-xs text-stone-500">
-              Bạn có thể tải lên tệp EPUB, PDF, ảnh trang sách cần dịch hoặc quét trực tiếp từ trang web truyện.
+              Không có sách phù hợp.
             </p>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
@@ -1004,7 +998,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 onClick={onOpenImportModal}
                 className="px-4 py-2 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium"
               >
-                Thêm sách mới
+                Thêm sách
               </button>
               {books.length === 0 && (
                 <button
@@ -1013,7 +1007,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-stone-300 dark:border-stone-700 text-xs font-medium"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Khôi phục sách mẫu</span>
+                  <span>Sách mẫu</span>
                 </button>
               )}
             </div>
@@ -1114,7 +1108,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
                   >
                     <BookOpen className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                    <span>Đọc sách ngay</span>
+                    <span>Đọc sách</span>
                   </button>
 
                   <button
@@ -1127,7 +1121,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
                   >
                     <Headphones className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                    <span>Nghe sách nói AI</span>
+                    <span>Nghe sách</span>
                   </button>
 
                   <button
@@ -1140,7 +1134,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
                   >
                     <Edit3 className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                    <span>Đổi tên sách &amp; tác giả</span>
+                    <span>Đổi tên</span>
                   </button>
 
                   <button
@@ -1151,9 +1145,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   >
                     <ImageIcon className="w-4 h-4 text-amber-800 dark:text-amber-400" />
                     <span>
-                      {isUpdatingCover
-                        ? 'Đang xử lý ảnh bìa...'
-                        : 'Đổi bìa sách (Chọn ảnh từ máy)'}
+                      {isUpdatingCover ? 'Đang đổi...' : 'Đổi bìa'}
                     </span>
                   </button>
 
@@ -1163,7 +1155,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
                   >
                     <FolderPlus className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                    <span>Thêm vào bộ sưu tập</span>
+                    <span>Bộ sưu tập</span>
                   </button>
 
                   {menuContext.collectionId && (
@@ -1179,7 +1171,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-700 dark:text-stone-300"
                     >
                       <X className="w-4 h-4" />
-                      <span>Gỡ khỏi bộ sưu tập này</span>
+                      <span>Gỡ khỏi bộ</span>
                     </button>
                   )}
 
@@ -1193,7 +1185,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl hover:bg-stone-200/60 dark:hover:bg-stone-800 text-left font-medium text-stone-900 dark:text-stone-100"
                   >
                     <Sparkles className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                    <span>AI Lọc rác &amp; Chuẩn hóa EPUB</span>
+                    <span>Lọc rác AI</span>
                   </button>
 
                   <button
@@ -1207,7 +1199,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   >
                     <Download className="w-4 h-4 text-stone-600 dark:text-stone-400" />
                     <span>
-                      {exportingId === menuContext.book.id ? 'Đang tạo EPUB...' : 'Xuất file .EPUB'}
+                      {exportingId === menuContext.book.id ? 'Đang xuất...' : 'Xuất EPUB'}
                     </span>
                   </button>
 
@@ -1215,8 +1207,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
                   <TwoTapDeleteButton
                     variant="row"
-                    label="Xóa sách khỏi tủ"
-                    confirmLabel="Ấn lần nữa để xác nhận xóa sách"
+                    label="Xóa sách"
+                    confirmLabel="Xác nhận xóa"
                     onConfirmDelete={() => {
                       const id = menuContext.book.id;
                       setMenuContext(null);
@@ -1426,7 +1418,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-amber-800 text-white font-medium hover:bg-amber-900"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>Tạo bộ sưu tập mới với sách này</span>
+                    <span>Tạo bộ mới</span>
                   </button>
                 </div>
               )}

@@ -3,6 +3,7 @@ import {
   AlertCircle,
   AlertTriangle,
   BookOpen,
+  ChevronLeft,
   Download,
   Globe,
   Loader2,
@@ -74,6 +75,12 @@ import { FloatingBookDisc } from './components/FloatingBookDisc';
 import { LiquidDropThumb, useLiquidDropIndicator } from './components/LiquidGlassBar';
 import { useWebCrawler } from './hooks/useWebCrawler';
 import type { GlobalSearchAction } from './utils/globalSearch';
+import {
+  evaluateRightEdgeBackSwipe,
+  isInRightEdgeBackZone,
+  type EdgeSwipeStart,
+} from './utils/edgeSwipeBack';
+import { triggerDeviceHaptic } from './utils/deviceHardware';
 
 // Lazy-load secondary views & heavy modals so initial boot RAM stays minimal on budget & flagship Android phones
 const ReaderView = lazy(() =>
@@ -157,7 +164,14 @@ export default function App() {
     });
   }, []);
   const [isReaderAudioPlaying, setIsReaderAudioPlaying] = useState(false);
+  const [isReaderAudioSessionActive, setIsReaderAudioSessionActive] = useState(false);
+  const [audioCommandSignal, setAudioCommandSignal] = useState<{
+    action: 'toggle' | 'next' | 'stop';
+    tick: number;
+  } | null>(null);
   const [discToggleSignal, setDiscToggleSignal] = useState(0);
+  const appEdgeSwipeRef = useRef<EdgeSwipeStart | null>(null);
+  const [appEdgeSwipeProgress, setAppEdgeSwipeProgress] = useState(0);
   const [driveAuth, setDriveAuth] = useState<DriveAuthSnapshot>(() => getDriveAuthSnapshot());
   const [lastAutoSyncAt, setLastAutoSyncAt] = useState<number | null>(null);
   const [isAutoSyncing, setIsAutoSyncing] = useState(false);
@@ -725,8 +739,73 @@ export default function App() {
   );
   const isStandaloneDeviceMode = basicSettings.standaloneDeviceMode !== false;
 
+  const dispatchAudioCommand = useCallback((action: 'toggle' | 'next' | 'stop') => {
+    setAudioCommandSignal((prev) => ({
+      action,
+      tick: (prev?.tick ?? 0) + 1,
+    }));
+  }, []);
+
+  const handleAppEdgePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activeTab === 'reader') return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (typeof window === 'undefined') return;
+    const hasBackDestination =
+      isImportOpen ||
+      isGlobalSearchOpen ||
+      isAppInfoOpen ||
+      isCongDongSachOpen ||
+      Boolean(pendingDuplicateBook) ||
+      activeTab !== 'library';
+    if (!hasBackDestination) return;
+    if (isInRightEdgeBackZone(e.clientX, window.innerWidth)) {
+      appEdgeSwipeRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        viewportWidth: window.innerWidth,
+      };
+      setAppEdgeSwipeProgress(0);
+    }
+  };
+
+  const handleAppEdgePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!appEdgeSwipeRef.current) return;
+    if (e.pointerType === 'mouse' && e.buttons !== 1) return;
+    const res = evaluateRightEdgeBackSwipe(appEdgeSwipeRef.current, e.clientX, e.clientY);
+    if (res.isHorizontalBack) {
+      setAppEdgeSwipeProgress(res.progress);
+    }
+  };
+
+  const finishAppEdgeSwipe = (clientX?: number, clientY?: number) => {
+    const start = appEdgeSwipeRef.current;
+    appEdgeSwipeRef.current = null;
+    setAppEdgeSwipeProgress(0);
+    if (!start || typeof clientX !== 'number' || typeof clientY !== 'number') return;
+    const res = evaluateRightEdgeBackSwipe(start, clientX, clientY);
+    if (!res.shouldNavigateBack) return;
+    triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
+    if (pendingDuplicateBook) {
+      setPendingDuplicateBook(null);
+    } else if (isGlobalSearchOpen) {
+      setIsGlobalSearchOpen(false);
+    } else if (isImportOpen) {
+      setIsImportOpen(false);
+    } else if (isCongDongSachOpen) {
+      setIsCongDongSachOpen(false);
+    } else if (isAppInfoOpen) {
+      setIsAppInfoOpen(false);
+    } else if (activeTab !== 'library') {
+      setActiveTab('library');
+    }
+  };
+
   return (
     <div
+      onPointerDown={handleAppEdgePointerDown}
+      onPointerMove={handleAppEdgePointerMove}
+      onPointerUp={(e) => finishAppEdgeSwipe(e.clientX, e.clientY)}
+      onPointerCancel={() => finishAppEdgeSwipe()}
       className={`relative min-h-screen transition-colors ${
         showAppWallpaper
           ? 'app-wallpaper-active text-stone-900 dark:text-stone-100'
@@ -735,6 +814,19 @@ export default function App() {
           : 'bg-[var(--app-bg-light)] dark:bg-[var(--app-bg-dark)] text-stone-900 dark:text-stone-100'
       } ${activeTab !== 'reader' ? 'pb-24' : ''}`}
     >
+      {/* Right-Edge Swipe-Back Visual Pill Indicator */}
+      {appEdgeSwipeProgress > 0.08 && (
+        <div
+          aria-hidden="true"
+          style={{
+            transform: `translateY(-50%) translateX(${Math.round(-appEdgeSwipeProgress * 18)}px) scale(${0.85 + appEdgeSwipeProgress * 0.2})`,
+            opacity: Math.min(1, appEdgeSwipeProgress * 1.35),
+          }}
+          className="fixed right-1 top-1/2 z-[120] pointer-events-none w-9 h-12 rounded-l-full bg-stone-900/90 dark:bg-white/90 text-white dark:text-stone-900 shadow-lg flex items-center justify-center"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </div>
+      )}
       {/* Non-Reader App Wallpaper Layer (strictly unmounted in Reader mode) */}
       {showAppWallpaper && activeWallpaperUrl && (
         <div
@@ -914,7 +1006,7 @@ export default function App() {
             </div>
           }
         >
-          {activeBook && (activeTab === 'reader' || isReaderAudioPlaying) && (
+          {activeBook && (activeTab === 'reader' || isReaderAudioPlaying || isReaderAudioSessionActive) && (
             <div className={activeTab === 'reader' ? 'ios-reader-enter' : 'hidden'}>
               <ReaderView
                 book={activeBook}
@@ -935,6 +1027,8 @@ export default function App() {
                 onAddCustomAmbientTrack={handleAddCustomAmbientTrack}
                 onDeleteCustomAmbientTrack={handleDeleteCustomAmbientTrack}
                 onAudioPlayingChange={setIsReaderAudioPlaying}
+                onAudioSessionActiveChange={setIsReaderAudioSessionActive}
+                audioCommandSignal={audioCommandSignal}
                 audioDrawerToggleSignal={discToggleSignal}
               />
             </div>
@@ -1059,15 +1153,23 @@ export default function App() {
         </nav>
       )}
 
-      {/* BOOKHAD Sleek Spinning Vinyl Book Disc (Bottom Right) */}
+      {/* BOOKHAD Unified Spinning Disc + Merged Audio Bar (Main Screen) */}
       <FloatingBookDisc
         book={activeBook}
         isAudioPlaying={isReaderAudioPlaying}
+        isAudioSessionActive={isReaderAudioSessionActive}
         isReaderOpen={activeTab === 'reader'}
+        onToggleAudio={() => dispatchAudioCommand('toggle')}
+        onNextAudio={() => dispatchAudioCommand('next')}
+        onStopAudio={() => {
+          dispatchAudioCommand('stop');
+          setIsReaderAudioPlaying(false);
+          setIsReaderAudioSessionActive(false);
+        }}
         onClick={() => {
           if (!activeBook) return;
           if (activeTab !== 'reader') {
-            handleOpenBook(activeBook.id, isReaderAudioPlaying);
+            handleOpenBook(activeBook.id, false);
           } else {
             setDiscToggleSignal((s) => s + 1);
           }

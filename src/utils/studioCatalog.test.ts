@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_GLOBAL_VOICE,
   buildUnifiedFontCatalog,
+  hideSystemVoiceKey,
+  isProtectedPrimaryVoice,
   resolveNarratorAssignmentFromDefault,
 } from './studioCatalog';
 import {
@@ -122,3 +124,19 @@ test('reading speed helpers support direct numeric entry with 0.1 step, comma de
   assert.equal(formatReadingSpeed(2), '2.0');
   assert.equal(formatReadingSpeed(1.3), '1.3');
 });
+
+test('only the first system voice (gemini:Kore) is protected from deletion; all other built-in and device voices can be deleted', () => {
+  assert.equal(isProtectedPrimaryVoice('gemini:Kore'), true);
+  assert.equal(isProtectedPrimaryVoice('gemini:Charon'), false);
+  assert.equal(isProtectedPrimaryVoice('gemini:Zephyr'), false);
+  assert.equal(isProtectedPrimaryVoice('gemini:Fenrir'), false);
+  assert.equal(isProtectedPrimaryVoice('gemini:Puck'), false);
+  assert.equal(isProtectedPrimaryVoice('gemini:Aoede'), false);
+  assert.equal(isProtectedPrimaryVoice('browser:vi-VN-default'), false);
+  assert.equal(isProtectedPrimaryVoice('external:voice-123'), false);
+
+  // Attempting to hide the protected first voice must not include it
+  const afterProtected = hideSystemVoiceKey('gemini:Kore');
+  assert.equal(afterProtected.includes('gemini:Kore'), false);
+});
+
