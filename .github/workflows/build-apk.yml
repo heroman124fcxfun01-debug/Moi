@@ -65,6 +65,7 @@ jobs:
           npm run build
 
       - name: Tạo dự án Android với Capacitor 6 & gắn biểu tượng BOOKHAD
+        shell: bash
         env:
           CI: true
           CAPACITOR_TELEMETRY: '0'
@@ -73,14 +74,44 @@ jobs:
           rm -rf android
           npx cap add android
           npx cap sync android
-          if [ -f public/pwa-512x512.png ]; then
-            for dir in android/app/src/main/res/mipmap-*; do
+          # Only replace existing PNG icons in density mipmap-* folders (NEVER touch mipmap-anydpi-v26 XML files!)
+          if [ -f public/pwa-512x512.png ] && file public/pwa-512x512.png | grep -qi "PNG image data"; then
+            for entry in "mdpi:48:108" "hdpi:72:162" "xhdpi:96:216" "xxhdpi:144:324" "xxxhdpi:192:432"; do
+              density="${entry%%:*}"
+              rest="${entry#*:}"
+              icon_sz="${rest%%:*}"
+              fg_sz="${rest#*:}"
+              dir="android/app/src/main/res/mipmap-$density"
               if [ -d "$dir" ]; then
-                cp public/pwa-512x512.png "$dir/ic_launcher.png" || true
-                cp public/pwa-512x512.png "$dir/ic_launcher_round.png" || true
-                cp public/pwa-512x512.png "$dir/ic_launcher_foreground.png" || true
+                if command -v convert >/dev/null 2>&1; then
+                  if [ -f "$dir/ic_launcher.png" ]; then
+                    convert public/pwa-512x512.png -resize "${icon_sz}x${icon_sz}" "PNG32:$dir/ic_launcher.png"
+                  fi
+                  if [ -f "$dir/ic_launcher_round.png" ]; then
+                    convert public/pwa-512x512.png -resize "${icon_sz}x${icon_sz}" "PNG32:$dir/ic_launcher_round.png"
+                  fi
+                  if [ -f "$dir/ic_launcher_foreground.png" ]; then
+                    convert public/pwa-512x512.png -resize "${fg_sz}x${fg_sz}" "PNG32:$dir/ic_launcher_foreground.png"
+                  fi
+                else
+                  if [ -f "$dir/ic_launcher.png" ]; then
+                    cp public/pwa-192x192.png "$dir/ic_launcher.png"
+                  fi
+                  if [ -f "$dir/ic_launcher_round.png" ]; then
+                    cp public/pwa-192x192.png "$dir/ic_launcher_round.png"
+                  fi
+                  if [ -f "$dir/ic_launcher_foreground.png" ]; then
+                    cp public/pwa-512x512.png "$dir/ic_launcher_foreground.png"
+                  fi
+                fi
               fi
             done
+          fi
+          # Ensure no stray PNGs ever exist inside mipmap-anydpi-v26 (prevents AAPT2 duplicate resource error)
+          rm -f android/app/src/main/res/mipmap-anydpi-v26/*.png || true
+          # Match adaptive icon background to BOOKHAD dark midnight palette
+          if [ -f android/app/src/main/res/values/ic_launcher_background.xml ]; then
+            sed -i 's/#[0-9A-Fa-f]\{6\}/#141824/g' android/app/src/main/res/values/ic_launcher_background.xml || true
           fi
 
       - name: Biên dịch file APK (Debug Test)
