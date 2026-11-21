@@ -156,6 +156,20 @@ export interface CustomFontAsset {
   addedAt: number;
 }
 
+export interface SpeakerEmbeddingVector {
+  vectorId: string;
+  f0Hz: number;
+  spectralCentroidHz: number;
+  lowBandRatio: number;
+  midBandRatio: number;
+  highBandRatio: number;
+  cadenceFactor: number;
+  zcr: number;
+  dynamicRangeDb: number;
+  envelope16: number[];
+  estimatedGender: 'male' | 'female';
+}
+
 export interface ExternalVoiceAsset {
   id: string;
   voiceId?: string;
@@ -163,6 +177,8 @@ export interface ExternalVoiceAsset {
   fileName: string;
   mimeType: string;
   dataUrl: string;
+  cleanVocalSampleUrl?: string;
+  speakerEmbedding?: SpeakerEmbeddingVector;
   durationSec?: number;
   originType?: 'imported' | 'studio';
   originLabel?: string;
@@ -204,6 +220,9 @@ export interface ReaderSettings {
   paragraphSpacing: number;
   letterSpacing: number;
   fontWeight: number;
+  marginTopPx?: number;
+  marginBottomPx?: number;
+  marginHorizontalPx?: number;
   pageWidth: PageWidthOption;
   textAlign: TextAlignOption;
   dropCap: boolean;

@@ -318,6 +318,28 @@ class AmbientSoundManager {
     this.emit();
   }
 
+  /**
+   * Smoothly fades all active ambient sound tracks down to silence over `durationMs`
+   * (e.g. 2500ms for Sleep Timer), then stops them and restores masterVolume cleanly.
+   */
+  async fadeOutAndStopAll(durationMs = 2500): Promise<void> {
+    if (this.activeTracks.size === 0) return;
+    const savedMaster = this.masterVolume;
+    const steps = 16;
+    const stepMs = Math.max(40, Math.round(durationMs / steps));
+    for (let i = 1; i <= steps; i++) {
+      if (this.activeTracks.size === 0) break;
+      const ratio = Math.max(0, 1 - i / steps);
+      const effMaster = savedMaster * ratio;
+      for (const handle of this.activeTracks.values()) {
+        handle.setVolume(mixEffectiveVolume(handle.volume, effMaster));
+      }
+      await new Promise((r) => window.setTimeout(r, stepMs));
+    }
+    this.stopAll();
+    this.masterVolume = savedMaster;
+  }
+
   private startCustomTrack(track: CustomAmbientTrack, initialVolume: number) {
     if (typeof Audio === 'undefined') return;
     const audio = new Audio(track.dataUrl);

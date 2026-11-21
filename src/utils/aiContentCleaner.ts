@@ -15,10 +15,29 @@ export interface BookScanFinding {
   original: string;
   cleaned: string;
   reason: string;
+  groupKey?: string;
+  repeatTotalCount?: number;
+  duplicateRemoveCount?: number;
+}
+
+export interface CleanupSelectableItem {
+  id: string;
+  category: CleanupCategory;
+  action: 'remove' | 'replace';
+  label: string;
+  excerpt: string;
+  cleanedPreview?: string;
+  chapterIndex: number;
+  paragraphIndex: number;
+  findingIds: string[];
+  repeatTotalCount?: number;
+  duplicateRemoveCount?: number;
+  defaultChecked: boolean;
 }
 
 export interface BookCleanupReport {
   findings: BookScanFinding[];
+  selectableItems: CleanupSelectableItem[];
   categoryCounts: Record<CleanupCategory, number>;
   categorySamples: Record<
     CleanupCategory,
@@ -144,11 +163,14 @@ const TYPO_SYNTAX_RULES: Array<{ re: RegExp; repl: (m: string, ...args: string[]
   },
   // Preceded by Vietnamese kinship/action cue: "gọi ci", "của ci", "với ci", "như ci", "thưa ci", "chào ci"
   {
-    re: /\b(gọi|của|với|như|thưa|chào|hỏi|nhìn|theo|giúp|yêu|thương|nhớ|sợ|bảo|nói|cho|cùng|bên|cạnh|em|anh|mẹ|bố|ba)\s+(ci)\b/gi,
-    repl: (_m, prev, word) => `${prev} ${matchCase(word, 'chị')}`,
+    re: /(^|[\s"“'‘(\-—–,;:])(gọi|của|với|như|thưa|chào|hỏi|nhìn|theo|giúp|yêu|thương|nhớ|sợ|bảo|nói|cho|cùng|bên|cạnh|em|anh|mẹ|bố|ba)\s+(ci)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, prev, word) => `${pre}${prev} ${matchCase(word, 'chị')}`,
   },
-  // Common Vietnamese web-novel / OCR typos
-  { re: /\b(ko|k0|kh0ng)\b/gi, repl: (m) => matchCase(m, 'không') },
+  // Common Vietnamese web-novel / OCR typos (Unicode-safe boundaries so 'Ông ta' / 'Lòng ta' are NEVER matched)
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(ko|k0|kh0ng)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'không')}`,
+  },
   {
     re: /(^|[\s"“'‘(\-—–,;:])(đc|dc)(?=$|[\s,.;:!?)"”'’])/gi,
     repl: (_m, pre, word) => {
@@ -156,23 +178,50 @@ const TYPO_SYNTAX_RULES: Array<{ re: RegExp; repl: (m: string, ...args: string[]
       return `${pre}${matchCase(word, 'được')}`;
     },
   },
-  { re: /\b(trc)\b/gi, repl: (m) => matchCase(m, 'trước') },
-  { re: /\b(nhg)\b/gi, repl: (m) => matchCase(m, 'nhưng') },
-  { re: /\b(cx)\b/gi, repl: (m) => matchCase(m, 'cũng') },
-  { re: /\b(ngư0i|ngươ1)\b/gi, repl: (m) => matchCase(m, 'người') },
-  { re: /\b(m0t)\b/gi, repl: (m) => matchCase(m, 'một') },
-  { re: /\b(tr0ng)\b/gi, repl: (m) => matchCase(m, 'trong') },
-  { re: /\b(chưong)\b/gi, repl: (m) => matchCase(m, 'chương') },
   {
-    re: /\b(ng)\s+(ta|ấy|đó|này|kia|khác|lớn|trẻ|già|đẹp|tốt|xấu)\b/gi,
-    repl: (_m, w, next) => `${matchCase(w, 'người')} ${next}`,
+    re: /(^|[\s"“'‘(\-—–,;:])(trc)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'trước')}`,
   },
   {
-    re: /\b(vs)\s+([a-zà-ỹđ])/gi,
-    repl: (_m, w, next) => `${matchCase(w, 'với')} ${next}`,
+    re: /(^|[\s"“'‘(\-—–,;:])(nhg)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'nhưng')}`,
   },
-  { re: /\b(mn)\b/gi, repl: (m) => matchCase(m, 'mọi người') },
-  { re: /\b(ntn)\b/gi, repl: (m) => matchCase(m, 'như thế nào') },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(cx)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'cũng')}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(ngư0i|ngươ1)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'người')}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(m0t)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'một')}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(tr0ng)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'trong')}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(chưong)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'chương')}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(ng)\s+(ta|ấy|đó|này|kia|khác|lớn|trẻ|già|đẹp|tốt|xấu)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, w, next) => `${pre}${matchCase(w, 'người')} ${next}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(vs)\s+([a-zà-ỹđ])/gi,
+    repl: (_m, pre, w, next) => `${pre}${matchCase(w, 'với')} ${next}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(mn)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'mọi người')}`,
+  },
+  {
+    re: /(^|[\s"“'‘(\-—–,;:])(ntn)(?=$|[\s,.;:!?)"”'’])/gi,
+    repl: (_m, pre, word) => `${pre}${matchCase(word, 'như thế nào')}`,
+  },
   // Stray OCR uppercase garbage tokens like "I I C S" or "IICS"
   {
     re: /(?:^|(?<=[\s,.;:!?()\-—–"“'‘]))(?:I\s+I\s+C\s+S|I{1,3}C{1,2}S{1,2}|O\s+C\s+R)(?=$|[\s,.;:!?()\-—–"”'’])/g,
@@ -194,20 +243,32 @@ export function normalizeLineSignature(text: string): string {
  * Collects signatures of repeated notes, watermarks, or page headers/footers
  * appearing 2+ times across a book (kept short <= 140 chars so genuine recurring dialogue isn't flagged).
  */
-export function collectRepeatedLineSignatures(
+export function collectRepeatedLineCounts(
   chapters: Array<Pick<Chapter, 'paragraphs'>>
-): Set<string> {
+): Map<string, number> {
   const counts = new Map<string, number>();
   const chapterSpread = new Map<string, Set<number>>();
+  const consecutiveDup = new Set<string>();
 
   for (let chIdx = 0; chIdx < chapters.length; chIdx++) {
     const paras = chapters[chIdx]?.paragraphs || [];
+    let prevSig = '';
     for (let pIdx = 0; pIdx < paras.length; pIdx++) {
       const raw = (paras[pIdx] || '').trim();
-      if (!raw || raw.length > 160) continue;
+      if (!raw || raw.length > 600) {
+        prevSig = '';
+        continue;
+      }
       const sig = normalizeLineSignature(raw);
-      if (!sig || sig.length < 4) continue;
+      if (!sig || sig.length < 4) {
+        prevSig = '';
+        continue;
+      }
       counts.set(sig, (counts.get(sig) || 0) + 1);
+      if (sig === prevSig && raw.length >= 6) {
+        consecutiveDup.add(sig);
+      }
+      prevSig = sig;
       let set = chapterSpread.get(sig);
       if (!set) {
         set = new Set<number>();
@@ -217,15 +278,21 @@ export function collectRepeatedLineSignatures(
     }
   }
 
-  const repeated = new Set<string>();
+  const repeatedCounts = new Map<string, number>();
   for (const [sig, count] of counts.entries()) {
     const spread = chapterSpread.get(sig)?.size || 0;
-    // Flag as repeated note/header if repeated >= 2 times across different chapters, OR >= 3 times within same book
-    if (spread >= 2 || count >= 3) {
-      repeated.add(sig);
+    // Flag as repeated content if repeated >= 2 across different chapters, >= 3 times total, or duplicated consecutively
+    if (count >= 2 && (spread >= 2 || count >= 3 || consecutiveDup.has(sig))) {
+      repeatedCounts.set(sig, count);
     }
   }
-  return repeated;
+  return repeatedCounts;
+}
+
+export function collectRepeatedLineSignatures(
+  chapters: Array<Pick<Chapter, 'paragraphs'>>
+): Set<string> {
+  return new Set(collectRepeatedLineCounts(chapters).keys());
 }
 
 function isPureAddressOrJunkLine(text: string, bookTitle?: string): { hit: boolean; reason: string } {
@@ -423,6 +490,9 @@ function buildReportFromFindings(
     repeatedNotes: [],
   };
 
+  const selectableItems: CleanupSelectableItem[] = [];
+  const groupedMap = new Map<string, CleanupSelectableItem>();
+
   for (const f of findings) {
     categoryCounts[f.category] += 1;
     if (categorySamples[f.category].length < 4) {
@@ -432,10 +502,57 @@ function buildReportFromFindings(
         reason: f.reason,
       });
     }
+
+    if (f.groupKey) {
+      const existing = groupedMap.get(f.groupKey);
+      if (existing) {
+        existing.findingIds.push(f.id);
+        existing.duplicateRemoveCount = existing.findingIds.length;
+        const total = f.repeatTotalCount || existing.findingIds.length + 1;
+        existing.repeatTotalCount = total;
+        existing.label = `Nội dung lặp lại nhiều lần (lặp ${total} lần — giữ 1 bản gốc, xóa ${existing.findingIds.length} bản thừa)`;
+      } else {
+        const removeCount = f.duplicateRemoveCount || 1;
+        const total = f.repeatTotalCount || removeCount + 1;
+        const item: CleanupSelectableItem = {
+          id: `item-${f.groupKey}`,
+          category: f.category,
+          action: f.action,
+          label: `Nội dung lặp lại nhiều lần (lặp ${total} lần — giữ 1 bản gốc, xóa ${removeCount} bản thừa)`,
+          excerpt: f.original.slice(0, 110),
+          chapterIndex: f.chapterIndex,
+          paragraphIndex: f.paragraphIndex,
+          findingIds: [f.id],
+          repeatTotalCount: total,
+          duplicateRemoveCount: 1,
+          defaultChecked: true,
+        };
+        groupedMap.set(f.groupKey, item);
+        selectableItems.push(item);
+      }
+    } else {
+      const linePrefix =
+        f.chapterIndex > 0
+          ? `Ch.${f.chapterIndex + 1} · Dòng ${f.paragraphIndex + 1}`
+          : `Dòng ${f.paragraphIndex + 1}`;
+      selectableItems.push({
+        id: `item-${f.id}`,
+        category: f.category,
+        action: f.action,
+        label: `${linePrefix}: ${f.reason}`,
+        excerpt: f.original.slice(0, 110),
+        cleanedPreview: f.action === 'replace' ? f.cleaned.slice(0, 110) : undefined,
+        chapterIndex: f.chapterIndex,
+        paragraphIndex: f.paragraphIndex,
+        findingIds: [f.id],
+        defaultChecked: true,
+      });
+    }
   }
 
   return {
     findings,
+    selectableItems,
     categoryCounts,
     categorySamples,
     totalIssues: findings.length,
@@ -446,16 +563,17 @@ function buildReportFromFindings(
 /**
  * Job 1 (Core Deterministic Scanner):
  * Scans an entire book during import (or on demand) and classifies every detected issue
- * into the 3 user-selectable categories:
- * 1. addressesAndHeaders (vtbook, http, links, symbols, redundant headers)
- * 2. typosAndCensored (l*n đ*nh -> lên đỉnh, ci -> chị, OCR/syntax errors)
- * 3. repeatedNotes (repeated footnotes, watermarks, author/translator notes)
+ * into individual & grouped selectable items while enforcing the Mandatory Deduplication Rule:
+ * - Any repeated paragraph/sentence (occurring N >= 2 times) MUST preserve its 1st original
+ *   occurrence intact at its original position and ONLY flag occurrences 2..N (N - 1 duplicates)
+ *   for optional deletion. NEVER delete 100% of repeated content!
  */
 export function scanBookForCleanup(
   book: Pick<Book, 'title' | 'author' | 'chapters'>
 ): BookCleanupReport {
   const findings: BookScanFinding[] = [];
-  const repeatedSignatures = collectRepeatedLineSignatures(book.chapters);
+  const repeatedCounts = collectRepeatedLineCounts(book.chapters);
+  const seenRepeatedSignatures = new Set<string>();
 
   for (let chIdx = 0; chIdx < book.chapters.length; chIdx++) {
     const ch = book.chapters[chIdx];
@@ -465,9 +583,9 @@ export function scanBookForCleanup(
       const original = (paras[pIdx] || '').trim();
       if (!original) continue;
 
-      // Check Category 3 first for explicit repeated footnotes/watermarks
       const sig = normalizeLineSignature(original);
-      const isRepeatedAcrossBook = sig.length >= 4 && repeatedSignatures.has(sig);
+      const repeatTotalCount = sig.length >= 4 ? repeatedCounts.get(sig) || 0 : 0;
+      const isRepeatedAcrossBook = repeatTotalCount >= 2;
       const isExplicitNoteLine = REPEATED_NOTE_MARKER_REGEX.test(original) && original.length <= 220;
 
       // Check Category 1: pure download URL / vtbook / footer / decorative divider / redundant title
@@ -486,7 +604,16 @@ export function scanBookForCleanup(
         continue;
       }
 
-      if (isExplicitNoteLine || isRepeatedAcrossBook) {
+      // Mandatory Deduplication Preservation Rule:
+      // If a line/paragraph repeats N >= 2 times, ALWAYS preserve the 1st original copy in place
+      // and ONLY flag duplicate occurrences 2..N for removal (keep 1, delete N-1).
+      if (isRepeatedAcrossBook) {
+        if (!seenRepeatedSignatures.has(sig)) {
+          seenRepeatedSignatures.add(sig);
+          // 1st occurrence is KEPT intact — do NOT flag for deletion!
+          continue;
+        }
+        const duplicateRemoveCount = repeatTotalCount - 1;
         findings.push({
           id: `f-${chIdx}-${pIdx}-note`,
           category: 'repeatedNotes',
@@ -495,9 +622,24 @@ export function scanBookForCleanup(
           action: 'remove',
           original,
           cleaned: '',
-          reason: isExplicitNoteLine
-            ? 'Chú thích / dòng kết chương thừa'
-            : 'Nội dung lặp lại nhiều lần giữa các trang',
+          reason: `Nội dung lặp lại nhiều lần (lặp ${repeatTotalCount} lần — giữ 1 bản gốc, xóa ${duplicateRemoveCount} bản thừa)`,
+          groupKey: `repeat:${sig}`,
+          repeatTotalCount,
+          duplicateRemoveCount,
+        });
+        continue;
+      }
+
+      if (isExplicitNoteLine) {
+        findings.push({
+          id: `f-${chIdx}-${pIdx}-note`,
+          category: 'repeatedNotes',
+          chapterIndex: chIdx,
+          paragraphIndex: pIdx,
+          action: 'remove',
+          original,
+          cleaned: '',
+          reason: 'Chú thích / dòng kết chương thừa',
         });
         continue;
       }
@@ -575,16 +717,10 @@ export function mergeAiBookFindings(
   return buildReportFromFindings(Array.from(byKey.values()), true);
 }
 
-/**
- * Applies ONLY the user-checked cleanup categories to a Book, returning a new Book
- * with cleaned chapters, updated fingerprint, and removal/fix statistics.
- */
-export function applyBookCleanupSelection(
+function applyActiveFindingsToBook(
   book: Book,
-  report: BookCleanupReport,
-  selected: CleanupSelection
+  activeFindings: BookScanFinding[]
 ): { cleanedBook: Book; removedCount: number; fixedCount: number } {
-  const activeFindings = report.findings.filter((f) => selected[f.category]);
   if (activeFindings.length === 0) {
     return { cleanedBook: book, removedCount: 0, fixedCount: 0 };
   }
@@ -672,6 +808,43 @@ export function applyBookCleanupSelection(
   };
 
   return { cleanedBook, removedCount, fixedCount };
+}
+
+/**
+ * Applies ONLY the user-checked cleanup categories to a Book (legacy 3-category API).
+ */
+export function applyBookCleanupSelection(
+  book: Book,
+  report: BookCleanupReport,
+  selected: CleanupSelection
+): { cleanedBook: Book; removedCount: number; fixedCount: number } {
+  const activeFindings = report.findings.filter((f) => selected[f.category]);
+  return applyActiveFindingsToBook(book, activeFindings);
+}
+
+/**
+ * Applies ONLY the individual selectable line/group items checked by the user.
+ * Enforces keeping at least 1 original occurrence of any repeated paragraph!
+ */
+export function applyBookCleanupByItemIds(
+  book: Book,
+  report: BookCleanupReport,
+  selectedItemIds: Set<string> | string[]
+): { cleanedBook: Book; removedCount: number; fixedCount: number } {
+  const idSet = selectedItemIds instanceof Set ? selectedItemIds : new Set(selectedItemIds);
+  if (idSet.size === 0) {
+    return { cleanedBook: book, removedCount: 0, fixedCount: 0 };
+  }
+  const activeFindingIds = new Set<string>();
+  for (const item of report.selectableItems) {
+    if (idSet.has(item.id)) {
+      for (const fid of item.findingIds) {
+        activeFindingIds.add(fid);
+      }
+    }
+  }
+  const activeFindings = report.findings.filter((f) => activeFindingIds.has(f.id));
+  return applyActiveFindingsToBook(book, activeFindings);
 }
 
 /**

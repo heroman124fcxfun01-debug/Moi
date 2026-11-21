@@ -45,10 +45,12 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
   const tone = ext.toneSettings;
   const analyzed = ext.analyzedProfile;
 
+  const emb = ext.speakerEmbedding;
   const preferGender =
-    analyzed?.gender === 'male' || analyzed?.gender === 'female' || analyzed?.gender === 'neutral'
+    emb?.estimatedGender ||
+    (analyzed?.gender === 'male' || analyzed?.gender === 'female' || analyzed?.gender === 'neutral'
       ? analyzed.gender
-      : preset.preferGender;
+      : preset.preferGender);
 
   const rawPitch = promptParams?.pitch ?? tone?.pitch ?? analyzed?.pitchHint ?? preset.pitch;
   const rawRate = promptParams?.speed ?? tone?.rate ?? analyzed?.rateHint ?? preset.rate;
@@ -63,8 +65,8 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
   const pitch = Math.min(1.68, Math.max(0.58, Math.round((rawPitch + warmthShift + clarityShift) * 100) / 100));
   const rate = Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, Math.round(rawRate * 100) / 100));
 
-  // Deterministic slot offset from unique voiceId / id so distinct custom voices rotate through device voices
-  const seedKey = ext.voiceId || ext.id;
+  // Deterministic slot offset from unique speakerEmbedding vectorId / voiceId so distinct custom voices never collapse
+  const seedKey = emb?.vectorId || ext.voiceId || ext.id;
   let hash = 0;
   for (let i = 0; i < seedKey.length; i++) {
     hash = (hash * 31 + seedKey.charCodeAt(i)) >>> 0;
@@ -83,7 +85,7 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
       promptParams?.geminiStylePrompt ||
       analyzed?.stylePrompt ||
       tone?.styleDirection ||
-      `Đọc theo âm sắc giọng ${ext.name}, giữ nhịp tự nhiên và truyền cảm`,
+      `Đọc theo âm sắc giọng ${ext.name}${emb ? ` (${emb.vectorId}, F0 ${emb.f0Hz}Hz)` : ''}, giữ nhịp tự nhiên và truyền cảm`,
   };
 }
 

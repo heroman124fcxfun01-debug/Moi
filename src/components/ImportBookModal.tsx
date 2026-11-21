@@ -31,9 +31,8 @@ import {
   extractDistinctBookFramesFromVideo,
 } from '../utils/videoBookScanner';
 import {
-  applyBookCleanupSelection,
+  applyBookCleanupByItemIds,
   type BookCleanupReport,
-  type CleanupSelection,
 } from '../utils/aiContentCleaner';
 import { runImportBookAiScan } from '../utils/aiContentCleanerClient';
 import { BookCleanupReviewModal } from './BookCleanupReviewModal';
@@ -757,16 +756,16 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
           isOpen
           bookTitle={pendingCleanup.book.title}
           report={pendingCleanup.report}
-          confirmLabel="Áp dụng & Lưu"
+          confirmLabel="Xóa"
           keepOriginalLabel="Giữ nguyên"
           onKeepOriginal={() => {
             void finalizeBookImport(pendingCleanup.book, pendingCleanup.exportEpubAfter);
           }}
-          onConfirm={(selection: CleanupSelection) => {
-            const { cleanedBook } = applyBookCleanupSelection(
+          onConfirmItemIds={(selectedIds) => {
+            const { cleanedBook } = applyBookCleanupByItemIds(
               pendingCleanup.book,
               pendingCleanup.report,
-              selection
+              selectedIds
             );
             void finalizeBookImport(cleanedBook, pendingCleanup.exportEpubAfter);
           }}

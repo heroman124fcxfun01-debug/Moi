@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  AlignJustify,
   ArrowLeft,
   Bookmark,
   BookMarked,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -15,8 +17,10 @@ import {
   Languages,
   Loader2,
   Menu,
+  MoveHorizontal,
   Music,
   Pause,
+  Pilcrow,
   Play,
   RotateCcw,
   Settings,
@@ -91,9 +95,8 @@ import { AudiobookStudioDrawer } from './AudiobookStudioDrawer';
 import { AmbientSoundDrawer } from './AmbientSoundDrawer';
 import { BookCleanupReviewModal } from './BookCleanupReviewModal';
 import {
-  applyBookCleanupSelection,
+  applyBookCleanupByItemIds,
   type BookCleanupReport,
-  type CleanupSelection,
 } from '../utils/aiContentCleaner';
 import { runImportBookAiScan } from '../utils/aiContentCleanerClient';
 import { GlassSelect, type GlassSelectOption } from './GlassSelect';
@@ -272,7 +275,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [translateError, setTranslateError] = useState('');
   const [translateStatusMsg, setTranslateStatusMsg] = useState('');
   const [isScanningCleanup, setIsScanningCleanup] = useState(false);
+  const [cleanScanVerified, setCleanScanVerified] = useState(false);
   const [cleanupReviewReport, setCleanupReviewReport] = useState<BookCleanupReport | null>(null);
+
+  useEffect(() => {
+    setCleanScanVerified(false);
+  }, [book.id]);
   const [isTranslatingFullEpub, setIsTranslatingFullEpub] = useState(false);
   const [fullEpubProgress, setFullEpubProgress] = useState<{
     percent: number;
@@ -516,16 +524,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       if (box && (box.clientWidth < 80 || box.clientHeight < 80)) return;
       const rawW = box ? box.clientWidth : window.innerWidth;
       const rawH = box ? box.clientHeight : Math.max(300, window.innerHeight - 132);
-      const computed = box ? window.getComputedStyle(box) : null;
-      const padLeft = computed ? parseFloat(computed.paddingLeft || '0') || 0 : 0;
-      const padRight = computed ? parseFloat(computed.paddingRight || '0') || 0 : 0;
-      const padTop = computed ? parseFloat(computed.paddingTop || '0') || 0 : 10;
-      const padBottom = computed ? parseFloat(computed.paddingBottom || '0') || 0 : 20;
-      const horizPad = padLeft + padRight > 0 ? padLeft + padRight : window.innerWidth >= 640 ? 64 : 32;
+      const padTop = Math.max(0, settings.marginTopPx ?? 12);
+      const padBottom = Math.max(0, settings.marginBottomPx ?? 20);
+      const padHoriz = Math.max(4, settings.marginHorizontalPx ?? 16);
+      const horizPad = padHoriz * 2;
       const maxArticleW = widthLimitMap[settings.pageWidth] || 672;
-      const contentW = Math.max(210, Math.min(rawW - horizPad, maxArticleW));
+      const contentW = Math.max(180, Math.min(rawW - horizPad, maxArticleW));
       // Subtract real box vertical padding + generous 20px clearance so text NEVER touches or hides behind bottom buttons
-      const contentH = Math.max(200, Math.floor(rawH - padTop - padBottom - 20));
+      const contentH = Math.max(180, Math.floor(rawH - padTop - padBottom - 20));
       setStageSize((prev) =>
         Math.abs(prev.width - contentW) > 3 || Math.abs(prev.height - contentH) > 3
           ? { width: contentW, height: contentH }
@@ -544,7 +550,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       ro?.disconnect();
       window.removeEventListener('resize', updateSize);
     };
-  }, [settings.pageWidth, settings.readingMode, showAudio, showSettings, showAmbient, isReaderActive]);
+  }, [
+    settings.pageWidth,
+    settings.readingMode,
+    settings.marginTopPx,
+    settings.marginBottomPx,
+    settings.marginHorizontalPx,
+    showAudio,
+    showSettings,
+    showAmbient,
+    isReaderActive,
+  ]);
 
   // Reset post-render DOM height penalty whenever typography or viewport geometry changes
   useEffect(() => {
@@ -560,6 +576,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     settings.paragraphSpacing,
     settings.letterSpacing,
     settings.fontWeight,
+    settings.marginTopPx,
+    settings.marginBottomPx,
+    settings.marginHorizontalPx,
     settings.firstLineIndent,
     settings.dropCap,
     settings.columnsInPaginated,
@@ -2295,74 +2314,195 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       </div>
 
-      {/* Quick Actions Floating Bar (!) — A- / A+ & Quick Translate Toggle */}
+      {/* Quick Actions Floating Popover (!) — Icon-Pair Adjusters ONLY (Zero numeric indicators) */}
       {showQuickActions &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            className="fixed inset-0 z-[70] bg-transparent flex items-start justify-end pt-[58px] pr-3 sm:pr-5"
+            className="fixed inset-0 z-[70] bg-transparent flex items-start justify-end pt-[56px] pr-3 sm:pr-5"
             onClick={(e) => {
               if (e.target === e.currentTarget) setShowQuickActions(false);
             }}
           >
             <div
               role="dialog"
-              aria-label="Công cụ đọc nhanh"
-              className="ios-sheet-enter ios-frosted-surface rounded-[22px] p-2.5 flex items-center gap-2 text-stone-900 dark:text-stone-100"
+              data-testid="quick-actions-popover"
+              aria-label="Chỉnh nhanh giao diện đọc"
+              className="ios-sheet-enter ios-frosted-surface rounded-[20px] p-2.5 w-[228px] space-y-2 text-stone-900 dark:text-stone-100 shadow-xl"
             >
-              <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-1">
-                <button
-                  type="button"
-                  data-testid="quick-font-dec-btn"
-                  disabled={settings.fontSize <= 12}
-                  onClick={() =>
-                    onUpdateSettings({ fontSize: Math.max(12, settings.fontSize - 1) })
-                  }
-                  aria-label="Giảm cỡ chữ"
-                  className="px-2.5 py-1 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors"
-                >
-                  A-
-                </button>
-                <span
-                  data-testid="quick-font-size-label"
-                  className="px-1 text-[11px] font-semibold tabular-nums min-w-[36px] text-center opacity-80"
-                >
-                  {settings.fontSize}px
+              {/* 1. Cỡ chữ: A- / A+ */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                  Cỡ chữ
                 </span>
-                <button
-                  type="button"
-                  data-testid="quick-font-inc-btn"
-                  disabled={settings.fontSize >= 36}
-                  onClick={() =>
-                    onUpdateSettings({ fontSize: Math.min(36, settings.fontSize + 1) })
-                  }
-                  aria-label="Tăng cỡ chữ"
-                  className="px-2.5 py-1 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors"
-                >
-                  A+
-                </button>
+                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
+                  <button
+                    type="button"
+                    data-testid="quick-font-dec-btn"
+                    disabled={settings.fontSize <= 12}
+                    onClick={() =>
+                      onUpdateSettings({ fontSize: Math.max(12, settings.fontSize - 1) })
+                    }
+                    aria-label="Giảm cỡ chữ"
+                    className="w-9 h-7 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center"
+                  >
+                    A-
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="quick-font-inc-btn"
+                    disabled={settings.fontSize >= 36}
+                    onClick={() =>
+                      onUpdateSettings({ fontSize: Math.min(36, settings.fontSize + 1) })
+                    }
+                    aria-label="Tăng cỡ chữ"
+                    className="w-9 h-7 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center"
+                  >
+                    A+
+                  </button>
+                </div>
               </div>
 
-              <button
-                type="button"
-                disabled={isTranslating}
-                onClick={() => {
-                  const nextMode: TranslationMode =
-                    settings.translationMode === 'override' ? 'original' : 'override';
-                  void handleTranslationModeChange(nextMode);
-                }}
-                aria-pressed={settings.translationMode === 'override'}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold transition-colors whitespace-nowrap ${
-                  settings.translationMode === 'override'
-                    ? 'bg-amber-800 text-white shadow-sm'
-                    : 'bg-black/5 dark:bg-white/10 text-stone-800 dark:text-stone-100 hover:bg-black/10 dark:hover:bg-white/15'
-                }`}
-              >
-                <Languages className="w-3.5 h-3.5 shrink-0" />
-                <span>
-                  {settings.translationMode === 'override' ? 'Đã dịch' : 'Dịch'}
+              {/* 2. Độ giãn dòng: icon- / icon+ */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                  Giãn dòng
                 </span>
-              </button>
+                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
+                  <button
+                    type="button"
+                    data-testid="quick-lineheight-dec-btn"
+                    disabled={settings.lineHeight <= 1.3}
+                    onClick={() =>
+                      onUpdateSettings({
+                        lineHeight: Math.max(1.3, Math.round((settings.lineHeight - 0.1) * 100) / 100),
+                      })
+                    }
+                    aria-label="Giảm độ giãn dòng"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <AlignJustify className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">-</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="quick-lineheight-inc-btn"
+                    disabled={settings.lineHeight >= 2.3}
+                    onClick={() =>
+                      onUpdateSettings({
+                        lineHeight: Math.min(2.3, Math.round((settings.lineHeight + 0.1) * 100) / 100),
+                      })
+                    }
+                    aria-label="Tăng độ giãn dòng"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <AlignJustify className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">+</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 3. Khoảng cách lề: icon- / icon+ */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                  Lề trang
+                </span>
+                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
+                  <button
+                    type="button"
+                    data-testid="quick-margin-dec-btn"
+                    disabled={(settings.marginHorizontalPx ?? 16) <= 4}
+                    onClick={() =>
+                      onUpdateSettings({
+                        marginHorizontalPx: Math.max(4, (settings.marginHorizontalPx ?? 16) - 4),
+                      })
+                    }
+                    aria-label="Giảm khoảng cách lề"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <MoveHorizontal className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">-</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="quick-margin-inc-btn"
+                    disabled={(settings.marginHorizontalPx ?? 16) >= 56}
+                    onClick={() =>
+                      onUpdateSettings({
+                        marginHorizontalPx: Math.min(56, (settings.marginHorizontalPx ?? 16) + 4),
+                      })
+                    }
+                    aria-label="Tăng khoảng cách lề"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <MoveHorizontal className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">+</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 4. Khoảng cách đoạn: icon- / icon+ */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                  Khoảng đoạn
+                </span>
+                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
+                  <button
+                    type="button"
+                    data-testid="quick-paraspacing-dec-btn"
+                    disabled={settings.paragraphSpacing <= 4}
+                    onClick={() =>
+                      onUpdateSettings({
+                        paragraphSpacing: Math.max(4, settings.paragraphSpacing - 2),
+                      })
+                    }
+                    aria-label="Giảm khoảng cách đoạn"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <Pilcrow className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">-</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="quick-paraspacing-inc-btn"
+                    disabled={settings.paragraphSpacing >= 36}
+                    onClick={() =>
+                      onUpdateSettings({
+                        paragraphSpacing: Math.min(36, settings.paragraphSpacing + 2),
+                      })
+                    }
+                    aria-label="Tăng khoảng cách đoạn"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <Pilcrow className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">+</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Translate Toggle */}
+              <div className="pt-1.5 border-t border-stone-200/70 dark:border-white/10">
+                <button
+                  type="button"
+                  disabled={isTranslating}
+                  onClick={() => {
+                    const nextMode: TranslationMode =
+                      settings.translationMode === 'override' ? 'original' : 'override';
+                    void handleTranslationModeChange(nextMode);
+                  }}
+                  aria-pressed={settings.translationMode === 'override'}
+                  className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                    settings.translationMode === 'override'
+                      ? 'bg-amber-800 text-white shadow-sm'
+                      : 'bg-black/5 dark:bg-white/10 text-stone-800 dark:text-stone-100 hover:bg-black/10 dark:hover:bg-white/15'
+                  }`}
+                >
+                  <Languages className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {settings.translationMode === 'override' ? 'Đã dịch' : 'Dịch'}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>,
           document.body
@@ -2456,15 +2596,16 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="reader-ai-cleanup-btn"
                     disabled={isScanningCleanup}
                     onClick={async () => {
-                      setShowToolsMenu(false);
                       setIsScanningCleanup(true);
-                      setTranslateStatusMsg('');
                       try {
                         const report = await runImportBookAiScan(book);
                         if (report.totalIssues > 0) {
+                          setShowToolsMenu(false);
+                          setCleanScanVerified(false);
                           setCleanupReviewReport(report);
                         } else {
-                          setTranslateStatusMsg('AI đã quét toàn bộ sách — nội dung sạch, không có địa chỉ hay lỗi chữ thừa.');
+                          // Clean book: NO green banner & NO popup — only show compact checkmark inside menu
+                          setCleanScanVerified(true);
                         }
                       } finally {
                         setIsScanningCleanup(false);
@@ -2476,7 +2617,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       <Sparkles className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
                       <span>{isScanningCleanup ? 'Đang quét...' : 'AI Quét sạch'}</span>
                     </span>
-                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
+                    {cleanScanVerified ? (
+                      <span
+                        data-testid="ai-clean-verified-check"
+                        aria-label="Sách đã sạch"
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 shrink-0"
+                      >
+                        <Check className="w-3.5 h-3.5 stroke-[2.6]" />
+                      </span>
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
+                    )}
                   </button>
                 </div>
 
@@ -2559,12 +2710,21 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onPointerMove={handleStagePointerMove}
           onPointerUp={(e) => finishStageDrag(e.clientX)}
           onPointerCancel={() => finishStageDrag()}
-          style={{ touchAction: isPaginatedMode ? 'pan-y' : undefined }}
           className={`flex-1 min-w-0 page-turn-stage ${
             isPaginatedMode
               ? 'h-full flex flex-col overflow-hidden select-none'
-              : 'overflow-x-hidden px-4 sm:px-8 pt-6 sm:pt-9 pb-12'
+              : 'overflow-x-hidden'
           }`}
+          style={
+            isPaginatedMode
+              ? { touchAction: 'pan-y' }
+              : {
+                  paddingTop: `${settings.marginTopPx ?? 12}px`,
+                  paddingBottom: `${Math.max(36, settings.marginBottomPx ?? 20)}px`,
+                  paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
+                  paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
+                }
+          }
         >
           {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page strictly above bottom 3 buttons) */}
           <div
@@ -2581,10 +2741,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               <div
                 aria-hidden="true"
                 data-testid="reader-underlay-page"
-                className="absolute inset-0 px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden pointer-events-none"
+                className="absolute inset-0 overflow-hidden pointer-events-none"
                 style={{
                   backgroundColor: activeTheme.bg,
                   color: activeTheme.text,
+                  paddingTop: `${settings.marginTopPx ?? 12}px`,
+                  paddingBottom: `${settings.marginBottomPx ?? 20}px`,
+                  paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
+                  paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
                   ...vintageTexture,
                   transform: liveSlideState
                     ? `scale(${liveSlideState.underlayScale})`
@@ -2602,9 +2766,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
             {/* Foreground / Active Reading Page Layer */}
             <div
+              data-testid="reader-foreground-page"
               className={
                 isPaginatedMode
-                  ? 'relative z-10 h-full w-full px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden'
+                  ? 'relative z-10 h-full w-full overflow-hidden'
                   : 'w-full'
               }
               style={
@@ -2612,6 +2777,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   ? {
                       backgroundColor: activeTheme.bg,
                       color: activeTheme.text,
+                      paddingTop: `${settings.marginTopPx ?? 12}px`,
+                      paddingBottom: `${settings.marginBottomPx ?? 20}px`,
+                      paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
+                      paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
                       ...vintageTexture,
                       ...(liveCurlGeom && liveCurlGeom.peel > 0.002
                         ? {
@@ -3363,27 +3532,25 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onDeleteCustomTrack={onDeleteCustomAmbientTrack}
         />
 
-        {/* On-Demand 3-Category AI Book Cleanup Confirmation Modal */}
+        {/* On-Demand Selective Per-Item AI Book Cleanup Confirmation Modal */}
         {cleanupReviewReport && (
           <BookCleanupReviewModal
             isOpen
             bookTitle={book.title}
             report={cleanupReviewReport}
-            confirmLabel="Áp dụng"
+            confirmLabel="Xóa"
             keepOriginalLabel="Hủy"
             onKeepOriginal={() => setCleanupReviewReport(null)}
-            onConfirm={(selection: CleanupSelection) => {
-              const { cleanedBook, removedCount, fixedCount } = applyBookCleanupSelection(
+            onConfirmItemIds={(selectedIds) => {
+              const { cleanedBook, removedCount, fixedCount } = applyBookCleanupByItemIds(
                 book,
                 cleanupReviewReport,
-                selection
+                selectedIds
               );
               setCleanupReviewReport(null);
               if (removedCount > 0 || fixedCount > 0) {
                 onUpdateBook(cleanedBook);
-                setTranslateStatusMsg(
-                  `AI đã xóa ${removedCount} mục thừa và sửa ${fixedCount} lỗi chữ trong sách.`
-                );
+                setCleanScanVerified(true);
               }
             }}
           />

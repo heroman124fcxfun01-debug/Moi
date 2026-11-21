@@ -41,6 +41,12 @@ import {
 } from '../utils/audioFilterEngine';
 import { ambientSoundManager } from '../utils/ambientSoundEngine';
 import {
+  formatSleepCountdown,
+  resolveSleepTimerConfig,
+  sanitizeSleepHoursInput,
+  sanitizeSleepMinutesInput,
+} from '../utils/sleepTimer';
+import {
   computeExternalVoiceSpeechParams,
   getOnDeviceVoiceTone,
   mapLangCodeToSpeechLocale,
@@ -272,11 +278,16 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   const characterVoicesEnabledRef = useRef(characterVoicesEnabled);
   characterVoicesEnabledRef.current = characterVoicesEnabled;
 
-  // Sleep Timer ("Hẹn giờ tắt"): off | 15 | 30 | 60 | end_of_chapter
-  const [sleepTimerMode, setSleepTimerMode] = useState<'off' | '15' | '30' | '60' | 'chapter'>('off');
+  // Sleep Timer ("Hẹn giờ tắt"): empty/0 -> stop at end of current chapter; >0 -> countdown + 2.5s fade-out
+  const [sleepHoursInput, setSleepHoursInput] = useState<string>('');
+  const [sleepMinutesInput, setSleepMinutesInput] = useState<string>('');
   const [sleepRemainingSec, setSleepRemainingSec] = useState<number>(0);
-  const sleepTimerModeRef = useRef(sleepTimerMode);
-  sleepTimerModeRef.current = sleepTimerMode;
+  const sleepTimerConfig = useMemo(
+    () => resolveSleepTimerConfig(sleepHoursInput, sleepMinutesInput),
+    [sleepHoursInput, sleepMinutesInput]
+  );
+  const sleepTimerConfigRef = useRef(sleepTimerConfig);
+  sleepTimerConfigRef.current = sleepTimerConfig;
 
   const filteredPlayerRef = useRef<FilteredAudioPlayer | null>(null);
   const aiTtsCacheRef = useRef<Map<string, Promise<string | null>>>(new Map());
@@ -321,28 +332,31 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     setScannedBookCharacters([]);
   }, [book.id, book.characterVoicesConfigured]);
 
-  // Countdown tick for timed Sleep Timer (15p / 30p / 60p) — fades out & stops BOTH AI Voice & Ambient Audio
+  // Countdown tick for numeric Sleep Timer (hours/minutes > 0) — 2.5s fade-out & pause BOTH AI Voice & Ambient Audio
   useEffect(() => {
-    if (sleepTimerMode === 'off' || sleepTimerMode === 'chapter') {
+    if (sleepTimerConfig.mode !== 'countdown' || sleepTimerConfig.totalSeconds <= 0) {
       setSleepRemainingSec(0);
       return;
     }
-    const totalSec = Number(sleepTimerMode) * 60;
-    setSleepRemainingSec(totalSec);
+    setSleepRemainingSec(sleepTimerConfig.totalSeconds);
     const interval = window.setInterval(() => {
       setSleepRemainingSec((prev) => {
         if (prev <= 1) {
           window.clearInterval(interval);
-          setSleepTimerMode('off');
+          setSleepHoursInput('');
+          setSleepMinutesInput('');
           void (async () => {
             try {
-              await filteredPlayerRef.current?.fadeOutAndStop(1200);
+              await Promise.all([
+                filteredPlayerRef.current?.fadeOutAndStop(2500),
+                ambientSoundManager.fadeOutAndStopAll(2500),
+              ]);
             } catch {
               // ignore
             }
             stopAllAudio(true);
             ambientSoundManager.stopAll();
-            setInfoNotice('Hẹn giờ tắt đã kết thúc — đã tắt giọng đọc và nhạc nền.');
+            setInfoNotice('Hẹn giờ tắt đã kết thúc — đã giảm dần âm lượng và tạm dừng phát.');
           })();
           return 0;
         }
@@ -351,7 +365,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     }, 1000);
     return () => window.clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sleepTimerMode]);
+  }, [sleepTimerConfig.mode, sleepTimerConfig.totalSeconds]);
 
   const applyReadingSpeed = (nextRaw: number | string) => {
     const normalized = normalizeReadingSpeed(nextRaw, playbackSpeed);
@@ -1235,17 +1249,19 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
 
     if (index >= units.length) {
-      // Sleep Timer "Hết chương": stop smoothly at end of current chapter instead of advancing
-      if (sleepTimerModeRef.current === 'chapter') {
-        setSleepTimerMode('off');
+      // Sleep Timer default (empty / 0): stop smoothly at end of current chapter
+      if (sleepTimerConfigRef.current.mode === 'chapter') {
         try {
-          await filteredPlayerRef.current?.fadeOutAndStop(900);
+          await Promise.all([
+            filteredPlayerRef.current?.fadeOutAndStop(2200),
+            ambientSoundManager.fadeOutAndStopAll(2200),
+          ]);
         } catch {
           // ignore
         }
         stopAllAudio(true);
         ambientSoundManager.stopAll();
-        setInfoNotice('Đã hết chương — hẹn giờ tắt đã dừng giọng đọc và nhạc nền.');
+        setInfoNotice('Đã hết chương — tự động dừng giọng đọc và nhạc nền.');
         return;
       }
       if (hasNextChapterRef.current) {
@@ -1720,48 +1736,86 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             />
           </label>
 
-          {/* Sleep Timer (Hẹn giờ tắt — fades out & stops BOTH AI Voice and Ambient Sound) */}
-          <div className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-stone-700 dark:text-stone-300">
-                <Moon className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
-                <span>Hẹn giờ tắt</span>
+          {/* Sleep Timer (Hẹn giờ tắt — compact 1-row numeric inputs, empty = stop at end of chapter) */}
+          <div
+            data-testid="sleep-timer-section"
+            className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-1"
+          >
+            <div className="flex items-center justify-between gap-1.5 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                <Moon className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 whitespace-nowrap">
+                  Hẹn giờ tắt:
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <label className="inline-flex items-center gap-1 text-[11px] text-stone-600 dark:text-stone-300">
+                  <input
+                    type="number"
+                    data-testid="sleep-timer-hours-input"
+                    inputMode="numeric"
+                    min={0}
+                    max={23}
+                    step={1}
+                    placeholder="0"
+                    aria-label="Số giờ hẹn giờ tắt"
+                    value={sleepHoursInput}
+                    onChange={(e) => setSleepHoursInput(sanitizeSleepHoursInput(e.target.value))}
+                    className="w-10 px-1 py-0.5 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-[11px] font-semibold text-center tabular-nums text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                  <span className="whitespace-nowrap">giờ</span>
+                </label>
+
+                <label className="inline-flex items-center gap-1 text-[11px] text-stone-600 dark:text-stone-300">
+                  <input
+                    type="number"
+                    data-testid="sleep-timer-minutes-input"
+                    inputMode="numeric"
+                    min={0}
+                    max={59}
+                    step={1}
+                    placeholder="0"
+                    aria-label="Số phút hẹn giờ tắt (0 đến 59)"
+                    value={sleepMinutesInput}
+                    onChange={(e) => setSleepMinutesInput(sanitizeSleepMinutesInput(e.target.value))}
+                    className="w-10 px-1 py-0.5 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-[11px] font-semibold text-center tabular-nums text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                  <span className="whitespace-nowrap">phút</span>
+                </label>
+
+                <button
+                  type="button"
+                  data-testid="sleep-timer-clear-btn"
+                  disabled={!sleepHoursInput && !sleepMinutesInput}
+                  onClick={() => {
+                    setSleepHoursInput('');
+                    setSleepMinutesInput('');
+                  }}
+                  aria-label="Xóa nhanh hẹn giờ tắt"
+                  title="Xóa nhanh"
+                  className="w-6 h-6 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 disabled:opacity-35 flex items-center justify-center shrink-0"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-[10px]">
+              <span
+                data-testid="sleep-timer-hint"
+                className="text-stone-400 dark:text-stone-500"
+              >
+                Để trống: Dừng khi hết chương
               </span>
-              {sleepTimerMode !== 'off' && (
+              {sleepTimerConfig.mode === 'countdown' && sleepRemainingSec > 0 && (
                 <span
                   data-testid="sleep-timer-countdown"
-                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-800/12 text-amber-900 dark:text-amber-300 tabular-nums"
+                  className="font-semibold px-1.5 py-0.5 rounded bg-amber-800/12 text-amber-900 dark:text-amber-300 tabular-nums shrink-0"
                 >
-                  {sleepTimerMode === 'chapter'
-                    ? 'Hết chương'
-                    : `${Math.floor(sleepRemainingSec / 60)}:${String(sleepRemainingSec % 60).padStart(2, '0')}`}
+                  Còn {formatSleepCountdown(sleepRemainingSec)}
                 </span>
               )}
-            </div>
-            <div className="grid grid-cols-5 gap-1">
-              {(
-                [
-                  { id: 'off', label: 'Tắt' },
-                  { id: '15', label: '15p' },
-                  { id: '30', label: '30p' },
-                  { id: '60', label: '60p' },
-                  { id: 'chapter', label: 'Hết ch.' },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  data-testid={`sleep-timer-${opt.id}`}
-                  onClick={() => setSleepTimerMode(opt.id)}
-                  className={`py-1.5 px-1 rounded-full text-[10.5px] font-semibold border transition-all ${
-                    sleepTimerMode === opt.id
-                      ? 'bg-amber-800 border-amber-800 text-white shadow-xs'
-                      : 'bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-amber-700/50'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
             </div>
           </div>
         </div>

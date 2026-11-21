@@ -467,48 +467,39 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
         aria-label="Quét phụ đề YouTube tạo EPUB"
         className="ios-elevated-card p-3 sm:p-4 rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] space-y-2.5 overflow-hidden"
       >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <Youtube className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
-            <h2 className="text-[12.5px] font-sans font-bold text-stone-900 dark:text-stone-100 truncate">
-              Quét truyện từ YouTube
-            </h2>
+        {/* Running or Scheduled Indicator (only shown when active) */}
+        {(ytScanning || ytScheduledEntry) && (
+          <div className="flex items-center justify-end gap-2">
+            {ytScanning ? (
+              <div
+                data-testid="youtube-scanning-indicator"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/50 text-[10px] font-medium text-amber-900 dark:text-amber-300 tabular-nums shrink-0"
+              >
+                <Settings className="w-3 h-3 animate-spin text-amber-800 dark:text-amber-400 shrink-0" />
+                <span>
+                  {ytProgressLabel ? `${ytProgressLabel} · ` : ''}
+                  {formatTimerMMSS(ytElapsedSec)} / còn ~
+                  {formatTimerMMSS(Math.max(0, ytEstimatedTotalSec - ytElapsedSec))}
+                </span>
+              </div>
+            ) : ytScheduledEntry ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setYtScheduledEntry(null);
+                  try {
+                    localStorage.removeItem(YT_SCHEDULE_STORAGE_KEY);
+                  } catch {}
+                }}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[9.5px] font-semibold text-emerald-800 dark:text-emerald-300 shrink-0"
+                title="Nhấn để tắt lịch quét định kỳ 4 tiếng"
+              >
+                <Clock className="w-2.5 h-2.5" />
+                <span>Quét 4h/lần</span>
+              </button>
+            ) : null}
           </div>
-
-          {/* Running Indicator: Small Spinning Gear + Tiny Elapsed / Remaining Time */}
-          {ytScanning ? (
-            <div
-              data-testid="youtube-scanning-indicator"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/50 text-[10px] font-medium text-amber-900 dark:text-amber-300 tabular-nums shrink-0"
-            >
-              <Settings className="w-3 h-3 animate-spin text-amber-800 dark:text-amber-400 shrink-0" />
-              <span>
-                {ytProgressLabel ? `${ytProgressLabel} · ` : ''}
-                {formatTimerMMSS(ytElapsedSec)} / còn ~
-                {formatTimerMMSS(Math.max(0, ytEstimatedTotalSec - ytElapsedSec))}
-              </span>
-            </div>
-          ) : ytScheduledEntry ? (
-            <button
-              type="button"
-              onClick={() => {
-                setYtScheduledEntry(null);
-                try {
-                  localStorage.removeItem(YT_SCHEDULE_STORAGE_KEY);
-                } catch {}
-              }}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[9.5px] font-semibold text-emerald-800 dark:text-emerald-300 shrink-0"
-              title="Nhấn để tắt lịch quét định kỳ 4 tiếng"
-            >
-              <Clock className="w-2.5 h-2.5" />
-              <span>Quét 4h/lần</span>
-            </button>
-          ) : (
-            <span className="text-[10px] text-stone-500 dark:text-stone-400 shrink-0">
-              Phụ đề → EPUB
-            </span>
-          )}
-        </div>
+        )}
 
         <div className="flex flex-col sm:flex-row gap-2 min-w-0">
           <div className="relative flex-1 min-w-0">
@@ -518,14 +509,14 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
               data-testid="youtube-url-input"
               value={ytUrl}
               onChange={(e) => setYtUrl(e.target.value)}
-              placeholder="Dán link Video hoặc Playlist YouTube..."
-              aria-label="Đường dẫn YouTube cần quét phụ đề"
+              placeholder="MP3 sang Epub"
+              aria-label="MP3 sang Epub"
               className="w-full min-w-0 pl-8 pr-9 py-1.5 text-[11.5px] rounded-full ios-elevated-oval bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-zinc-700/70 min-h-[36px]"
             />
             <button
               type="button"
               onClick={handlePasteYtUrl}
-              aria-label="Dán link YouTube"
+              aria-label="Dán link"
               className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-stone-500 hover:text-amber-800"
             >
               <ClipboardPaste className="w-3.5 h-3.5" />
@@ -541,7 +532,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
               className="ios-elevated-oval ios-liquid-btn inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
             >
               <Play className="w-3 h-3 shrink-0" />
-              <span>Video lẻ</span>
+              <span>Single video</span>
             </button>
 
             <button
@@ -552,7 +543,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
               className="ios-elevated-oval ios-liquid-pill inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-zinc-700 text-stone-800 dark:text-stone-100 text-[11px] font-semibold hover:border-amber-700 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
             >
               <ListVideo className="w-3 h-3 shrink-0 text-amber-800 dark:text-amber-400" />
-              <span>Link Playlist</span>
+              <span>Playlist</span>
             </button>
           </div>
         </div>
@@ -581,10 +572,11 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
               <Globe className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none" />
               <input
                 type="text"
+                data-testid="web-novel-url-input"
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
-                placeholder="Dán link truyện web (https://...)"
-                aria-label="Đường dẫn trang web cần đọc và quét"
+                placeholder="Tìm truyện"
+                aria-label="Tìm truyện"
                 className="w-full min-w-0 pl-8 pr-3 py-1.5 text-[11.5px] rounded-full ios-liquid-bar border border-stone-300/80 dark:border-zinc-700/70 min-h-[36px]"
               />
             </div>
@@ -592,6 +584,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
             <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 shrink-0">
               <button
                 type="submit"
+                data-testid="web-read-btn"
                 disabled={isFetching || isRunning}
                 className="ios-liquid-btn flex-1 sm:flex-none inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-semibold whitespace-nowrap shrink-0 disabled:opacity-50 min-h-[34px]"
               >
@@ -600,16 +593,17 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
                 ) : (
                   <Globe className="w-3 h-3" />
                 )}
-                <span>Đọc tại đây</span>
+                <span>Đọc</span>
               </button>
 
               <button
                 type="button"
+                data-testid="web-browser-btn"
                 onClick={() => setIsBrowserWindowOpen(true)}
                 className="ios-liquid-pill flex-1 sm:flex-none inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full border border-amber-700/40 bg-amber-50/90 dark:bg-amber-950/35 text-amber-900 dark:text-amber-200 text-[11px] font-semibold whitespace-nowrap shrink-0 min-h-[34px] hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
               >
                 <ExternalLink className="w-3 h-3 shrink-0" />
-                <span>Trình duyệt gốc</span>
+                <span>Trình duyệt</span>
               </button>
             </div>
           </div>
@@ -940,7 +934,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-stone-300 dark:border-stone-700 text-[11px] font-medium hover:bg-stone-100 dark:hover:bg-stone-800 whitespace-nowrap"
                   >
                     <ExternalLink className="w-3 h-3" />
-                    <span>Trình duyệt gốc</span>
+                    <span>Trình duyệt</span>
                   </button>
                 )}
                 {currentPage?.nextUrl && (

@@ -1049,7 +1049,7 @@ Return JSON with:
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi phân tích tệp giọng nói ngoài.';
-      res.status(500).json({ error: msg });
+      res.status(200).json({ fallback: true, analyzedBy: 'local-dsp', message: msg });
     }
   });
 

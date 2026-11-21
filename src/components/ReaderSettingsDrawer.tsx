@@ -72,10 +72,11 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
 
   const updateDraft = (patch: Partial<ReaderSettings>) => {
     setDraft((prev) => ({ ...prev, ...patch }));
+    // Apply immediately to the active reading page so users see live margin & typography changes in real time
+    onUpdateSettings(patch);
   };
 
   const commitAndClose = () => {
-    onUpdateSettings(draft);
     onClose();
   };
 
@@ -87,16 +88,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
     updateDraft({ fontFamily: `"${asset.fontFamily}", serif` });
   };
 
-  const previewTheme =
-    draft.paperTheme === 'custom'
-      ? {
-          id: 'custom' as const,
-          bg: draft.customBgColor,
-          text: draft.customTextColor,
-          border: 'rgba(128,128,128,0.25)',
-        }
-      : PAPER_THEMES.find((t) => t.id === draft.paperTheme) || PAPER_THEMES[0];
-
   const activeThreeMode: 'slide' | 'scroll' | 'curl' =
     draft.readingMode === 'scroll'
       ? 'scroll'
@@ -106,70 +97,202 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
 
   const innerContent = (
     <>
-      <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
+      <div className="flex items-center justify-between gap-2 px-3.5 sm:px-4 py-2 border-b border-stone-300/40 dark:border-white/10 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           {onBackToToolsMenu && (
             <button
               type="button"
               onClick={() => {
-                onUpdateSettings(draft);
                 onClose();
                 onBackToToolsMenu();
               }}
               aria-label="Quay lại tùy chọn đọc sách"
-              className="inline-flex items-center gap-0.5 px-2 py-1 -ml-1.5 rounded-full bg-black/5 dark:bg-white/10 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:bg-black/10 shrink-0"
+              className="inline-flex items-center gap-0.5 px-2 py-1 -ml-1 rounded-full bg-black/5 dark:bg-white/10 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:bg-black/10 shrink-0"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
               <span>Quay lại</span>
             </button>
           )}
-          <h2 className="text-[14px] font-display font-semibold truncate">Chữ, Nền &amp; Lật trang</h2>
+          <h2 className="text-[13px] font-display font-semibold truncate">Chữ, Nền &amp; Lề trang</h2>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
             type="button"
-            onClick={() => setDraft({ ...DEFAULT_READER_SETTINGS })}
+            onClick={() => {
+              const reset = { ...DEFAULT_READER_SETTINGS };
+              setDraft(reset);
+              onUpdateSettings(reset);
+            }}
             aria-label="Khôi phục mặc định cài đặt đọc"
             className="p-1.5 rounded-md text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-200/60 dark:hover:bg-stone-800"
           >
-            <RotateCcw className="w-4 h-4" />
+            <RotateCcw className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
             onClick={commitAndClose}
-            aria-label="Áp dụng và đóng bảng tùy chỉnh"
+            aria-label="Đóng bảng tùy chỉnh"
             className="p-1.5 rounded-md text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-200/60 dark:hover:bg-stone-800"
           >
-            <X className="w-4 h-4" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Compact Half-Height Live Sample Preview Bar */}
-      <div className="px-4 sm:px-5 py-1.5 shrink-0 border-b border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-900">
-        <div
-          data-testid="reader-settings-preview"
-          style={{
-            backgroundColor: previewTheme.bg,
-            color: previewTheme.text,
-            filter: `brightness(${draft.brightness}%) sepia(${draft.warmth}%)`,
-            ...getVintagePaperTextureStyles(previewTheme.id),
-            fontFamily: draft.fontFamily,
-            fontSize: `${Math.min(18, Math.max(11, Math.round(draft.fontSize * 0.78)))}px`,
-            lineHeight: 1.25,
-            letterSpacing: `${draft.letterSpacing}em`,
-            fontWeight: draft.fontWeight,
-            textAlign: draft.textAlign,
-          }}
-          className="px-2.5 py-1 max-h-[34px] rounded-lg border border-stone-300 dark:border-stone-700 overflow-hidden truncate whitespace-nowrap transition-all"
+      <div className="overflow-y-auto overscroll-contain min-h-0 px-3.5 sm:px-4 py-2.5 space-y-3 text-xs">
+        {/* Compact 2-Column Parallel Typography & Margin Sliders (First for Instant Live Adjustment) */}
+        <section
+          data-testid="reader-sliders-grid-section"
+          className="space-y-2 min-w-0"
         >
-          Dưới ánh đèn vàng dịu, từng dòng chữ hiện lên êm ái.
-        </div>
-      </div>
+          <h3 className="text-[11px] font-semibold text-stone-800 dark:text-stone-200">
+            Cỡ chữ, Giãn dòng &amp; Lề trang (px)
+          </h3>
 
-      <div className="overflow-y-auto overscroll-contain min-h-0 px-4 sm:px-5 py-3.5 space-y-4 text-xs">
+          <div
+            data-testid="reader-sliders-2col-grid"
+            className="grid grid-cols-2 gap-x-3 gap-y-2"
+          >
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Cỡ chữ</span>
+                <span>{draft.fontSize}px</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-font-size"
+                min={14}
+                max={32}
+                step={1}
+                value={draft.fontSize}
+                onChange={(e) => updateDraft({ fontSize: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Giãn dòng</span>
+                <span>{draft.lineHeight.toFixed(2)}</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-line-height"
+                min={1.3}
+                max={2.3}
+                step={0.05}
+                value={draft.lineHeight}
+                onChange={(e) => updateDraft({ lineHeight: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Khoảng cách đoạn</span>
+                <span>{draft.paragraphSpacing}px</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-paragraph-spacing"
+                min={4}
+                max={36}
+                step={2}
+                value={draft.paragraphSpacing}
+                onChange={(e) => updateDraft({ paragraphSpacing: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Giãn chữ</span>
+                <span>{draft.letterSpacing.toFixed(2)}em</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-letter-spacing"
+                min={-0.02}
+                max={0.08}
+                step={0.01}
+                value={draft.letterSpacing}
+                onChange={(e) => updateDraft({ letterSpacing: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Độ đậm</span>
+                <span>{draft.fontWeight}</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-font-weight"
+                min={300}
+                max={700}
+                step={100}
+                value={draft.fontWeight}
+                onChange={(e) => updateDraft({ fontWeight: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Lề trên</span>
+                <span>{draft.marginTopPx ?? 12}px</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-margin-top"
+                min={0}
+                max={64}
+                step={2}
+                value={draft.marginTopPx ?? 12}
+                onChange={(e) => updateDraft({ marginTopPx: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Lề dưới</span>
+                <span>{draft.marginBottomPx ?? 20}px</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-margin-bottom"
+                min={0}
+                max={64}
+                step={2}
+                value={draft.marginBottomPx ?? 20}
+                onChange={(e) => updateDraft({ marginBottomPx: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+
+            <label className="block space-y-0.5 min-w-0">
+              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>Lề ngang</span>
+                <span>{draft.marginHorizontalPx ?? 16}px</span>
+              </span>
+              <input
+                type="range"
+                data-testid="slider-margin-horizontal"
+                min={4}
+                max={56}
+                step={2}
+                value={draft.marginHorizontalPx ?? 16}
+                onChange={(e) => updateDraft({ marginHorizontalPx: Number(e.target.value) })}
+                className="w-full h-1.5 accent-amber-800"
+              />
+            </label>
+          </div>
+        </section>
+
         {/* Background / Paper Themes */}
-        <section className="space-y-2 min-w-0">
+        <section className="space-y-1.5 pt-2.5 border-t border-stone-200 dark:border-stone-800 min-w-0">
           <div className="flex items-center justify-between gap-2 min-w-0">
             <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
               Màu nền &amp; Giấy sách
@@ -370,96 +493,8 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           </div>
         </section>
 
-        {/* Typography Sliders */}
-        <section className="space-y-2.5 pt-3 border-t border-stone-200 dark:border-stone-800">
-          <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-            Cỡ chữ &amp; Giãn dòng
-          </h3>
-
-          <label className="block space-y-1">
-            <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-              <span>Cỡ chữ</span>
-              <span>{draft.fontSize}px</span>
-            </span>
-            <input
-              type="range"
-              min={14}
-              max={32}
-              step={1}
-              value={draft.fontSize}
-              onChange={(e) => updateDraft({ fontSize: Number(e.target.value) })}
-              className="w-full accent-amber-800"
-            />
-          </label>
-
-          <label className="block space-y-1">
-            <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-              <span>Giãn dòng</span>
-              <span>{draft.lineHeight.toFixed(2)}</span>
-            </span>
-            <input
-              type="range"
-              min={1.3}
-              max={2.3}
-              step={0.05}
-              value={draft.lineHeight}
-              onChange={(e) => updateDraft({ lineHeight: Number(e.target.value) })}
-              className="w-full accent-amber-800"
-            />
-          </label>
-
-          <label className="block space-y-1">
-            <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-              <span>Khoảng cách đoạn</span>
-              <span>{draft.paragraphSpacing}px</span>
-            </span>
-            <input
-              type="range"
-              min={6}
-              max={36}
-              step={2}
-              value={draft.paragraphSpacing}
-              onChange={(e) => updateDraft({ paragraphSpacing: Number(e.target.value) })}
-              className="w-full accent-amber-800"
-            />
-          </label>
-
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block space-y-1">
-              <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-                <span>Giãn chữ</span>
-                <span>{draft.letterSpacing.toFixed(2)}em</span>
-              </span>
-              <input
-                type="range"
-                min={-0.02}
-                max={0.08}
-                step={0.01}
-                value={draft.letterSpacing}
-                onChange={(e) => updateDraft({ letterSpacing: Number(e.target.value) })}
-                className="w-full accent-amber-800"
-              />
-            </label>
-            <label className="block space-y-1">
-              <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-                <span>Độ đậm</span>
-                <span>{draft.fontWeight}</span>
-              </span>
-              <input
-                type="range"
-                min={300}
-                max={700}
-                step={100}
-                value={draft.fontWeight}
-                onChange={(e) => updateDraft({ fontWeight: Number(e.target.value) })}
-                className="w-full accent-amber-800"
-              />
-            </label>
-          </div>
-        </section>
-
         {/* Strict 3-Option Page Turn & Layout Selector */}
-        <section className="space-y-2.5 pt-3 border-t border-stone-200 dark:border-stone-800">
+        <section className="space-y-2 pt-2.5 border-t border-stone-200 dark:border-stone-800">
           <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
             Chế độ lật trang
           </h3>
@@ -613,14 +648,14 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
         </section>
       </div>
 
-      {/* Commit & Close Footer */}
-      <div className="px-4 sm:px-5 py-2.5 border-t border-stone-200 dark:border-stone-800 bg-[#FBF9F5]/95 dark:bg-[#181A1E]/95 shrink-0">
+      {/* Compact Close Footer */}
+      <div className="px-3.5 sm:px-4 py-2 border-t border-stone-200 dark:border-stone-800 bg-[#FBF9F5]/95 dark:bg-[#181A1E]/95 shrink-0">
         <button
           type="button"
           onClick={commitAndClose}
-          className="w-full py-2.5 rounded-xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 transition-colors"
+          className="w-full py-2 rounded-xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 transition-colors"
         >
-          Áp dụng &amp; Đóng
+          Xong
         </button>
       </div>
     </>
@@ -635,11 +670,12 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
       variant={isDesktop ? 'drawer-right' : 'bottom-sheet'}
       inlineDesktop={isDesktop}
       showGrabHandle={!isDesktop}
+      backdropClassName={!isDesktop ? '!bg-black/15 !backdrop-blur-none' : ''}
       zIndexClass="z-[75]"
       panelClassName={
         isDesktop
           ? 'w-[370px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden'
-          : 'w-full max-w-lg h-auto max-h-[85dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
+          : 'w-full max-w-lg h-auto max-h-[48dvh] rounded-t-[24px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
       }
     >
       {innerContent}
