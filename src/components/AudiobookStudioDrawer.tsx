@@ -719,9 +719,12 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioCommandSignal?.tick]);
 
+  const onPlaybackStateChangeRef = useRef(onPlaybackStateChange);
+  onPlaybackStateChangeRef.current = onPlaybackStateChange;
+
   useEffect(() => {
-    onPlaybackStateChange?.(isPlaying);
-  }, [isPlaying, onPlaybackStateChange]);
+    onPlaybackStateChangeRef.current?.(isPlaying);
+  }, [isPlaying]);
 
   useEffect(() => {
     onSessionActiveChange?.(showMiniBar || isPlaying);

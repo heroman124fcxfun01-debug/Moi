@@ -27,6 +27,7 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
+  Volume2,
   X,
 } from 'lucide-react';
 import type {
@@ -78,6 +79,11 @@ import {
 import { buildEpubBlob } from '../utils/epubBuilder';
 import { ambientSoundManager } from '../utils/ambientSoundEngine';
 import { getLanguagePackDefinition } from '../utils/languagePacks';
+import {
+  evaluateReaderTapZone,
+  shouldShowReturnToListeningPill,
+  syncSystemBarAppearance,
+} from '../utils/edgeToEdge';
 import {
   hasOriginalBookBackup,
   restoreOriginalBookFromBackup,
@@ -244,8 +250,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [showAmbient, setShowAmbient] = useState(false);
   const [showToolsMenu, setShowToolsMenu] = useState(false);
   const [showQuickActions, setShowQuickActions] = useState(false);
+  // Clean Reader UI: default hidden chrome (only book text + bottom centered page counter); center-tap toggles menu
+  const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [isAudioPlayingLocal, setIsAudioPlayingLocal] = useState(false);
   const [isAudioSessionActive, setIsAudioSessionActive] = useState(false);
+  const [listeningChapterIndex, setListeningChapterIndex] = useState<number | null>(null);
+  const [listeningPageIndex, setListeningPageIndex] = useState<number | null>(null);
   const [ambientActiveCount, setAmbientActiveCount] = useState(
     () => Object.keys(ambientSoundManager.getSnapshot().activeVolumes).length
   );
@@ -798,6 +808,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         charOffset: spokenCharOffset,
       });
       if (targetPageIdx < 0) return;
+
+      setListeningChapterIndex((prev) => (prev === null ? chapterIndex : prev));
+      if (listeningChapterIndex === null || listeningChapterIndex === chapterIndex) {
+        setListeningPageIndex(targetPageIdx);
+      }
 
       if (targetPageIdx === currentPageIndexRef.current) {
         // User is viewing the spoken page — keep auto-follow engaged
@@ -1582,13 +1597,33 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       setActiveParaAction(null);
       return;
     }
-    if (settings.readingMode !== 'paginated' || !basicSettings.tapToTurnPage) return;
-    if ((e.target as HTMLElement).closest('button, select, input')) return;
+    if ((e.target as HTMLElement).closest('button, select, input, a')) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const xRatio = (e.clientX - rect.left) / rect.width;
-    if (xRatio < 0.3) {
+    const xRatio = (e.clientX - rect.left) / Math.max(1, rect.width);
+    const { zone } = evaluateReaderTapZone(xRatio);
+
+    // Center 40% zone ALWAYS toggles Clean Reader UI menu chrome (in both paginated & scroll modes)
+    if (zone === 'center-menu') {
+      setIsMenuVisible((prev) => {
+        const next = !prev;
+        if (!next) {
+          setShowQuickActions(false);
+          setShowToolsMenu(false);
+        }
+        return next;
+      });
+      return;
+    }
+
+    if (settings.readingMode !== 'paginated' || !basicSettings.tapToTurnPage) return;
+    if (isMenuVisible) {
+      setIsMenuVisible(false);
+      setShowQuickActions(false);
+      setShowToolsMenu(false);
+    }
+    if (zone === 'prev') {
       goPrevPage();
-    } else if (xRatio > 0.7) {
+    } else if (zone === 'next') {
       goNextPage();
     }
   };
@@ -2166,9 +2201,39 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     </div>
   );
 
+  // Sync Android Edge-to-Edge Status Bar color & clock/icon contrast with active Reader paper theme
+  useEffect(() => {
+    if (!isReaderActive) return;
+    syncSystemBarAppearance({
+      backgroundHex: activeTheme.bg,
+      isDark: activeTheme.isDark,
+    });
+  }, [isReaderActive, activeTheme.bg, activeTheme.isDark]);
+
+  const showReturnToListeningBtn = shouldShowReturnToListeningPill({
+    isListeningActive: isAudioPlayingLocal || spokenParaIndex !== null,
+    listeningChapterIndex,
+    listeningPageIndex,
+    currentChapterIndex: chapterIndex,
+    currentPageIndex: safePageIndex,
+    isPaginatedMode,
+  });
+
+  const handleReturnToListeningPage = () => {
+    if (listeningChapterIndex === null) return;
+    isFollowingAudioRef.current = true;
+    const targetPage = listeningPageIndex ?? 0;
+    if (listeningChapterIndex === chapterIndex) {
+      commitPageChange(targetPage, targetPage >= safePageIndex ? 'next' : 'prev');
+    } else {
+      goToChapter(listeningChapterIndex, { targetPageIndex: targetPage });
+    }
+  };
+
   return (
     <div
       data-testid="reader-surface"
+      data-menu-visible={isMenuVisible ? 'true' : 'false'}
       onPointerDown={handleReaderRootPointerDown}
       onPointerMove={handleReaderRootPointerMove}
       onPointerUp={(e) => finishReaderRootEdgeSwipe(e.clientX, e.clientY)}
@@ -2197,14 +2262,21 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           <ChevronLeft className="w-5 h-5" />
         </div>
       )}
-      {/* Slim Top Bar: Back | 3-bar Menu TOC | Per-Page Bookmark + Play/Pause + Quick Actions (!) + Settings */}
+      {/* Edge-to-Edge Floating Overlay Top Bar (hidden by default; center-tap toggles smoothly with zero reflow) */}
       <div
+        data-testid="reader-top-bar"
+        aria-hidden={!isMenuVisible}
         style={{
           borderColor: activeTheme.border,
           backgroundColor: activeTheme.bg,
         }}
-        className="sticky top-0 z-30 h-[52px] border-b px-3 sm:px-5 flex items-center justify-between gap-2"
+        className={`fixed top-0 inset-x-0 z-40 pt-[env(safe-area-inset-top)] border-b px-3 sm:px-5 transition-all duration-200 ease-out ${
+          isMenuVisible
+            ? 'translate-y-0 opacity-100 shadow-sm'
+            : '-translate-y-full opacity-0 pointer-events-none'
+        }`}
       >
+        <div className="h-[52px] flex items-center justify-between gap-2">
         <div className="flex items-center shrink-0">
           <button
             type="button"
@@ -2327,6 +2399,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               <span className="w-2 h-2 rounded-full bg-amber-700 absolute -top-0.5 -right-0.5 ring-2 ring-[#FBF9F5] dark:ring-[#16181C]" />
             )}
           </button>
+        </div>
         </div>
       </div>
 
@@ -2780,14 +2853,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             isPaginatedMode
               ? { touchAction: 'pan-y' }
               : {
-                  paddingTop: `${settings.marginTopPx ?? 12}px`,
-                  paddingBottom: `${Math.max(36, settings.marginBottomPx ?? 20)}px`,
+                  paddingTop: `calc(env(safe-area-inset-top, 0px) + ${settings.marginTopPx ?? 12}px)`,
+                  paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + ${Math.max(44, settings.marginBottomPx ?? 20)}px)`,
                   paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
                   paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
                 }
           }
         >
-          {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page strictly above bottom 3 buttons) */}
+          {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page above centered page counter) */}
           <div
             ref={pageMeasureBoxRef}
             data-testid="reader-page-box"
@@ -2806,7 +2879,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 style={{
                   backgroundColor: activeTheme.bg,
                   color: activeTheme.text,
-                  paddingTop: `${settings.marginTopPx ?? 12}px`,
+                  paddingTop: `calc(env(safe-area-inset-top, 0px) + ${settings.marginTopPx ?? 12}px)`,
                   paddingBottom: `${settings.marginBottomPx ?? 20}px`,
                   paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
                   paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
@@ -2838,7 +2911,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   ? {
                       backgroundColor: activeTheme.bg,
                       color: activeTheme.text,
-                      paddingTop: `${settings.marginTopPx ?? 12}px`,
+                      paddingTop: `calc(env(safe-area-inset-top, 0px) + ${settings.marginTopPx ?? 12}px)`,
                       paddingBottom: `${settings.marginBottomPx ?? 20}px`,
                       paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
                       paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
@@ -3156,17 +3229,58 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             )}
           </div>
 
-          {/* Dedicated Opaque 3-Button Bottom Navigation Bar (Trước | Trang/Tổng | Tiếp) */}
+          {/* Minimal Bottom-Centered Page Counter (always visible in Clean Reader Mode: "15 / 320") */}
+          {isPaginatedMode && (
+            <div
+              data-testid="reader-clean-page-indicator"
+              style={{ backgroundColor: activeTheme.bg, color: activeTheme.text }}
+              className="shrink-0 relative z-20 flex items-center justify-center py-1.5 pb-[max(0.45rem,env(safe-area-inset-bottom))] text-[11px] font-sans font-medium tabular-nums opacity-65 select-none"
+            >
+              <span>
+                {globalCurrentPage} / {globalTotalPages}
+              </span>
+            </div>
+          )}
+
+          {/* Floating Pill Button: "Về trang đang nghe" — shown bottom-center right above page number when user flips away while listening */}
+          {showReturnToListeningBtn && (
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className={`fixed left-1/2 -translate-x-1/2 z-[48] transition-all duration-200 ${
+                isMenuVisible
+                  ? 'bottom-[calc(max(3.9rem,env(safe-area-inset-bottom)+3.5rem))]'
+                  : 'bottom-[calc(max(2.15rem,env(safe-area-inset-bottom)+1.85rem))]'
+              }`}
+            >
+              <button
+                type="button"
+                data-testid="return-to-listening-page-btn"
+                onClick={handleReturnToListeningPage}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-800 text-white text-[11px] font-sans font-semibold shadow-lg hover:bg-amber-900 active:scale-95 transition-all whitespace-nowrap ring-1 ring-white/25"
+              >
+                <Volume2 className="w-3.5 h-3.5 shrink-0 animate-pulse" />
+                <span>{strings.returnToListeningPage}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Floating Overlay 3-Button Bottom Navigation Bar (shown ONLY when center-tap menu is toggled open) */}
           {isPaginatedMode && (
             <footer
               data-testid="reader-bottom-bar"
+              aria-hidden={!isMenuVisible}
               style={{
                 borderColor: activeTheme.border,
                 backgroundColor: activeTheme.bg,
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
-              className="shrink-0 relative z-20 px-3 sm:px-6 pt-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] border-t grid grid-cols-3 gap-2 font-sans text-[11px]"
+              className={`fixed bottom-0 inset-x-0 z-40 px-3 sm:px-6 pt-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] border-t grid grid-cols-3 gap-2 font-sans text-[11px] transition-all duration-200 ease-out ${
+                isMenuVisible
+                  ? 'translate-y-0 opacity-100 shadow-lg'
+                  : 'translate-y-full opacity-0 pointer-events-none'
+              }`}
             >
               <button
                 type="button"
@@ -3493,6 +3607,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             onToggleHighlightSpoken={(next) => onUpdateSettings({ highlightSpokenText: next })}
             onSessionActiveChange={(active) => {
               setIsAudioSessionActive(active);
+              if (!active) {
+                setListeningChapterIndex(null);
+                setListeningPageIndex(null);
+              }
               onAudioSessionActiveChange?.(active);
             }}
             book={book}
@@ -3541,12 +3659,21 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             onHighlightParagraph={(paraIdx, _ratio = 0, charOffset = 0) => {
               setSpokenParaIndex(paraIdx);
               setSpokenCharOffset(charOffset);
+              if (paraIdx !== null) {
+                setListeningChapterIndex((prev) => (prev === null ? chapterIndex : prev));
+              }
             }}
             onSyncReadingParagraph={(paraIdx, charOffset = 0) => {
               syncParagraphPosition(paraIdx, charOffset, false);
             }}
             onPlaybackStateChange={(playing) => {
               setIsAudioPlayingLocal(playing);
+              if (playing) {
+                setListeningChapterIndex((prev) => (prev === null ? chapterIndex : prev));
+                setListeningPageIndex((prev) =>
+                  prev === null ? currentPageIndexRef.current : prev
+                );
+              }
               onAudioPlayingChange?.(playing);
             }}
             defaultVoice={basicSettings.defaultVoice}

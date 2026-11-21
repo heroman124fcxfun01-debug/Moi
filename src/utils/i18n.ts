@@ -195,6 +195,7 @@ export interface AppStrings {
   stopPreview: string;
   previewVoice: string;
   saveVoice: string;
+  returnToListeningPage: string;
 }
 
 const VI: AppStrings = {
@@ -382,6 +383,7 @@ const VI: AppStrings = {
   stopPreview: 'Dừng thử',
   previewVoice: 'Nghe thử',
   saveVoice: 'Lưu giọng',
+  returnToListeningPage: 'Về trang đang nghe',
 };
 
 const EN: AppStrings = {
@@ -569,6 +571,7 @@ const EN: AppStrings = {
   stopPreview: 'Stop',
   previewVoice: 'Preview',
   saveVoice: 'Save Voice',
+  returnToListeningPage: 'Back to listening page',
 };
 
 const ZH: AppStrings = {
@@ -756,6 +759,7 @@ const ZH: AppStrings = {
   stopPreview: '停止试听',
   previewVoice: '试听',
   saveVoice: '保存语音',
+  returnToListeningPage: '返回正在听的页面',
 };
 
 export const APP_LANGUAGE_OPTIONS: Array<{

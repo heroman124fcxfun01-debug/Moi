@@ -88,6 +88,7 @@ import { triggerDeviceHaptic } from './utils/deviceHardware';
 import { ensureRamCacheLifecycle, scheduleIdleWarmup } from './utils/ramCache';
 import { getAppStrings } from './utils/i18n';
 import { LanguageProvider } from './contexts/LanguageContext';
+import { syncSystemBarAppearance } from './utils/edgeToEdge';
 import { warmCommunityRamCache } from './utils/communityDriveStore';
 
 // Secondary modals stay code-split for fast startup and are silently pre-warmed into RAM during idle
@@ -427,7 +428,21 @@ export default function App() {
     } else {
       root.removeAttribute('data-app-accent-custom');
     }
-  }, [basicSettings.uiTheme, basicSettings.uiAccent, basicSettings.uiCustomAccentHex]);
+
+    // Edge-to-Edge status bar color sync for non-reader screens (Reader syncs its own paper color)
+    if (activeTab !== 'reader') {
+      const barBg =
+        basicSettings.uiTheme === 'amoled'
+          ? '#000000'
+          : basicSettings.uiTheme === 'dark'
+          ? themeVars.bgDark
+          : themeVars.bgLight;
+      syncSystemBarAppearance({
+        backgroundHex: barBg,
+        isDark: basicSettings.uiTheme !== 'light',
+      });
+    }
+  }, [activeTab, basicSettings.uiTheme, basicSettings.uiAccent, basicSettings.uiCustomAccentHex]);
 
   // Keep screen awake via Wake Lock API during reading if enabled (re-acquires on visibilitychange)
   useEffect(() => {
@@ -918,7 +933,7 @@ export default function App() {
       {/* Strict 3-Zone Top Navigation Bar (hidden in distraction-free Reader mode) */}
       {activeTab !== 'reader' && (
       <header
-        className={`sticky top-0 z-40 border-b ${
+        className={`sticky top-0 z-40 border-b pt-[env(safe-area-inset-top)] ${
           basicSettings.uiTheme === 'amoled'
             ? 'bg-black border-zinc-800'
             : 'bg-white dark:bg-[#16181C] border-stone-200 dark:border-stone-800'
