@@ -66,6 +66,8 @@ export interface ScriptSegment {
   speakerName: string;
   emotionStyle: string;
   text: string;
+  segmentType?: 'narration' | 'dialogue' | 'inner_thought';
+  spatialEffect?: 'none' | 'inner_thought' | 'whisper' | 'shout';
 }
 
 export interface ChapterAnalysis {
@@ -136,6 +138,9 @@ export interface Book {
   highlights: HighlightItem[];
   voiceAssignments: Record<string, CharacterVoiceAssignment>;
   characterVoicesEnabled?: boolean;
+  characterVoicesConfigured?: boolean;
+  driveFileId?: string;
+  driveModifiedTime?: string;
   addedAt: number;
   lastReadAt: number;
   sourceUrl?: string;
@@ -153,6 +158,7 @@ export interface CustomFontAsset {
 
 export interface ExternalVoiceAsset {
   id: string;
+  voiceId?: string;
   name: string;
   fileName: string;
   mimeType: string;
@@ -161,6 +167,20 @@ export interface ExternalVoiceAsset {
   originType?: 'imported' | 'studio';
   originLabel?: string;
   readingStyle?: BookReadingStyle;
+  ageGroup?: 'child' | 'youth' | 'middle' | 'elder';
+  personality?: 'warm' | 'sharp' | 'cold' | 'bold';
+  promptParams?: {
+    pitch: number;
+    speed: number;
+    energy: number;
+    pauseDurationMs: number;
+    emotionBias: string;
+    warmthDb: number;
+    clarityDb: number;
+    recommendedBaseVoice?: GeminiVoiceName;
+    geminiStylePrompt?: string;
+    tags?: string[];
+  };
   toneSettings?: VoiceToneSettings;
   analyzedProfile?: {
     description: string;
@@ -237,6 +257,7 @@ export interface AppBasicSettings {
   standaloneDeviceMode?: boolean;
   hapticFeedback?: boolean;
   volumeKeyPageTurn?: boolean;
+  appLanguage?: 'vi' | 'en' | 'zh';
 }
 
 export interface ReadingLogEntry {

@@ -66,6 +66,19 @@ import { installOfflineVoicePack } from '../utils/offlineVoicePacks';
 import { useLongPress } from '../hooks/useLongPress';
 import { LongPressActionSheet } from './LongPressActionSheet';
 import { TwoTapDeleteButton } from './TwoTapDeleteButton';
+import {
+  VOICE_AGE_OPTIONS,
+  VOICE_PERSONALITY_OPTIONS,
+  buildCompactVoiceProfile,
+  parseAiVoiceInstruction,
+  type VoiceAgeGroup,
+  type VoicePersonality,
+} from '../utils/voiceProfileEngine';
+import {
+  loadPronunciationDict,
+  savePronunciationDict,
+  type PronunciationEntry,
+} from '../utils/pronunciationDict';
 
 const VOICE_ALIAS_STORAGE_KEY = 'bookhad_voice_aliases_v1';
 const FONT_ALIAS_STORAGE_KEY = 'bookhad_font_aliases_v1';
@@ -697,6 +710,46 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     }
   };
 
+  const [studioAgeGroup, setStudioAgeGroup] = useState<VoiceAgeGroup>('youth');
+  const [studioPersonality, setStudioPersonality] = useState<VoicePersonality>('warm');
+  const [pronDict, setPronDict] = useState<PronunciationEntry[]>(() => loadPronunciationDict());
+  const [dictWrongWord, setDictWrongWord] = useState('');
+  const [dictCorrectReading, setDictCorrectReading] = useState('');
+  const [showPronDict, setShowPronDict] = useState(false);
+
+  const livePromptPreview = useMemo(() => {
+    const analyzed = builderImportedVoice?.analyzedProfile;
+    const gender: 'male' | 'female' =
+      analyzed?.gender === 'male'
+        ? 'male'
+        : analyzed?.gender === 'female'
+        ? 'female'
+        : getOnDeviceVoiceTone(baseGeminiVoice).preferGender === 'male'
+        ? 'male'
+        : 'female';
+    return parseAiVoiceInstruction(tone.styleDirection || analyzed?.stylePrompt || '', {
+      gender,
+      ageGroup: studioAgeGroup,
+      personality: studioPersonality,
+      acousticWarmthDb: tone.warmthDb,
+      acousticClarityDb: tone.clarityDb,
+      acousticSpeedFactor: tone.rate,
+      voiceStyle: READING_VOICE_STYLES.find((s) => s.id === studioReadingStyle)?.label,
+      name: studioName || builderImportedVoice?.fileName,
+    });
+  }, [
+    builderImportedVoice,
+    baseGeminiVoice,
+    tone.styleDirection,
+    tone.warmthDb,
+    tone.clarityDb,
+    tone.rate,
+    studioAgeGroup,
+    studioPersonality,
+    studioReadingStyle,
+    studioName,
+  ]);
+
   const handleTestStudioEq = async () => {
     unlockAudioPlaybackSync();
     if (isTestingEq) {
@@ -708,24 +761,52 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     setStudioFeedback('');
     setIsTestingEq(true);
     try {
-      const presetTone = getOnDeviceVoiceTone(baseGeminiVoice);
+      // Step 3: Synthesize preview strictly from the temporary Voice Profile (sample timbre + AI Prompt controller)
       const analyzed = builderImportedVoice?.analyzedProfile;
-      const preferGender =
-        analyzed?.gender === 'male' || analyzed?.gender === 'female' || analyzed?.gender === 'neutral'
-          ? analyzed.gender
-          : presetTone.preferGender;
+      const gender: 'male' | 'female' =
+        analyzed?.gender === 'male'
+          ? 'male'
+          : analyzed?.gender === 'female'
+          ? 'female'
+          : getOnDeviceVoiceTone(baseGeminiVoice).preferGender === 'male'
+          ? 'male'
+          : 'female';
+      const tempProfile = buildCompactVoiceProfile({
+        name: studioName.trim() || builderImportedVoice?.fileName || 'Custom Voice',
+        gender,
+        ageGroup: studioAgeGroup,
+        personality: studioPersonality,
+        instruction: tone.styleDirection || analyzed?.stylePrompt || '',
+        voiceStyle: READING_VOICE_STYLES.find((s) => s.id === studioReadingStyle)?.label,
+        sampleSignature: builderImportedVoice?.dataUrl?.slice(0, 128),
+        acousticSpeedFactor: tone.rate,
+        acousticWarmthDb: tone.warmthDb,
+        acousticClarityDb: tone.clarityDb,
+      });
+      const pp = tempProfile.promptParams;
+      const resolvedBaseVoice = pp.recommendedBaseVoice || baseGeminiVoice;
+      const presetTone = getOnDeviceVoiceTone(resolvedBaseVoice);
+      const mergedPreviewTone: VoiceToneSettings = {
+        ...tone,
+        warmthDb: pp.warmthDb,
+        clarityDb: pp.clarityDb,
+        pitch: pp.pitch,
+        rate: pp.speed,
+        styleDirection: pp.geminiStylePrompt,
+      };
+
       const ok = await previewSynthesizedVoice(runId, {
-        baseVoice: baseGeminiVoice,
-        stylePrompt: tone.styleDirection || analyzed?.stylePrompt || DEFAULT_VOICE_TONE.styleDirection,
-        toneSettings: tone,
-        pitch: tone.pitch,
-        rate: tone.rate,
-        preferGender,
-        voiceSlotIndex: presetTone.voiceSlotIndex,
+        baseVoice: resolvedBaseVoice,
+        stylePrompt: pp.geminiStylePrompt,
+        toneSettings: mergedPreviewTone,
+        pitch: pp.pitch,
+        rate: pp.speed,
+        preferGender: gender,
+        voiceSlotIndex: (presetTone.voiceSlotIndex + (tempProfile.fingerprintHash % 4)) % 6,
         useVoiceDesign: true,
       });
       if (!ok && previewRunIdRef.current === runId) {
-        setStudioFeedback('Đang phát thử âm sắc EQ qua gói giọng nội bộ.');
+        setStudioFeedback('Đang phát thử giọng tùy chỉnh từ hồ sơ âm sắc & chỉ dẫn AI.');
       }
     } catch (err) {
       if (previewRunIdRef.current === runId) {
@@ -748,39 +829,66 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       const mimeType = builderImportedVoice.mimeType || 'audio/wav';
       const analyzed = builderImportedVoice.analyzedProfile;
       const presetTone = getOnDeviceVoiceTone(baseGeminiVoice);
-      const gender =
-        analyzed?.gender === 'male' || analyzed?.gender === 'female' || analyzed?.gender === 'neutral'
-          ? analyzed.gender
-          : presetTone.preferGender;
+      const gender: 'male' | 'female' =
+        analyzed?.gender === 'male'
+          ? 'male'
+          : analyzed?.gender === 'female'
+          ? 'female'
+          : presetTone.preferGender === 'male'
+          ? 'male'
+          : 'female';
       const styleMeta = READING_VOICE_STYLES.find((s) => s.id === studioReadingStyle);
-      const stylePrefix = styleMeta ? `Văn phong ${styleMeta.label}: ${styleMeta.description}. ` : '';
-      const combinedStylePrompt = `${stylePrefix}${tone.styleDirection || analyzed?.stylePrompt || DEFAULT_VOICE_TONE.styleDirection}`.trim();
 
-      const eqSummary = `Ấm trầm ${tone.warmthDb >= 0 ? '+' : ''}${tone.warmthDb}dB · Sáng rõ ${tone.clarityDb >= 0 ? '+' : ''}${tone.clarityDb}dB · Cao độ ${tone.pitch.toFixed(2)} · Tốc độ ${tone.rate.toFixed(2)}x`;
+      // Step 4: Build & persist compact Voice Profile with unique voiceId + Prompt-to-Voice runtime params
+      const compactProfile = buildCompactVoiceProfile({
+        name: studioName.trim(),
+        gender,
+        ageGroup: studioAgeGroup,
+        personality: studioPersonality,
+        instruction: tone.styleDirection || analyzed?.stylePrompt || '',
+        voiceStyle: styleMeta?.label,
+        sampleSignature: dataUrl.slice(0, 128),
+        acousticSpeedFactor: tone.rate,
+        acousticWarmthDb: tone.warmthDb,
+        acousticClarityDb: tone.clarityDb,
+      });
+      const pp = compactProfile.promptParams;
+
+      const eqSummary = `Ấm trầm ${pp.warmthDb >= 0 ? '+' : ''}${pp.warmthDb}dB · Sáng rõ ${pp.clarityDb >= 0 ? '+' : ''}${pp.clarityDb}dB · Cao độ ${pp.pitch.toFixed(2)} · Tốc độ ${pp.speed.toFixed(2)}x`;
 
       const newVoice: ExternalVoiceAsset = {
-        id: `voice-import-${Date.now()}`,
+        id: compactProfile.voiceId,
+        voiceId: compactProfile.voiceId,
         name: studioName.trim(),
         fileName,
         mimeType,
         dataUrl,
         durationSec: builderImportedVoice.durationSec,
         readingStyle: studioReadingStyle,
+        ageGroup: compactProfile.ageGroup,
+        personality: compactProfile.personality,
+        promptParams: pp,
         originType: 'imported',
         originLabel:
           analyzed?.analyzedBy === 'gemini-ai'
-            ? `AI phân tích · ${styleMeta?.label || 'Tiểu thuyết'}`
-            : `Voice import · ${styleMeta?.label || 'Tiểu thuyết'}`,
-        toneSettings: { ...tone, styleDirection: combinedStylePrompt },
+            ? `Voice Profile AI · ${styleMeta?.label || 'Tiểu thuyết'}`
+            : `Voice Profile · ${styleMeta?.label || 'Tiểu thuyết'}`,
+        toneSettings: {
+          warmthDb: pp.warmthDb,
+          clarityDb: pp.clarityDb,
+          pitch: pp.pitch,
+          rate: pp.speed,
+          styleDirection: pp.geminiStylePrompt,
+        },
         analyzedProfile: {
           description: `${analyzed?.description || `Phân tích từ ${fileName}`} (${eqSummary}).`,
-          stylePrompt: combinedStylePrompt,
-          recommendedBaseVoice: baseGeminiVoice,
+          stylePrompt: pp.geminiStylePrompt,
+          recommendedBaseVoice: pp.recommendedBaseVoice,
           gender,
-          pitchHint: tone.pitch,
-          rateHint: tone.rate,
-          warmthDb: tone.warmthDb,
-          clarityDb: tone.clarityDb,
+          pitchHint: pp.pitch,
+          rateHint: pp.speed,
+          warmthDb: pp.warmthDb,
+          clarityDb: pp.clarityDb,
           transcriptPreview: analyzed?.transcriptPreview,
           analyzedBy: analyzed?.analyzedBy || 'device-dsp',
         },
@@ -788,11 +896,10 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       };
 
       await onAddExternalVoice(newVoice);
-      // Reset entire builder back to empty pre-import state so repeated clicks cannot create duplicates
       resetBuilderToEmpty();
       triggerDeviceHaptic('success', true);
       setStudioFeedback(
-        `Đã lưu giọng "${newVoice.name}" vào thư viện! Hãy import file mới nếu muốn tạo thêm giọng khác.`
+        `Đã lưu hồ sơ giọng "${newVoice.name}" (${compactProfile.voiceId}) vào thư viện!`
       );
     } finally {
       setIsSavingVoice(false);
@@ -978,9 +1085,53 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
               </div>
             </div>
 
-            {/* 3. Chỉ dẫn AI */}
-            <div>
-              <label className="block text-[11px] font-medium text-stone-500 mb-1">
+            {/* 3. Độ tuổi & Tính cách (Voice Profile Tags) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-medium text-stone-500">Độ tuổi</label>
+                <div className="flex flex-wrap gap-1">
+                  {VOICE_AGE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={!builderImportedVoice}
+                      onClick={() => setStudioAgeGroup(opt.id)}
+                      className={`px-2.5 py-1 rounded-full text-[10.5px] font-semibold border transition-all disabled:opacity-45 ${
+                        studioAgeGroup === opt.id
+                          ? 'bg-amber-800 border-amber-800 text-white'
+                          : 'bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-700 text-stone-700 dark:text-stone-300'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-medium text-stone-500">Tính cách</label>
+                <div className="flex flex-wrap gap-1">
+                  {VOICE_PERSONALITY_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={!builderImportedVoice}
+                      onClick={() => setStudioPersonality(opt.id)}
+                      className={`px-2.5 py-1 rounded-full text-[10.5px] font-semibold border transition-all disabled:opacity-45 ${
+                        studioPersonality === opt.id
+                          ? 'bg-amber-800 border-amber-800 text-white'
+                          : 'bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-700 text-stone-700 dark:text-stone-300'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* 4. Chỉ dẫn AI (Prompt-to-Voice Controller) */}
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-medium text-stone-500">
                 Chỉ dẫn AI
               </label>
               <input
@@ -990,12 +1141,28 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
                 disabled={!builderImportedVoice}
                 placeholder={
                   builderImportedVoice
-                    ? 'Truyền cảm, nhấn nhá tự nhiên...'
+                    ? 'VD: Trầm ấm, chậm rãi, nhấn mạnh cuối câu, cổ trang...'
                     : 'Tự điền sau khi chọn file'
                 }
                 onChange={(e) => setTone((t) => ({ ...t, styleDirection: e.target.value }))}
-                className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-transparent disabled:bg-stone-100 dark:disabled:bg-stone-900/60 disabled:text-stone-400 disabled:cursor-not-allowed"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-transparent disabled:bg-stone-100 dark:disabled:bg-stone-900/60 disabled:text-stone-400 disabled:cursor-not-allowed"
               />
+              {builderImportedVoice && (
+                <div className="flex flex-wrap items-center gap-1 text-[10px] text-amber-900 dark:text-amber-300">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 font-semibold">
+                    Nền: {livePromptPreview.recommendedBaseVoice}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 tabular-nums">
+                    Cao độ {livePromptPreview.pitch}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 tabular-nums">
+                    Tốc độ {livePromptPreview.speed}x
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 tabular-nums">
+                    Nghỉ {livePromptPreview.pauseDurationMs}ms
+                  </span>
+                </div>
+              )}
             </div>
 
             <div>
@@ -1188,6 +1355,104 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
             )}
           </div>
         </div>
+
+        {/* Personalized Pronunciation Dictionary (Từ điển phát âm cá nhân) */}
+        <div className="pt-2 border-t border-stone-200/70 dark:border-stone-800">
+          <button
+            type="button"
+            data-testid="toggle-pronunciation-dict-btn"
+            onClick={() => setShowPronDict((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 py-1 text-left"
+          >
+            <span className="inline-flex items-center gap-1.5 text-[12px] font-sans font-semibold text-stone-900 dark:text-stone-100">
+              <Sparkles className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
+              <span>Từ điển phát âm cá nhân ({pronDict.length})</span>
+            </span>
+            <ChevronDown
+              className={`w-4 h-4 text-stone-500 transition-transform ${
+                showPronDict ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+
+          {showPronDict && (
+            <div className="mt-2.5 space-y-2.5 p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/50">
+              <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                Tự động sửa cách đọc tên riêng, từ Hán Việt hoặc viết tắt trên mọi chương sách trước khi AI phát âm.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                <input
+                  type="text"
+                  data-testid="pron-wrong-input"
+                  value={dictWrongWord}
+                  onChange={(e) => setDictWrongWord(e.target.value)}
+                  placeholder="Từ gốc / đọc sai (VD: Võ Hồn)"
+                  className="sm:col-span-5 px-3 py-1.5 rounded-full border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-xs"
+                />
+                <input
+                  type="text"
+                  data-testid="pron-correct-input"
+                  value={dictCorrectReading}
+                  onChange={(e) => setDictCorrectReading(e.target.value)}
+                  placeholder="Cách đọc chuẩn (VD: Võ Hồn Điện)"
+                  className="sm:col-span-5 px-3 py-1.5 rounded-full border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-xs"
+                />
+                <button
+                  type="button"
+                  data-testid="pron-add-btn"
+                  disabled={!dictWrongWord.trim() || !dictCorrectReading.trim()}
+                  onClick={() => {
+                    const next: PronunciationEntry[] = [
+                      {
+                        id: `pd-${Date.now()}`,
+                        wrongWord: dictWrongWord.trim(),
+                        correctReading: dictCorrectReading.trim(),
+                      },
+                      ...pronDict,
+                    ];
+                    setPronDict(next);
+                    savePronunciationDict(next);
+                    setDictWrongWord('');
+                    setDictCorrectReading('');
+                  }}
+                  className="sm:col-span-2 px-3 py-1.5 rounded-full bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 disabled:opacity-45"
+                >
+                  Thêm
+                </button>
+              </div>
+              {pronDict.length > 0 && (
+                <div className="space-y-1 max-h-[140px] overflow-y-auto">
+                  {pronDict.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 text-[11.5px]"
+                    >
+                      <span className="truncate">
+                        <strong className="text-stone-900 dark:text-stone-100">{item.wrongWord}</strong>
+                        <span className="mx-1.5 text-stone-400">→</span>
+                        <span className="text-amber-800 dark:text-amber-400 font-medium">
+                          {item.correctReading}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = pronDict.filter((e) => e.id !== item.id);
+                          setPronDict(next);
+                          savePronunciationDict(next);
+                        }}
+                        aria-label={`Xóa từ ${item.wrongWord}`}
+                        className="p-1 rounded-full text-stone-400 hover:text-red-600"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 min-w-0">
@@ -1229,8 +1494,8 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
             )}
           </div>
 
-          {/* Single Unified Scrollable Compact List: Imported/Studio + Built-in AI + Device Voices */}
-          <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-0.5 min-w-0">
+          {/* Single Unified Scrollable Compact List (2/3 height): Imported/Studio + Built-in AI + Device Voices */}
+          <div className="space-y-1.5 max-h-[260px] overflow-y-auto pr-0.5 min-w-0">
             {externalVoices.map((voice) => {
               const key = `external:${voice.id}`;
               const isSelected = activeDefaultVoice.id === key;
@@ -1691,8 +1956,8 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
             </button>
           </div>
 
-          {/* Compact Scrollable Font List */}
-          <div className="space-y-1.5 max-h-[370px] overflow-y-auto pr-0.5 min-w-0">
+          {/* Compact Scrollable Font List (2/3 height) */}
+          <div className="space-y-1.5 max-h-[245px] overflow-y-auto pr-0.5 min-w-0">
             {unifiedFonts.map((font) => {
               const isSelected = activeFontFamily === font.cssValue;
               const isExpanded = Boolean(expandedFontIds[font.id]);
@@ -1815,7 +2080,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           <div className="flex items-center justify-between gap-2 min-w-0">
             <div className="flex items-center gap-1.5 min-w-0">
               <Music className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-[13px] font-display font-semibold text-stone-900 dark:text-stone-100 truncate">
+              <h2 className="text-[13px] font-sans font-semibold text-stone-900 dark:text-stone-100 truncate">
                 Nhạc nền
               </h2>
             </div>

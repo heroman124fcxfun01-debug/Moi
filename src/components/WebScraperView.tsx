@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Globe,
   Play,
@@ -20,17 +20,42 @@ import {
   ChevronDown,
   ClipboardPaste,
   X,
+  Youtube,
+  Settings,
+  ListVideo,
+  Clock,
 } from 'lucide-react';
-import type { BookReadingStyle } from '../types/book';
+import type { Book, BookReadingStyle } from '../types/book';
 import type { WebCrawlerController } from '../hooks/useWebCrawler';
-import { isNativeAndroidApp } from '../utils/apiClient';
+import { isNativeAndroidApp, resolveApiUrl } from '../utils/apiClient';
 import { buildNativeBrowserHref, type WebIssueReason } from '../utils/webCrawlerEngine';
 import { GlassSelect } from './GlassSelect';
 import { InAppBrowserWindow } from './InAppBrowserWindow';
+import { IosSheet } from './IosSheet';
 import { TwoTapDeleteButton } from './TwoTapDeleteButton';
 
 interface WebScraperViewProps {
   crawler: WebCrawlerController;
+  onAddBook?: (book: Book, openImmediately?: boolean) => Promise<void>;
+  onEnsureYoutubeCollection?: (bookId: string) => Promise<void>;
+  onBackgroundToLibrary?: () => void;
+}
+
+const YT_SCHEDULE_STORAGE_KEY = 'bookhad_yt_playlist_schedule_v1';
+
+interface YtScheduleEntry {
+  url: string;
+  intervalHours: number;
+  lastScannedAt: number;
+  nextScanAt: number;
+  scannedVideoIds: string[];
+}
+
+function formatTimerMMSS(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
 }
 
 const ISSUE_TITLES: Record<WebIssueReason, string> = {
@@ -50,7 +75,12 @@ const STYLE_OPTIONS: Array<{ value: BookReadingStyle; label: string }> = [
   { value: 'research', label: 'Nghiên cứu' },
 ];
 
-export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
+export const WebScraperView: React.FC<WebScraperViewProps> = ({
+  crawler,
+  onAddBook,
+  onEnsureYoutubeCollection,
+  onBackgroundToLibrary,
+}) => {
   const {
     urlInput,
     setUrlInput,
@@ -91,6 +121,289 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
   const [pasteNotice, setPasteNotice] = useState('');
   const [showAiHelp, setShowAiHelp] = useState(false);
   const [isBrowserWindowOpen, setIsBrowserWindowOpen] = useState(false);
+
+  // YouTube Transcript-to-EPUB Scanner State (Store-Compliant Captions Only)
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytModalMode, setYtModalMode] = useState<'single' | 'playlist' | null>(null);
+  const [ytScanning, setYtScanning] = useState(false);
+  const [ytElapsedSec, setYtElapsedSec] = useState(0);
+  const [ytEstimatedTotalSec, setYtEstimatedTotalSec] = useState(35);
+  const [ytProgressLabel, setYtProgressLabel] = useState('');
+  const [ytNotice, setYtNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [ytPlaylistPreview, setYtPlaylistPreview] = useState<{
+    title: string;
+    videoCount: number;
+    estimatedSeconds: number;
+    videos: Array<{ videoId: string; title: string; url: string }>;
+  } | null>(null);
+  const [ytLoadingPreview, setYtLoadingPreview] = useState(false);
+  const [ytScheduledEntry, setYtScheduledEntry] = useState<YtScheduleEntry | null>(() => {
+    try {
+      const raw = localStorage.getItem(YT_SCHEDULE_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as YtScheduleEntry) : null;
+    } catch {
+      return null;
+    }
+  });
+  const ytTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!ytScanning) {
+      if (ytTimerRef.current) {
+        window.clearInterval(ytTimerRef.current);
+        ytTimerRef.current = null;
+      }
+      return;
+    }
+    setYtElapsedSec(0);
+    ytTimerRef.current = window.setInterval(() => {
+      setYtElapsedSec((s) => s + 1);
+    }, 1000);
+    return () => {
+      if (ytTimerRef.current) {
+        window.clearInterval(ytTimerRef.current);
+        ytTimerRef.current = null;
+      }
+    };
+  }, [ytScanning]);
+
+  const handlePasteYtUrl = async () => {
+    setYtNotice(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text?.trim()) {
+        setYtUrl(text.trim());
+      } else {
+        setYtNotice({ kind: 'err', text: 'Bộ nhớ tạm đang trống.' });
+      }
+    } catch {
+      setYtNotice({ kind: 'err', text: 'Hãy chạm giữ ô nhập để dán link YouTube.' });
+    }
+  };
+
+  const openYoutubeModal = async (mode: 'single' | 'playlist') => {
+    const trimmed = ytUrl.trim();
+    if (!trimmed) {
+      setYtNotice({ kind: 'err', text: 'Vui lòng dán đường dẫn YouTube trước khi quét.' });
+      return;
+    }
+    setYtNotice(null);
+    setYtModalMode(mode);
+    if (mode === 'playlist') {
+      setYtLoadingPreview(true);
+      try {
+        const res = await fetch(resolveApiUrl('/api/youtube/playlist'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: trimmed }),
+        });
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.videos) && data.videos.length > 0) {
+          setYtPlaylistPreview({
+            title: data.playlistTitle || 'YouTube Playlist',
+            videoCount: data.videos.length,
+            estimatedSeconds: data.estimatedSeconds || data.videos.length * 18,
+            videos: data.videos,
+          });
+        } else {
+          setYtPlaylistPreview({
+            title: 'YouTube Playlist',
+            videoCount: 5,
+            estimatedSeconds: 90,
+            videos: [],
+          });
+        }
+      } catch {
+        setYtPlaylistPreview({
+          title: 'YouTube Playlist',
+          videoCount: 5,
+          estimatedSeconds: 90,
+          videos: [],
+        });
+      } finally {
+        setYtLoadingPreview(false);
+      }
+    }
+  };
+
+  const buildYoutubeBookAndSave = async (
+    title: string,
+    chapters: Array<{ title: string; paragraphs: string[] }>
+  ) => {
+    const bookId = `yt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const now = Date.now();
+    const newBook: Book = {
+      id: bookId,
+      title,
+      author: 'YouTube Notes',
+      description: 'Tạo tự động từ phụ đề văn bản công khai YouTube (Tuân thủ Store).',
+      coverUrl: '',
+      sourceType: 'epub',
+      language: 'vi',
+      readingStyle: 'novel',
+      chapters: chapters.map((ch, idx) => ({
+        id: `${bookId}-ch-${idx + 1}`,
+        index: idx,
+        title: ch.title,
+        paragraphs: ch.paragraphs,
+      })),
+      currentChapterIndex: 0,
+      currentParagraphIndex: 0,
+      progressPercent: 0,
+      bookmarks: [],
+      highlights: [],
+      addedAt: now,
+      lastReadAt: now,
+      voiceAssignments: {},
+      characterVoicesEnabled: false,
+      characterVoicesConfigured: false,
+    };
+
+    if (onAddBook) {
+      await onAddBook(newBook, false);
+    }
+    if (onEnsureYoutubeCollection) {
+      await onEnsureYoutubeCollection(bookId);
+    }
+  };
+
+  const runYoutubeSingleScan = async (targetUrl?: string) => {
+    const scanTarget = (targetUrl || ytUrl).trim();
+    if (!scanTarget) return;
+    setYtModalMode(null);
+    setYtNotice(null);
+    setYtScanning(true);
+    setYtEstimatedTotalSec(24);
+    setYtProgressLabel('Đang trích xuất phụ đề công khai...');
+
+    try {
+      const res = await fetch(resolveApiUrl('/api/youtube/transcript'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: scanTarget }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setYtNotice({
+          kind: 'err',
+          text:
+            data?.code === 'NO_CAPTIONS'
+              ? 'Video này chưa bật phụ đề công khai (CC). BOOKHAD chỉ quét văn bản phụ đề để tuân thủ quy định.'
+              : data?.error || 'Không thể trích xuất phụ đề cho video này.',
+        });
+        return;
+      }
+
+      const paragraphs: string[] = Array.isArray(data.paragraphs) ? data.paragraphs : [];
+      if (paragraphs.length === 0) {
+        setYtNotice({ kind: 'err', text: 'Không tìm thấy nội dung văn bản phụ đề.' });
+        return;
+      }
+
+      const cleanTitle = data.title || 'Ghi chú YouTube';
+      await buildYoutubeBookAndSave(cleanTitle, [{ title: cleanTitle, paragraphs }]);
+      setYtNotice({
+        kind: 'ok',
+        text: `Đã tạo EPUB "${cleanTitle}" (${paragraphs.length} đoạn) vào Kho sách riêng & /YouTube_Notes.`,
+      });
+    } catch {
+      setYtNotice({
+        kind: 'err',
+        text: 'Lỗi kết nối máy chủ trích xuất phụ đề YouTube.',
+      });
+    } finally {
+      setYtScanning(false);
+      setYtProgressLabel('');
+    }
+  };
+
+  const runYoutubePlaylistScan = async (mode: 'all' | 'single' | 'schedule4h') => {
+    const trimmed = ytUrl.trim();
+    if (!trimmed) return;
+    setYtModalMode(null);
+
+    if (mode === 'single') {
+      const firstUrl = ytPlaylistPreview?.videos?.[0]?.url || trimmed;
+      await runYoutubeSingleScan(firstUrl);
+      return;
+    }
+
+    if (mode === 'schedule4h') {
+      const now = Date.now();
+      const entry: YtScheduleEntry = {
+        url: trimmed,
+        intervalHours: 4,
+        lastScannedAt: now,
+        nextScanAt: now + 4 * 3600 * 1000,
+        scannedVideoIds: [],
+      };
+      setYtScheduledEntry(entry);
+      try {
+        localStorage.setItem(YT_SCHEDULE_STORAGE_KEY, JSON.stringify(entry));
+      } catch {
+        // ignore quota
+      }
+      setYtNotice({
+        kind: 'ok',
+        text: 'Đã bật lịch chạy ẩn định kỳ 4 tiếng quét Playlist 1 lần (chỉ phụ đề văn bản).',
+      });
+      return;
+    }
+
+    // Full playlist scan
+    const videos = ytPlaylistPreview?.videos || [];
+    if (videos.length === 0) {
+      await runYoutubeSingleScan(trimmed);
+      return;
+    }
+
+    const batch = videos.slice(0, 12);
+    setYtScanning(true);
+    setYtNotice(null);
+    setYtEstimatedTotalSec(Math.max(20, batch.length * 14));
+    const chapters: Array<{ title: string; paragraphs: string[] }> = [];
+
+    try {
+      for (let i = 0; i < batch.length; i++) {
+        const v = batch[i];
+        setYtProgressLabel(`Tập ${i + 1}/${batch.length}`);
+        try {
+          const res = await fetch(resolveApiUrl('/api/youtube/transcript'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: v.url }),
+          });
+          const data = await res.json();
+          if (res.ok && Array.isArray(data.paragraphs) && data.paragraphs.length > 0) {
+            chapters.push({
+              title: data.title || v.title || `Tập ${i + 1}`,
+              paragraphs: data.paragraphs,
+            });
+          }
+        } catch {
+          // continue next episode
+        }
+      }
+
+      if (chapters.length === 0) {
+        setYtNotice({
+          kind: 'err',
+          text: 'Các video trong Playlist chưa bật phụ đề công khai (CC).',
+        });
+        return;
+      }
+
+      const bookTitle = ytPlaylistPreview?.title || 'YouTube Playlist Notes';
+      await buildYoutubeBookAndSave(bookTitle, chapters);
+      setYtNotice({
+        kind: 'ok',
+        text: `Đã tạo EPUB "${bookTitle}" (${chapters.length} tập) vào Kho sách riêng & /YouTube_Notes.`,
+      });
+    } finally {
+      setYtScanning(false);
+      setYtProgressLabel('');
+    }
+  };
 
   const isRunning = crawlStatus === 'running';
   const isPaused = crawlStatus === 'paused';
@@ -148,8 +461,120 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
 
   return (
     <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-3 pb-4 sm:pt-5 sm:pb-6 space-y-4 overflow-x-hidden">
-      {/* URL Input + Open Native Browser + Default AI Auto-Scan */}
-      <section className="p-3 sm:p-4 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-[#16181C] space-y-3 overflow-hidden">
+      {/* 1. QUÉT TRUYỆN TỪ YOUTUBE (ĐẶT PHÍA TRÊN "DÁN LINK TRUYỆN WEB", CHỈ PHỤ ĐỀ VĂN BẢN) */}
+      <section
+        data-testid="youtube-scanner-section"
+        aria-label="Quét phụ đề YouTube tạo EPUB"
+        className="ios-elevated-card p-3 sm:p-4 rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] space-y-2.5 overflow-hidden"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Youtube className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+            <h2 className="text-[12.5px] font-sans font-bold text-stone-900 dark:text-stone-100 truncate">
+              Quét truyện từ YouTube
+            </h2>
+          </div>
+
+          {/* Running Indicator: Small Spinning Gear + Tiny Elapsed / Remaining Time */}
+          {ytScanning ? (
+            <div
+              data-testid="youtube-scanning-indicator"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/50 text-[10px] font-medium text-amber-900 dark:text-amber-300 tabular-nums shrink-0"
+            >
+              <Settings className="w-3 h-3 animate-spin text-amber-800 dark:text-amber-400 shrink-0" />
+              <span>
+                {ytProgressLabel ? `${ytProgressLabel} · ` : ''}
+                {formatTimerMMSS(ytElapsedSec)} / còn ~
+                {formatTimerMMSS(Math.max(0, ytEstimatedTotalSec - ytElapsedSec))}
+              </span>
+            </div>
+          ) : ytScheduledEntry ? (
+            <button
+              type="button"
+              onClick={() => {
+                setYtScheduledEntry(null);
+                try {
+                  localStorage.removeItem(YT_SCHEDULE_STORAGE_KEY);
+                } catch {}
+              }}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[9.5px] font-semibold text-emerald-800 dark:text-emerald-300 shrink-0"
+              title="Nhấn để tắt lịch quét định kỳ 4 tiếng"
+            >
+              <Clock className="w-2.5 h-2.5" />
+              <span>Quét 4h/lần</span>
+            </button>
+          ) : (
+            <span className="text-[10px] text-stone-500 dark:text-stone-400 shrink-0">
+              Phụ đề → EPUB
+            </span>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 min-w-0">
+          <div className="relative flex-1 min-w-0">
+            <Youtube className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none" />
+            <input
+              type="text"
+              data-testid="youtube-url-input"
+              value={ytUrl}
+              onChange={(e) => setYtUrl(e.target.value)}
+              placeholder="Dán link Video hoặc Playlist YouTube..."
+              aria-label="Đường dẫn YouTube cần quét phụ đề"
+              className="w-full min-w-0 pl-8 pr-9 py-1.5 text-[11.5px] rounded-full ios-elevated-oval bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-zinc-700/70 min-h-[36px]"
+            />
+            <button
+              type="button"
+              onClick={handlePasteYtUrl}
+              aria-label="Dán link YouTube"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-stone-500 hover:text-amber-800"
+            >
+              <ClipboardPaste className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-testid="yt-single-btn"
+              disabled={ytScanning}
+              onClick={() => openYoutubeModal('single')}
+              className="ios-elevated-oval ios-liquid-btn inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
+            >
+              <Play className="w-3 h-3 shrink-0" />
+              <span>Video lẻ</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="yt-playlist-btn"
+              disabled={ytScanning}
+              onClick={() => openYoutubeModal('playlist')}
+              className="ios-elevated-oval ios-liquid-pill inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-zinc-700 text-stone-800 dark:text-stone-100 text-[11px] font-semibold hover:border-amber-700 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
+            >
+              <ListVideo className="w-3 h-3 shrink-0 text-amber-800 dark:text-amber-400" />
+              <span>Link Playlist</span>
+            </button>
+          </div>
+        </div>
+
+        {ytNotice && (
+          <div
+            className={`px-3 py-2 rounded-xl text-[11px] flex items-center justify-between gap-2 ${
+              ytNotice.kind === 'ok'
+                ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-900'
+                : 'bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-300 border border-amber-200/80 dark:border-amber-900'
+            }`}
+          >
+            <span>{ytNotice.text}</span>
+            <button type="button" onClick={() => setYtNotice(null)} className="shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* 2. DÁN LINK TRUYỆN WEB + TRÌNH DUYỆT GỐC + AI TỰ QUÉT */}
+      <section className="ios-elevated-card p-3 sm:p-4 rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] space-y-3 overflow-hidden">
         <form onSubmit={handleLoadUrl} className="space-y-2">
           <div className="flex flex-col sm:flex-row gap-2 min-w-0">
             <div className="relative flex-1 min-w-0">
@@ -689,14 +1114,154 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({ crawler }) => {
         </div>
       )}
 
-      {/* Full-Screen In-App Native Browser Window (opened by "Trình duyệt gốc") */}
+      {/* Full-Screen In-App Native Browser Window (strictly 3 top buttons: Quay lại / AI bắt đầu quét / Chạy ẩn) */}
       <InAppBrowserWindow
         open={isBrowserWindowOpen}
         initialUrl={activeUrlForBrowser}
         crawler={crawler}
         onClose={() => setIsBrowserWindowOpen(false)}
+        onBackgroundToLibrary={() => {
+          setIsBrowserWindowOpen(false);
+          onBackgroundToLibrary?.();
+        }}
         onUrlChange={(nextUrl) => setUrlInput(nextUrl)}
       />
+
+      {/* YouTube Confirmation Modal: Video lẻ */}
+      <IosSheet
+        isOpen={ytModalMode === 'single'}
+        onClose={() => setYtModalMode(null)}
+        ariaLabel="Xác nhận quét Video lẻ"
+        variant="center-dialog"
+        zIndexClass="z-[105]"
+        panelClassName="w-full sm:max-w-sm rounded-[24px] text-stone-900 dark:text-stone-100 overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200/70 dark:border-white/10">
+          <h3 className="text-[13px] font-sans font-bold">Xác nhận quét Video lẻ</h3>
+          <button
+            type="button"
+            onClick={() => setYtModalMode(null)}
+            aria-label="Đóng"
+            className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="p-4 space-y-3 text-xs">
+          <div className="p-3 rounded-2xl bg-stone-50 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800 space-y-1">
+            <div className="font-semibold text-stone-900 dark:text-stone-100">
+              Quét toàn bộ phụ đề video &amp; đóng gói EPUB
+            </div>
+            <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
+              AI sẽ trích xuất văn bản phụ đề công khai, làm sạch dấu câu và tự lưu thành sách EPUB
+              trong <strong>Kho sách riêng</strong> và thư mục <strong>/YouTube_Notes</strong>.
+            </p>
+            <div className="pt-1 flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-400">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Thời gian ước tính: ~20 – 35 giây</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setYtModalMode(null)}
+              className="ios-elevated-oval py-2.5 rounded-full border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#1C1E24] font-semibold text-stone-700 dark:text-stone-200"
+            >
+              Hủy
+            </button>
+            <button
+              type="button"
+              data-testid="confirm-yt-single-scan-btn"
+              onClick={() => runYoutubeSingleScan()}
+              className="ios-elevated-oval py-2.5 rounded-full bg-amber-800 text-white font-semibold hover:bg-amber-900"
+            >
+              Bắt đầu quét
+            </button>
+          </div>
+        </div>
+      </IosSheet>
+
+      {/* YouTube Confirmation Modal: Link Playlist (3 options) */}
+      <IosSheet
+        isOpen={ytModalMode === 'playlist'}
+        onClose={() => setYtModalMode(null)}
+        ariaLabel="Tùy chọn quét Playlist YouTube"
+        variant="center-dialog"
+        zIndexClass="z-[105]"
+        panelClassName="w-full sm:max-w-md rounded-[24px] text-stone-900 dark:text-stone-100 overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200/70 dark:border-white/10">
+          <h3 className="text-[13px] font-sans font-bold">Tùy chọn quét Playlist YouTube</h3>
+          <button
+            type="button"
+            onClick={() => setYtModalMode(null)}
+            aria-label="Đóng"
+            className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="p-4 space-y-3 text-xs">
+          <div className="p-3 rounded-2xl bg-stone-50 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800 space-y-1">
+            {ytLoadingPreview ? (
+              <div className="flex items-center gap-2 text-stone-600 dark:text-stone-300">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-800" />
+                <span>Đang kiểm tra danh sách phát...</span>
+              </div>
+            ) : (
+              <>
+                <div className="font-semibold text-stone-900 dark:text-stone-100 truncate">
+                  {ytPlaylistPreview?.title || 'YouTube Playlist'}
+                </div>
+                <div className="text-[11px] text-stone-600 dark:text-stone-400">
+                  Phát hiện {ytPlaylistPreview?.videoCount || 1} video · Chỉ đọc phụ đề công khai,
+                  lưu vào <strong>/YouTube_Notes</strong>.
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Row 1: (1) Quét cả Playlist + (2) Quét đơn side-by-side */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              data-testid="confirm-yt-playlist-all-btn"
+              onClick={() => runYoutubePlaylistScan('all')}
+              className="ios-elevated-oval p-2.5 rounded-2xl bg-amber-800 text-white text-left space-y-0.5 hover:bg-amber-900"
+            >
+              <div className="text-[11.5px] font-semibold">Quét cả Playlist</div>
+              <div className="text-[10px] text-amber-100/90 tabular-nums">
+                Ước tính ~{Math.max(1, Math.ceil((ytPlaylistPreview?.estimatedSeconds || 90) / 60))}{' '}
+                phút
+              </div>
+            </button>
+
+            <button
+              type="button"
+              data-testid="confirm-yt-playlist-single-btn"
+              onClick={() => runYoutubePlaylistScan('single')}
+              className="ios-elevated-oval p-2.5 rounded-2xl bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-stone-700 text-stone-900 dark:text-stone-100 text-left space-y-0.5 hover:border-amber-700"
+            >
+              <div className="text-[11.5px] font-semibold">Quét đơn</div>
+              <div className="text-[10px] text-stone-500 dark:text-stone-400 tabular-nums">
+                Ước tính ~25 giây
+              </div>
+            </button>
+          </div>
+
+          {/* Row 2: (3) Chạy ẩn định kỳ 4 tiếng quét 1 lần */}
+          <button
+            type="button"
+            data-testid="confirm-yt-playlist-4h-btn"
+            onClick={() => runYoutubePlaylistScan('schedule4h')}
+            className="w-full ios-elevated-oval px-3.5 py-2.5 rounded-full bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11.5px] font-semibold inline-flex items-center justify-center gap-1.5"
+          >
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <span>Chạy ẩn định kỳ 4 tiếng quét 1 lần</span>
+          </button>
+        </div>
+      </IosSheet>
     </main>
   );
 };

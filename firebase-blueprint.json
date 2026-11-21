@@ -1,0 +1,51 @@
+{
+  "entities": {
+    "Book": {
+      "title": "CommunityBook",
+      "description": "Anonymous shared book metadata entry indexed for instant diacritic-insensitive search",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "title_normalized": { "type": "string" },
+        "author": { "type": "string" },
+        "genre": { "type": "string" },
+        "format": { "type": "string", "enum": ["EPUB", "PDF", "TXT"] },
+        "downloads": { "type": "number" },
+        "created_at": { "type": "number" },
+        "updated_at": { "type": "number" }
+      },
+      "required": ["id", "title", "title_normalized", "author", "genre", "format", "downloads", "created_at", "updated_at"]
+    },
+    "BookLink": {
+      "title": "CommunityBookLink",
+      "description": "Google Drive link linked to a community book with quality ranking and auto-hide telemetry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "book_id": { "type": "string" },
+        "drive_url": { "type": "string" },
+        "drive_file_id": { "type": "string" },
+        "format": { "type": "string", "enum": ["EPUB", "PDF", "TXT"] },
+        "success_count": { "type": "number" },
+        "good_votes": { "type": "number" },
+        "fail_count": { "type": "number" },
+        "consecutive_fails": { "type": "number" },
+        "score": { "type": "number" },
+        "is_active": { "type": "boolean" },
+        "created_at": { "type": "number" }
+      },
+      "required": ["id", "book_id", "drive_url", "drive_file_id", "format", "success_count", "good_votes", "fail_count", "consecutive_fails", "score", "is_active", "created_at"]
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": { "$ref": "#/entities/Book" },
+      "description": "Anonymous community shared book entries (zero PII)"
+    },
+    "/book_links/{linkId}": {
+      "schema": { "$ref": "#/entities/BookLink" },
+      "description": "Validated Google Drive file links with dynamic quality ranking"
+    }
+  }
+}

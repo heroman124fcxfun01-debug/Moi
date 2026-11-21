@@ -465,52 +465,49 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   return (
     <main className="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pt-3 pb-4 sm:pt-5 sm:pb-6 space-y-4">
-      {/* 1. TRÊN CÙNG: CHIA ĐÔI 2 Ô VUÔNG — GIỜ ĐỌC (3 DÒNG) & SÁCH MỚI ĐỌC */}
-      <section aria-label="Thời gian đọc và Sách mới đọc" className="grid grid-cols-2 gap-2.5 sm:gap-3.5">
-        {/* Ô VUÔNG 1: THỜI GIAN ĐỌC (3 DÒNG ĐƠN GIẢN) */}
+      {/* 1. TRÊN CÙNG: CHIA ĐÔI 2 Ô VUÔNG GỌN — GIỜ ĐỌC & SÁCH MỚI ĐỌC */}
+      <section aria-label="Thời gian đọc và Sách mới đọc" className="grid grid-cols-2 gap-2 sm:gap-3">
+        {/* Ô VUÔNG 1: THỜI GIAN ĐỌC */}
         <div
           data-testid="reading-time-square"
-          className="ios-floating-shadow rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] p-3 sm:p-4 flex flex-col justify-between min-h-[154px] sm:min-h-[168px] min-w-0"
+          className="ios-elevated-card rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] p-2.5 sm:p-3.5 flex flex-col justify-between min-h-[118px] sm:min-h-[132px] min-w-0"
         >
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-400">
+          <div className="flex items-center gap-1.5 text-[10.5px] font-sans font-semibold text-amber-800 dark:text-amber-400">
             <Clock className="w-3.5 h-3.5 shrink-0" />
             <span className="truncate">Thời gian đọc</span>
           </div>
 
-          <div className="space-y-2 mt-1.5 min-w-0">
-            {/* Dòng 1: Tổng thời gian đọc (100h / 1kh / 10kh / 10mh — ấn để xem chi tiết) */}
+          <div className="space-y-1 mt-1 min-w-0">
             <div className="min-w-0">
-              <div className="text-[10px] text-stone-500 dark:text-stone-400 leading-tight">
-                Tổng thời gian đọc
+              <div className="text-[9.5px] text-stone-500 dark:text-stone-400 leading-tight">
+                Tổng giờ đọc
               </div>
               <button
                 type="button"
                 data-testid="reading-total-toggle"
                 onClick={() => setShowExactReadingHours((prev) => !prev)}
                 title="Ấn để xem chi tiết giờ đọc chính xác"
-                className="mt-0.5 text-left inline-flex items-baseline gap-1.5 group focus:outline-none"
+                className="text-left inline-flex items-baseline gap-1 group focus:outline-none"
               >
-                <span className="text-lg sm:text-xl font-display font-bold text-stone-900 dark:text-stone-100 tabular-nums underline decoration-dotted decoration-amber-700/50 underline-offset-4 group-hover:text-amber-800 dark:group-hover:text-amber-300 transition-colors">
+                <span className="text-base sm:text-lg font-sans font-bold text-stone-900 dark:text-stone-100 tabular-nums underline decoration-dotted decoration-amber-700/50 underline-offset-4 group-hover:text-amber-800 dark:group-hover:text-amber-300 transition-colors">
                   {showExactReadingHours ? readingSummary.totalExact : readingSummary.totalCompact}
                 </span>
-                <span className="text-[9.5px] text-stone-400 shrink-0">
-                  {showExactReadingHours ? '(thu gọn)' : '(chi tiết)'}
+                <span className="text-[9px] text-stone-400 shrink-0">
+                  {showExactReadingHours ? '(gọn)' : '(xem)'}
                 </span>
               </button>
             </div>
 
-            {/* Dòng 2: Ngày / Tuần / Tháng / Tháng trước */}
             <div className="min-w-0">
-              <div className="text-[9.5px] text-stone-500 dark:text-stone-400 leading-tight truncate">
+              <div className="text-[9px] text-stone-500 dark:text-stone-400 leading-tight truncate">
                 Ngày / Tuần / Tháng / T.trước
               </div>
-              <div className="text-[11px] sm:text-xs font-semibold text-stone-800 dark:text-stone-200 tabular-nums leading-snug break-words">
+              <div className="text-[10.5px] sm:text-[11px] font-semibold text-stone-800 dark:text-stone-200 tabular-nums leading-snug break-words">
                 {readingSummary.todayLabel} / {readingSummary.weekLabel} / {readingSummary.thisMonthLabel} / {readingSummary.prevMonthLabel}
               </div>
             </div>
 
-            {/* Dòng 3: Trung bình 1 ngày (tính đến thời điểm hiện tại trong ngày) */}
-            <div className="pt-1 border-t border-stone-100 dark:border-stone-800/80 flex items-baseline justify-between gap-1 text-[10.5px] sm:text-[11px]">
+            <div className="pt-1 border-t border-stone-100 dark:border-stone-800/80 flex items-baseline justify-between gap-1 text-[10px]">
               <span className="text-stone-500 dark:text-stone-400 truncate">TB 1 ngày:</span>
               <span className="font-bold text-amber-800 dark:text-amber-400 tabular-nums shrink-0">
                 {readingSummary.dailyAverageLabel}
@@ -522,10 +519,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         {/* Ô VUÔNG 2: SÁCH MỚI ĐỌC */}
         <div
           data-testid="recent-books-list"
-          className="ios-floating-shadow rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] p-3 sm:p-4 flex flex-col justify-between min-h-[154px] sm:min-h-[168px] min-w-0 relative"
+          className="ios-elevated-card rounded-2xl border border-stone-200/90 dark:border-stone-800 bg-white dark:bg-[#16181C] p-2.5 sm:p-3.5 flex flex-col justify-between min-h-[118px] sm:min-h-[132px] min-w-0 relative"
         >
           <div className="flex items-center justify-between gap-1 min-w-0">
-            <h1 className="text-[11px] font-semibold text-stone-800 dark:text-stone-200 truncate">
+            <h1 className="text-[10.5px] font-sans font-semibold text-stone-800 dark:text-stone-200 truncate">
               Sách mới đọc
             </h1>
             {featuredBook && (
@@ -533,7 +530,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 type="button"
                 onClick={(e) => openBookOptionsMenu(featuredBook, e)}
                 aria-label={`Tùy chọn cho ${featuredBook.title}`}
-                className="p-1 -mr-1 rounded-full text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 shrink-0"
+                className="p-0.5 -mr-1 rounded-full text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 shrink-0"
               >
                 <MoreVertical className="w-3.5 h-3.5" />
               </button>
@@ -544,10 +541,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <button
               type="button"
               onClick={() => onOpenBook(featuredBook.id)}
-              className="mt-1.5 flex-1 flex flex-col justify-between text-left focus:outline-none min-w-0 group"
+              className="mt-1 flex-1 flex flex-col justify-between text-left focus:outline-none min-w-0 group"
             >
               <div className="flex items-start gap-2 min-w-0">
-                <div className="w-11 h-16 sm:w-12 sm:h-16 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0 shadow-xs">
+                <div className="w-9 h-13 sm:w-10 sm:h-14 rounded-lg overflow-hidden bg-stone-200 dark:bg-stone-800 shrink-0 shadow-xs">
                   {featuredBook.coverUrl ? (
                     <img
                       src={featuredBook.coverUrl}
@@ -556,16 +553,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[9px] font-display font-bold p-1 text-center">
+                    <div className="w-full h-full flex items-center justify-center text-[9px] font-sans font-bold p-1 text-center">
                       {featuredBook.title.slice(0, 2)}
                     </div>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11.5px] sm:text-xs font-semibold text-stone-900 dark:text-stone-100 line-clamp-2 leading-snug group-hover:text-amber-800 dark:group-hover:text-amber-300 transition-colors">
+                  <div className="text-[11px] sm:text-xs font-sans font-semibold text-stone-900 dark:text-stone-100 line-clamp-2 leading-snug group-hover:text-amber-800 dark:group-hover:text-amber-300 transition-colors">
                     {featuredBook.title}
                   </div>
-                  <div className="text-[10px] text-stone-500 truncate mt-0.5">
+                  <div className="text-[9.5px] text-stone-500 truncate mt-0.5">
                     {featuredBook.author}
                   </div>
                 </div>
@@ -607,14 +604,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       {/* 2. TIẾP THEO: KHO SÁCH RIÊNG & BỘ SƯU TẬP */}
       <section aria-label="Thư viện riêng và Bộ sưu tập" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
-          <h2 className="text-[13.5px] sm:text-[15px] font-display font-semibold text-stone-900 dark:text-stone-100 whitespace-nowrap">
+          <h2 className="text-[13.5px] sm:text-[15px] font-sans font-bold text-stone-900 dark:text-stone-100 whitespace-nowrap">
             Kho sách riêng
           </h2>
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
+              data-testid="open-community-anonymous-btn"
               onClick={onOpenCongDongSach}
-              className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
+              className="ios-elevated-oval ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#1C1E24] border border-stone-200/90 dark:border-zinc-700/60 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
             >
               <Shield className="w-3 h-3 shrink-0 text-amber-800 dark:text-amber-400" />
               <span>Ẩn danh</span>
@@ -829,7 +827,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     >
                       <span className="flex items-center gap-2 min-w-0">
                         <FolderOpen className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                        <span className="text-[13px] font-display font-semibold text-stone-900 dark:text-stone-100 truncate">
+                        <span className="text-[13px] font-sans font-semibold text-stone-900 dark:text-stone-100 truncate">
                           {activeCollection.name}
                         </span>
                         <span className="text-[10.5px] text-stone-500 tabular-nums shrink-0">
@@ -890,7 +888,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                       onOpenMenu={(book, e) => openBookOptionsMenu(book, e, activeCollection.id)}
                     />
                   ) : (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 sm:gap-4">
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 sm:gap-3.5">
                       {activeCollection.resolvedBooks.map((book) =>
                         renderCompactBookCard(book, activeCollection.id)
                       )}
@@ -918,7 +916,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                           <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
                         </div>
                         <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
-                          <h3 className="text-[13.5px] font-display font-semibold">
+                          <h3 className="text-[13.5px] font-sans font-semibold">
                             Bộ sưu tập ({sortedCollections.length})
                           </h3>
                           <button
@@ -1026,7 +1024,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         ) : (
           <div
             data-testid="book-grid"
-            className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 sm:gap-4"
+            className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2 sm:gap-3.5"
           >
             {filteredAndSortedBooks.map((book) => renderCompactBookCard(book))}
           </div>

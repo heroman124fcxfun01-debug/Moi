@@ -795,3 +795,41 @@ html[data-app-hidden='true'] *::after {
     0 10px 28px rgba(0, 0, 0, 0.38),
     0 2px 8px rgba(0, 0, 0, 0.24);
 }
+
+/* iOS Elevated UI System: Crisp White Surfaces, 1px Borders, Soft Elevation Shadows */
+.ios-elevated-card {
+  box-shadow:
+    0 4px 14px rgba(24, 20, 16, 0.055),
+    0 1px 3px rgba(24, 20, 16, 0.04);
+}
+
+.dark .ios-elevated-card {
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.36),
+    0 1px 4px rgba(0, 0, 0, 0.24);
+}
+
+.ios-elevated-oval {
+  box-shadow:
+    0 2px 8px rgba(24, 20, 16, 0.06),
+    0 1px 2px rgba(24, 20, 16, 0.04);
+}
+
+.dark .ios-elevated-oval {
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.22);
+}
+
+.ios-elevated-square {
+  box-shadow:
+    0 3px 10px rgba(24, 20, 16, 0.05),
+    0 1px 2px rgba(24, 20, 16, 0.035);
+}
+
+.dark .ios-elevated-square {
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.32),
+    0 1px 3px rgba(0, 0, 0, 0.2);
+}
+

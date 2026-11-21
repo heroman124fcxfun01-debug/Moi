@@ -62,7 +62,7 @@ export const AppInfoModal: React.FC<AppInfoModalProps> = memo(({ isOpen, onClose
               className="w-9 h-9 rounded-xl object-cover shadow-sm border border-white/70 dark:border-white/15 shrink-0"
             />
             <div className="min-w-0">
-              <h2 className="font-display text-[15px] font-bold tracking-tight leading-tight truncate">
+              <h2 className="font-sans text-[15px] font-bold tracking-tight leading-tight truncate">
                 BOOKHAD
               </h2>
               <p className="text-[10.5px] text-stone-500 dark:text-stone-400 truncate">
@@ -84,15 +84,43 @@ export const AppInfoModal: React.FC<AppInfoModalProps> = memo(({ isOpen, onClose
         <div className="p-4 space-y-2.5 overflow-y-auto overscroll-contain text-xs">
           {/* Privacy Highlights */}
           <div className="p-3 rounded-2xl bg-white/55 dark:bg-white/5 border border-stone-300/45 dark:border-white/10 space-y-1.5">
-            <div className="flex items-center gap-1.5 font-semibold text-stone-900 dark:text-stone-100">
-              <ShieldCheck className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-              <span>Quyền riêng tư của bạn</span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 font-semibold text-stone-900 dark:text-stone-100">
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                <span>Quyền riêng tư của bạn</span>
+              </div>
+              <a
+                href="/privacy.html"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] font-semibold text-amber-800 dark:text-amber-300 underline underline-offset-2 shrink-0"
+              >
+                Chính sách riêng tư
+              </a>
             </div>
             <ul className="space-y-1 text-[11px] text-stone-600 dark:text-stone-300 leading-snug">
               <li>• Toàn bộ tủ sách, tiến độ đọc và ghi chú được lưu cục bộ trên máy.</li>
-              <li>• Chỉ đồng bộ Google Drive hoặc gọi AI khi bạn chủ động thao tác.</li>
-              <li>• Không theo dõi quảng cáo, không chia sẻ dữ liệu cá nhân ra bên ngoài.</li>
+              <li>• Chỉ đồng bộ Google Drive (phạm vi drive.file) khi bạn chủ động kết nối.</li>
+              <li>• Không thu thập dữ liệu cá nhân, không tài khoản bắt buộc, không theo dõi quảng cáo.</li>
             </ul>
+          </div>
+
+          {/* Tuyên bố miễn trừ trách nhiệm (Store Compliance) */}
+          <div
+            data-testid="app-disclaimer-section"
+            className="p-3 rounded-2xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/50 space-y-1"
+          >
+            <div className="font-semibold text-[11.5px] text-amber-900 dark:text-amber-300">
+              Tuyên bố miễn trừ trách nhiệm
+            </div>
+            <p className="text-[10.5px] text-stone-700 dark:text-stone-300 leading-relaxed">
+              BOOKHAD là ứng dụng hỗ trợ đọc tài liệu, sách điện tử và ghi chú cá nhân. Ứng dụng
+              không lưu trữ, cung cấp hay phân phối nội dung có bản quyền trên máy chủ riêng. Người
+              dùng tự chịu trách nhiệm pháp lý đối với các tệp EPUB, PDF, TXT và đường dẫn do mình
+              tự nhập hoặc chia sẻ. Tính năng quét YouTube chỉ trích xuất văn bản phụ đề công khai
+              để tạo tài liệu học tập/ghi chú cá nhân, hoàn toàn không phát video nền, không ghi âm
+              và không tải tệp video/âm thanh.
+            </p>
           </div>
 
           {/* Version & Optimization */}
@@ -118,7 +146,7 @@ export const AppInfoModal: React.FC<AppInfoModalProps> = memo(({ isOpen, onClose
             >
               <span className="flex items-center gap-2">
                 <FileText className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-                <span>Điều khoản &amp; Chính sách riêng tư</span>
+                <span>Điều khoản sử dụng</span>
               </span>
               <ChevronDown
                 className={`w-3.5 h-3.5 text-stone-500 transition-transform duration-200 ${
@@ -129,18 +157,17 @@ export const AppInfoModal: React.FC<AppInfoModalProps> = memo(({ isOpen, onClose
             {expandedSection === 'terms' && (
               <div className="px-3 pb-3 pt-1 border-t border-stone-300/35 dark:border-white/10 text-[11px] text-stone-600 dark:text-stone-300 space-y-1.5 leading-relaxed">
                 <p>
-                  <strong>1. Quyền sở hữu nội dung:</strong> BOOKHAD là trình đọc sách và
-                  studio sách nói cá nhân. Bạn chịu trách nhiệm về bản quyền đối với các tệp
-                  EPUB, PDF, ảnh/video sách và đường dẫn web mà bạn tự nhập vào tủ sách.
+                  <strong>1. Quyền sở hữu nội dung:</strong> Bạn hoàn toàn chịu trách nhiệm về bản
+                  quyền đối với tệp và liên kết bạn tự nhập hoặc chia sẻ ẩn danh.
                 </p>
                 <p>
-                  <strong>2. Dữ liệu &amp; Quyền truy cập:</strong> Ứng dụng chỉ yêu cầu quyền
-                  truy cập bộ nhớ/camera khi bạn chọn nhập sách hoặc quét trang sách, và quyền
-                  Google Drive khi bạn chủ động đăng nhập sao lưu.
+                  <strong>2. Quyền Google Drive tối thiểu:</strong> Ứng dụng chỉ xin quyền
+                  <code className="mx-1 font-mono text-[10px]">drive.file</code> cho đúng các tệp
+                  do chính ứng dụng tạo ra để sao lưu thư viện của bạn.
                 </p>
                 <p>
-                  <strong>3. Lưu trữ ngoại tuyến:</strong> Bạn có thể sao lưu hoặc xóa hoàn
-                  toàn dữ liệu bất cứ lúc nào ngay trong phần Thư viện và Cài đặt.
+                  <strong>3. Lưu trữ ngoại tuyến:</strong> Bạn có thể xuất bản sao lưu hoặc xóa
+                  toàn bộ dữ liệu bất cứ lúc nào ngay trên thiết bị.
                 </p>
               </div>
             )}
@@ -160,7 +187,7 @@ export const AppInfoModal: React.FC<AppInfoModalProps> = memo(({ isOpen, onClose
             <button
               type="button"
               onClick={handleCopySupport}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl border border-stone-300/70 dark:border-white/15 bg-white/70 dark:bg-white/10 text-[10.5px] font-medium active:scale-95 transition-transform shrink-0"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-stone-300/70 dark:border-white/15 bg-white/70 dark:bg-white/10 text-[10.5px] font-medium active:scale-95 transition-transform shrink-0"
             >
               {copiedEmail ? (
                 <>
@@ -176,24 +203,24 @@ export const AppInfoModal: React.FC<AppInfoModalProps> = memo(({ isOpen, onClose
             </button>
           </div>
 
-          {/* Website */}
+          {/* Website & Privacy Policy */}
           <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-2xl bg-white/55 dark:bg-white/5 border border-stone-300/45 dark:border-white/10">
             <div className="flex items-center gap-2 min-w-0">
               <Globe className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
               <div className="min-w-0">
-                <div className="font-medium leading-tight">Website</div>
+                <div className="font-medium leading-tight">Chính sách quyền riêng tư</div>
                 <div className="text-[10.5px] text-stone-500 dark:text-stone-400 truncate">
-                  {WEBSITE_URL}
+                  {WEBSITE_URL}/privacy.html
                 </div>
               </div>
             </div>
             <a
-              href={WEBSITE_URL}
+              href="/privacy.html"
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center px-2.5 py-1 rounded-xl bg-amber-800 text-white text-[10.5px] font-semibold hover:bg-amber-900 active:scale-95 transition-transform shrink-0"
+              className="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-800 text-white text-[10.5px] font-semibold hover:bg-amber-900 active:scale-95 transition-transform shrink-0"
             >
-              Mở web
+              Xem chi tiết
             </a>
           </div>
         </div>

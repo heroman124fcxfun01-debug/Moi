@@ -370,13 +370,17 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
         }}
       />
 
-      {/* 20 Built-in Ambient & Chill Presets */}
+      {/* 20 Built-in Ambient & Chill Presets inside a Bordered Scrollable Box (2/3 height) */}
       {category !== 'custom' && (
         <div className="space-y-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
-            Âm thanh có sẵn ({filteredBuiltin.length})
+          <div className="text-[11px] font-sans font-semibold uppercase tracking-wider text-stone-500">
+            Tất cả nhạc nền ({filteredBuiltin.length})
           </div>
-          <div className={compact ? 'space-y-2' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5'}>
+          <div
+            data-testid="ambient-sounds-scroll-box"
+            className="max-h-[245px] overflow-y-auto p-2 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950/30"
+          >
+            <div className={compact ? 'space-y-2' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2'}>
             {filteredBuiltin.map((sound) => {
               const trackVol = playbackSnap.activeVolumes[sound.id];
               const isPlaying = typeof trackVol === 'number';
@@ -450,6 +454,7 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
                 </div>
               );
             })}
+            </div>
           </div>
         </div>
       )}

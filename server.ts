@@ -1553,6 +1553,273 @@ ${formatted}`,
     }
   });
 
+  // Store-Compliant YouTube Transcript-Only Extractor (NEVER downloads video/audio)
+  function extractYoutubeVideoId(rawUrl: string): string | null {
+    const m =
+      rawUrl.match(/(?:youtube\.com\/watch\?(?:[^#\s]*&)?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/) ||
+      rawUrl.match(/^([a-zA-Z0-9_-]{11})$/);
+    return m ? m[1] : null;
+  }
+
+  function extractYoutubePlaylistId(rawUrl: string): string | null {
+    const m = rawUrl.match(/[?&]list=([a-zA-Z0-9_-]{10,120})/);
+    return m ? m[1] : null;
+  }
+
+  function decodeXmlEntities(str: string): string {
+    return str
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  app.post('/api/youtube/transcript', async (req, res) => {
+    try {
+      const { url = '', cleanWithAi = true } = req.body as {
+        url?: string;
+        cleanWithAi?: boolean;
+      };
+      const videoId = extractYoutubeVideoId(String(url).trim());
+      if (!videoId) {
+        res.status(400).json({ error: 'Link YouTube không hợp lệ.' });
+        return;
+      }
+
+      const watchRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=vi`, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      });
+      if (!watchRes.ok) {
+        res.status(502).json({ error: 'Không thể truy cập trang YouTube công khai.' });
+        return;
+      }
+      const html = await watchRes.text();
+
+      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+      const rawTitle = titleMatch
+        ? decodeXmlEntities(titleMatch[1]).replace(/\s*-\s*YouTube$/i, '').trim()
+        : `YouTube ${videoId}`;
+
+      const authorMatch = html.match(/"ownerChannelName":"([^"]+)"/);
+      const author = authorMatch ? authorMatch[1] : 'YouTube';
+      const durationMatch = html.match(/"lengthSeconds":"(\d+)"/);
+      const durationSec = durationMatch ? Number(durationMatch[1]) : 600;
+
+      // Extract public captionTracks strictly from ytInitialPlayerResponse JSON
+      const captionTracksMatch = html.match(/"captionTracks":(\[[\s\S]*?\])/);
+      if (!captionTracksMatch) {
+        res.status(404).json({
+          error: 'Video này chưa có phụ đề (CC/Transcript) công khai trên YouTube.',
+          code: 'NO_CAPTIONS',
+          title: rawTitle,
+          author,
+          videoId,
+          durationSec,
+        });
+        return;
+      }
+
+      let tracks: Array<{ baseUrl: string; languageCode?: string; kind?: string }> = [];
+      try {
+        tracks = JSON.parse(captionTracksMatch[1]);
+      } catch {
+        tracks = [];
+      }
+
+      if (!Array.isArray(tracks) || tracks.length === 0) {
+        res.status(404).json({
+          error: 'Video này chưa có phụ đề (CC/Transcript) công khai trên YouTube.',
+          code: 'NO_CAPTIONS',
+          title: rawTitle,
+          author,
+          videoId,
+          durationSec,
+        });
+        return;
+      }
+
+      // Prefer Vietnamese captions, then English, then first available public caption track
+      const preferred =
+        tracks.find((t) => (t.languageCode || '').startsWith('vi') && t.kind !== 'asr') ||
+        tracks.find((t) => (t.languageCode || '').startsWith('vi')) ||
+        tracks.find((t) => (t.languageCode || '').startsWith('en')) ||
+        tracks[0];
+
+      const captionUrl = String(preferred.baseUrl || '').replace(/\\u0026/g, '&');
+      const capRes = await fetch(captionUrl);
+      if (!capRes.ok) {
+        res.status(502).json({ error: 'Không tải được dữ liệu phụ đề công khai.' });
+        return;
+      }
+      const capXml = await capRes.text();
+
+      // Strip all timestamps & XML tags, collect pure text lines
+      const rawLines: string[] = [];
+      const textTagRegex = /<text[^>]*>([\s\S]*?)<\/text>/gi;
+      let m: RegExpExecArray | null;
+      while ((m = textTagRegex.exec(capXml)) !== null) {
+        const clean = decodeXmlEntities(m[1]);
+        if (clean) rawLines.push(clean);
+      }
+
+      if (rawLines.length === 0) {
+        res.status(404).json({
+          error: 'Phụ đề của video trống hoặc không có văn bản đọc được.',
+          code: 'NO_CAPTIONS',
+        });
+        return;
+      }
+
+      // Merge into clean natural paragraphs (remove timestamp breaks)
+      const joinedRaw = rawLines.join(' ').replace(/\s+/g, ' ').trim();
+      let paragraphs: string[] = [];
+
+      if (cleanWithAi && process.env.GEMINI_API_KEY) {
+        try {
+          const ai = getAiClient();
+          const sampleChunk = joinedRaw.slice(0, 14000);
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: `Bạn là AI Biên tập sách tiếng Việt cho BOOKHAD. Dưới đây là văn bản phụ đề (transcript) của video YouTube "${rawTitle}".
+Hãy:
+1. Gộp câu liền mạch, thêm dấu chấm câu chuẩn tiếng Việt, sửa lỗi chính tả nhận dạng giọng nói, xóa từ đệm thừa (à, ừm, kiểu như, [âm nhạc], [vỗ tay]).
+2. Chia thành các đoạn văn đọc sách mạch lạc, tự nhiên, không thay đổi nội dung cốt lõi.
+Chỉ trả về JSON mảng paragraphs.
+
+Transcript thô:
+${sampleChunk}`,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  paragraphs: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                },
+                required: ['paragraphs'],
+              },
+            },
+          });
+          const parsed = JSON.parse(aiRes.text || '{}') as { paragraphs?: string[] };
+          if (Array.isArray(parsed.paragraphs) && parsed.paragraphs.length > 0) {
+            paragraphs = parsed.paragraphs.map((p) => String(p).trim()).filter(Boolean);
+          }
+        } catch {
+          // fallback cleanly to deterministic paragraph grouping
+        }
+      }
+
+      if (paragraphs.length === 0) {
+        const sentences = joinedRaw.split(/(?<=[.!?])\s+|\s{2,}/).filter(Boolean);
+        let buf = '';
+        for (const s of sentences) {
+          if (buf.length + s.length > 340 && buf.length > 80) {
+            paragraphs.push(buf.trim());
+            buf = s;
+          } else {
+            buf = buf ? `${buf} ${s}` : s;
+          }
+        }
+        if (buf.trim()) paragraphs.push(buf.trim());
+      }
+
+      res.json({
+        videoId,
+        title: rawTitle,
+        author,
+        durationSec,
+        estimatedScanSec: Math.max(4, Math.min(45, Math.round(durationSec / 90) + 4)),
+        languageCode: preferred.languageCode || 'vi',
+        paragraphs,
+        wordCount: paragraphs.join(' ').split(/\s+/).filter(Boolean).length,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Lỗi quét phụ đề YouTube.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  app.post('/api/youtube/playlist', async (req, res) => {
+    try {
+      const { url = '' } = req.body as { url?: string };
+      const playlistId = extractYoutubePlaylistId(String(url).trim());
+      if (!playlistId) {
+        res.status(400).json({ error: 'Link Playlist YouTube không hợp lệ (cần tham số list=...).' });
+        return;
+      }
+
+      const plRes = await fetch(`https://www.youtube.com/playlist?list=${playlistId}&hl=vi`, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        },
+      });
+      if (!plRes.ok) {
+        res.status(502).json({ error: 'Không tải được danh sách phát YouTube.' });
+        return;
+      }
+      const html = await plRes.text();
+      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+      const playlistTitle = titleMatch
+        ? decodeXmlEntities(titleMatch[1]).replace(/\s*-\s*YouTube$/i, '').trim()
+        : `Playlist ${playlistId.slice(0, 8)}`;
+
+      const items: Array<{ videoId: string; title: string; url: string }> = [];
+      const seen = new Set<string>();
+      const itemRegex = /"playlistVideoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"[\s\S]*?"title":\{"runs":\[\{"text":"([^"]+)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = itemRegex.exec(html)) !== null && items.length < 40) {
+        const vid = m[1];
+        if (seen.has(vid)) continue;
+        seen.add(vid);
+        items.push({
+          videoId: vid,
+          title: m[2].replace(/\\"/g, '"'),
+          url: `https://www.youtube.com/watch?v=${vid}`,
+        });
+      }
+
+      if (items.length === 0) {
+        // Fallback extract videoIds in order
+        const fallbackRegex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+        let fm: RegExpExecArray | null;
+        while ((fm = fallbackRegex.exec(html)) !== null && items.length < 25) {
+          if (seen.has(fm[1])) continue;
+          seen.add(fm[1]);
+          items.push({
+            videoId: fm[1],
+            title: `Tập ${items.length + 1}`,
+            url: `https://www.youtube.com/watch?v=${fm[1]}`,
+          });
+        }
+      }
+
+      res.json({
+        playlistId,
+        title: playlistTitle,
+        totalVideos: items.length,
+        estimatedFullSec: Math.max(8, items.length * 6),
+        estimatedSingleSec: 6,
+        videos: items,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Lỗi đọc danh sách phát YouTube.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     // Serve a clean WebSocket-free @vite/client stub because HMR/WS is disabled behind the reverse proxy
     app.get('/@vite/client', (_req, res) => {

@@ -1930,7 +1930,15 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       ? computeCornerCurlGeometry(liveTurn.peel)
       : null;
   const liveSlideState =
-    isPaginatedMode && liveTurn?.mode === 'slide' ? liveTurn : null;
+    isPaginatedMode && liveTurn?.mode === 'slide'
+      ? {
+          ...liveTurn,
+          underlayScale: Number((0.95 + 0.05 * Math.min(1, Math.max(0, liveTurn.progress))).toFixed(4)),
+          underlayOpacity: Number((0.72 + 0.28 * Math.min(1, Math.max(0, liveTurn.progress))).toFixed(3)),
+          underlayBrightness: Number((0.86 + 0.14 * Math.min(1, Math.max(0, liveTurn.progress))).toFixed(3)),
+          edgeShadowOpacity: Number((0.28 * (1 - Math.min(1, Math.max(0, liveTurn.progress)) * 0.6)).toFixed(3)),
+        }
+      : null;
 
   // Resolve adjacent Next / Prev page content for true two-layer curl & slide-fade reveal
   const adjacentNextPage = useMemo<{
@@ -2361,27 +2369,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         )}
 
       {/* Collapsible Corner Options Popover / Sheet (3 Stacked List Items + Dịch nhanh + Xuất EPUB) */}
-      {showToolsMenu &&
-        typeof document !== 'undefined' &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[70] ios-frosted-backdrop flex items-end sm:items-start sm:justify-end p-0 sm:pt-[60px] sm:pr-5"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setShowToolsMenu(false);
-            }}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label="Tùy chọn trình đọc sách"
-              className="ios-sheet-enter ios-frosted-surface w-full max-w-full sm:w-[348px] text-stone-900 dark:text-stone-100 rounded-t-[26px] sm:rounded-[24px] overflow-hidden max-h-[92vh] flex flex-col"
-            >
+      <IosSheet
+        isOpen={showToolsMenu}
+        onClose={() => setShowToolsMenu(false)}
+        variant="popover-top-right"
+        zIndexClass="z-[70]"
+        ariaLabel="Tùy chọn trình đọc sách"
+        panelClassName="ios-frosted-surface w-full max-w-full sm:w-[348px] text-stone-900 dark:text-stone-100 rounded-t-[26px] sm:rounded-[24px] overflow-hidden max-h-[92vh] flex flex-col"
+      >
               <div className="sm:hidden flex justify-center pt-2 shrink-0">
                 <div className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
               </div>
 
               <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
-                <h2 className="text-[13px] font-display font-semibold truncate">
+                <h2 className="text-[13px] font-sans font-semibold truncate">
                   Tùy chọn
                 </h2>
                 <button
@@ -2547,10 +2548,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   </button>
                 </div>
               </div>
-            </div>
-          </div>,
-          document.body
-        )}
+      </IosSheet>
 
       {/* Main Content + Docked Side Drawers */}
       <div className={`flex-1 flex relative min-h-0 ${isPaginatedMode ? 'overflow-hidden' : 'items-start'}`}>
@@ -2574,217 +2572,352 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             data-testid="reader-page-box"
             className={
               isPaginatedMode
-                ? 'flex-1 min-h-0 w-full px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden'
+                ? 'flex-1 min-h-0 w-full relative overflow-hidden'
                 : 'w-full'
             }
           >
-            <article
-              ref={articleRef}
-              data-testid="reader-article"
-              key={
-                isPaginatedMode
-                  ? `${chapterIndex}-${safePageIndex}-${turnTick}`
-                  : chapterIndex
-              }
-              className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} ${
-                liveCurlTransform ? '' : 'transition-all'
-              }`}
-              style={{
-                fontFamily: settings.fontFamily,
-                fontSize: `${settings.fontSize}px`,
-                lineHeight: settings.lineHeight,
-                letterSpacing: `${settings.letterSpacing}em`,
-                fontWeight: settings.fontWeight,
-                textAlign: settings.textAlign,
-                ...(liveCurlTransform
-                  ? {
-                      transformOrigin:
-                        liveCurlTransform.direction === 'next' ? 'left center' : 'right center',
-                      transform: `perspective(1400px) translateX(${liveCurlTransform.translateXPx}px) rotateY(${liveCurlTransform.rotateYDeg}deg)`,
-                      boxShadow: `0 12px 32px rgba(28, 25, 23, ${liveCurlTransform.shadowAlpha})`,
-                      transition: 'none',
-                    }
-                  : {}),
-              }}
-            >
-              {translateError && (
-                <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs font-sans">
-                  {translateError}
-                </div>
-              )}
-
-              {translateStatusMsg && !isTranslating && !isTranslatingFullEpub && (
-                <div className="mb-4 flex items-center justify-between gap-2 p-3 rounded-lg bg-emerald-600/10 border border-emerald-600/30 text-xs font-sans">
-                  <span className="flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
-                    <span>{translateStatusMsg}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setTranslateStatusMsg('')}
-                    aria-label="Ẩn thông báo dịch"
-                    className="text-xs opacity-60 hover:opacity-100"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-
-              {(isTranslating || isTranslatingFullEpub) && (
-                <div className="mb-4 p-3 rounded-lg bg-amber-700/10 border border-amber-700/25 text-xs font-sans space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                      <span>
-                        {isTranslatingFullEpub && fullEpubProgress
-                          ? fullEpubProgress.message
-                          : `AI đang dịch nhanh sang ${getLanguagePackDefinition(settings.targetLang).label}...`}
-                      </span>
-                    </span>
-                    {isTranslatingFullEpub && (
-                      <button
-                        type="button"
-                        onClick={() => fullTranslateAbortRef.current?.abort()}
-                        className="text-[11px] font-semibold text-red-600 underline shrink-0"
-                      >
-                        Hủy
-                      </button>
-                    )}
-                  </div>
-                  {isTranslatingFullEpub && fullEpubProgress && (
-                    <div className="h-1.5 w-full rounded-full bg-amber-700/20 overflow-hidden">
-                      <div
-                        className="h-full bg-amber-700 transition-all duration-300"
-                        style={{ width: `${fullEpubProgress.percent}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Compact 1/2-size Chapter Header (shown on Page 1 in paginated mode, or top of scroll mode) */}
-              {(!isPaginatedMode || activeScreenPage.hasChapterHeader) && (
-                <header
-                  data-testid="reader-chapter-header"
-                  className={isPaginatedMode ? 'mb-2 pb-1.5 border-b' : 'mb-4 pb-3 border-b'}
-                  style={{ borderColor: activeTheme.border }}
-                >
-                  <p className="text-[8.5px] sm:text-[9.5px] uppercase tracking-wider opacity-60 font-sans mb-0.5 tabular-nums truncate">
-                    {book.title} · Ch.{chapterIndex + 1}/{book.chapters.length}
-                  </p>
-                  <h1
-                    data-testid="reader-chapter-title"
-                    className="text-[11px] sm:text-[13px] font-display font-semibold leading-tight text-left truncate"
-                  >
-                    {currentChapter?.title}
-                  </h1>
-                </header>
-              )}
-
-              {/* Paragraphs — clean reading view; long-press (ấn giữ) reveals Nghe từ đây / Đánh dấu */}
+            {/* Underlay Layer: Next/Prev page revealed cleanly beneath curled corner or sliding page with Depth Parallax */}
+            {isPaginatedMode && underlayTarget && (
               <div
-                className={
-                  isPaginatedMode && settings.columnsInPaginated === 2
-                    ? 'md:columns-2 md:gap-10'
-                    : ''
-                }
+                aria-hidden="true"
+                data-testid="reader-underlay-page"
+                className="absolute inset-0 px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden pointer-events-none"
+                style={{
+                  backgroundColor: activeTheme.bg,
+                  color: activeTheme.text,
+                  ...vintageTexture,
+                  transform: liveSlideState
+                    ? `scale(${liveSlideState.underlayScale})`
+                    : undefined,
+                  opacity: liveSlideState ? liveSlideState.underlayOpacity : 1,
+                  filter: liveSlideState
+                    ? `brightness(${liveSlideState.underlayBrightness})`
+                    : undefined,
+                  transition: !liveTurn?.isAnimating ? 'none' : 'transform 220ms cubic-bezier(0.22,1,0.36,1), opacity 220ms ease, filter 220ms ease',
+                }}
               >
-                {visibleChunks.map((chunk, idx) => {
-                  const highlight = book.highlights.find(
-                    (h) => h.chapterId === currentChapter?.id && h.paragraphIndex === chunk.paragraphIndex
-                  );
-                  const isSpoken = spokenParaIndex === chunk.paragraphIndex;
-                  const chunkStart = chunk.charOffset ?? 0;
-                  const chunkEnd = chunkStart + chunk.original.length;
-                  const isChunkSpoken =
-                    isSpoken &&
-                    (!isPaginatedMode ||
-                      (spokenCharOffset >= Math.max(0, chunkStart - 1) &&
-                        spokenCharOffset <= chunkEnd + 1));
-                  const localCharOffset = Math.max(0, spokenCharOffset - chunkStart);
-                  const isLongPressed = activeParaAction?.paragraphIndex === chunk.paragraphIndex;
-                  const useDropCap =
-                    settings.dropCap &&
-                    chunk.paragraphIndex === 0 &&
-                    chunk.isFirstOfParagraph &&
-                    idx === 0;
+                {renderStaticPageContent(underlayTarget)}
+              </div>
+            )}
 
-                  return (
-                    <div
-                      key={`${chunk.paragraphIndex}-${idx}`}
-                      ref={(el) => {
-                        if (el && chunk.isFirstOfParagraph) {
-                          paraRefs.current.set(chunk.paragraphIndex, el);
-                        } else if (!el) {
-                          paraRefs.current.delete(chunk.paragraphIndex);
-                        }
-                      }}
-                      style={{ marginBottom: `${settings.paragraphSpacing}px` }}
-                      onPointerDown={(e) =>
-                        startParagraphLongPress(chunk.paragraphIndex, e.clientX, e.clientY)
-                      }
-                      onPointerMove={(e) => handleParagraphPointerMove(e.clientX, e.clientY)}
-                      onPointerUp={clearLongPressTimer}
-                      onPointerCancel={clearLongPressTimer}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        syncParagraphPosition(chunk.paragraphIndex, chunk.charOffset ?? 0, true);
-                        setActiveParaAction({ paragraphIndex: chunk.paragraphIndex });
-                      }}
-                      className={`relative rounded-lg px-1.5 py-0.5 transition-colors select-none ${
-                        isLongPressed ? 'ring-1 ring-amber-700/60 bg-amber-500/10' : ''
-                      } ${highlight ? HIGHLIGHT_CLASSES[highlight.color] : ''}`}
+            {/* Foreground / Active Reading Page Layer */}
+            <div
+              className={
+                isPaginatedMode
+                  ? 'relative z-10 h-full w-full px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden'
+                  : 'w-full'
+              }
+              style={
+                isPaginatedMode
+                  ? {
+                      backgroundColor: activeTheme.bg,
+                      color: activeTheme.text,
+                      ...vintageTexture,
+                      ...(liveCurlGeom && liveCurlGeom.peel > 0.002
+                        ? {
+                            clipPath: liveCurlGeom.frontClipPath,
+                            WebkitClipPath: liveCurlGeom.frontClipPath,
+                          }
+                        : {}),
+                      ...(liveSlideState
+                        ? {
+                            transform: `translate3d(${liveSlideState.translateXPx}px, 0, 0)`,
+                            opacity: liveSlideState.opacity,
+                            boxShadow:
+                              liveSlideState.direction === 'next'
+                                ? `12px 0 28px rgba(0, 0, 0, ${liveSlideState.edgeShadowOpacity})`
+                                : `-12px 0 28px rgba(0, 0, 0, ${liveSlideState.edgeShadowOpacity})`,
+                            transition:
+                              !liveTurn?.isAnimating
+                                ? 'none'
+                                : 'transform 220ms cubic-bezier(0.22,1,0.36,1), opacity 220ms ease',
+                          }
+                        : {}),
+                    }
+                  : undefined
+              }
+            >
+              <article
+                ref={articleRef}
+                data-testid="reader-article"
+                key={
+                  isPaginatedMode
+                    ? `${chapterIndex}-${safePageIndex}-${turnTick}`
+                    : chapterIndex
+                }
+                className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} ${
+                  liveTurn ? '' : 'transition-all'
+                }`}
+                style={{
+                  fontFamily: settings.fontFamily,
+                  fontSize: `${settings.fontSize}px`,
+                  lineHeight: settings.lineHeight,
+                  letterSpacing: `${settings.letterSpacing}em`,
+                  fontWeight: settings.fontWeight,
+                  textAlign: settings.textAlign,
+                }}
+              >
+                {translateError && (
+                  <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs font-sans">
+                    {translateError}
+                  </div>
+                )}
+
+                {translateStatusMsg && !isTranslating && !isTranslatingFullEpub && (
+                  <div className="mb-4 flex items-center justify-between gap-2 p-3 rounded-lg bg-emerald-600/10 border border-emerald-600/30 text-xs font-sans">
+                    <span className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
+                      <span>{translateStatusMsg}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTranslateStatusMsg('')}
+                      aria-label="Ẩn thông báo dịch"
+                      className="text-xs opacity-60 hover:opacity-100"
                     >
-                      <p
-                        className={`${useDropCap ? 'editorial-dropcap' : ''} ${
-                          settings.firstLineIndent && chunk.isFirstOfParagraph && !useDropCap
-                            ? 'indent-7'
-                            : ''
-                        }`}
-                      >
-                        {renderIlluminatedText(chunk.original, isChunkSpoken, localCharOffset)}
-                      </p>
+                      ✕
+                    </button>
+                  </div>
+                )}
 
-                      {chunk.translated && (
-                        <p className="mt-2 pl-4 opacity-75 italic text-[0.92em]">
-                          {chunk.translated}
-                        </p>
+                {(isTranslating || isTranslatingFullEpub) && (
+                  <div className="mb-4 p-3 rounded-lg bg-amber-700/10 border border-amber-700/25 text-xs font-sans space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                        <span>
+                          {isTranslatingFullEpub && fullEpubProgress
+                            ? fullEpubProgress.message
+                            : `AI đang dịch nhanh sang ${getLanguagePackDefinition(settings.targetLang).label}...`}
+                        </span>
+                      </span>
+                      {isTranslatingFullEpub && (
+                        <button
+                          type="button"
+                          onClick={() => fullTranslateAbortRef.current?.abort()}
+                          className="text-[11px] font-semibold text-red-600 underline shrink-0"
+                        >
+                          Hủy
+                        </button>
                       )}
                     </div>
-                  );
-                })}
-              </div>
+                    {isTranslatingFullEpub && fullEpubProgress && (
+                      <div className="h-1.5 w-full rounded-full bg-amber-700/20 overflow-hidden">
+                        <div
+                          className="h-full bg-amber-700 transition-all duration-300"
+                          style={{ width: `${fullEpubProgress.percent}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
-              {/* Scroll-mode Chapter Footer */}
-              {!isPaginatedMode && (
-                <footer
-                  style={{ borderColor: activeTheme.border }}
-                  className="mt-8 pt-5 border-t flex items-center justify-between gap-4 font-sans text-xs"
+                {/* Compact 1/2-size Chapter Header */}
+                {(!isPaginatedMode || topLayerPage.hasChapterHeader) && (
+                  <header
+                    data-testid="reader-chapter-header"
+                    className={isPaginatedMode ? 'mb-2 pb-1.5 border-b' : 'mb-4 pb-3 border-b'}
+                    style={{ borderColor: activeTheme.border }}
+                  >
+                    <p className="text-[8.5px] sm:text-[9.5px] uppercase tracking-wider opacity-60 font-sans mb-0.5 tabular-nums truncate">
+                      {book.title} · Ch.{topLayerChapterNum}/{book.chapters.length}
+                    </p>
+                    <h1
+                      data-testid="reader-chapter-title"
+                      className="text-[11px] sm:text-[13px] font-sans font-semibold leading-tight text-left truncate"
+                    >
+                      {topLayerChapterTitle}
+                    </h1>
+                  </header>
+                )}
+
+                {/* Paragraphs — clean reading view; long-press reveals Nghe từ đây / Đánh dấu */}
+                <div
+                  className={
+                    isPaginatedMode && settings.columnsInPaginated === 2
+                      ? 'md:columns-2 md:gap-10'
+                      : ''
+                  }
                 >
-                  <button
-                    type="button"
-                    disabled={chapterIndex === 0}
-                    onClick={() => goToChapter(chapterIndex - 1)}
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-black/15 dark:border-white/15 disabled:opacity-40 min-h-[44px]"
+                  {topLayerChunks.map((chunk, idx) => {
+                    const highlight = book.highlights.find(
+                      (h) => h.chapterId === currentChapter?.id && h.paragraphIndex === chunk.paragraphIndex
+                    );
+                    const isSpoken = !isCurlPrevPeelingBack && spokenParaIndex === chunk.paragraphIndex;
+                    const chunkStart = chunk.charOffset ?? 0;
+                    const chunkEnd = chunkStart + chunk.original.length;
+                    const isChunkSpoken =
+                      isSpoken &&
+                      (!isPaginatedMode ||
+                        (spokenCharOffset >= Math.max(0, chunkStart - 1) &&
+                          spokenCharOffset <= chunkEnd + 1));
+                    const localCharOffset = Math.max(0, spokenCharOffset - chunkStart);
+                    const isLongPressed = activeParaAction?.paragraphIndex === chunk.paragraphIndex;
+                    const useDropCap =
+                      settings.dropCap &&
+                      chunk.paragraphIndex === 0 &&
+                      chunk.isFirstOfParagraph &&
+                      idx === 0;
+
+                    return (
+                      <div
+                        key={`${chunk.paragraphIndex}-${idx}`}
+                        ref={(el) => {
+                          if (el && chunk.isFirstOfParagraph && !isCurlPrevPeelingBack) {
+                            paraRefs.current.set(chunk.paragraphIndex, el);
+                          } else if (!el && !isCurlPrevPeelingBack) {
+                            paraRefs.current.delete(chunk.paragraphIndex);
+                          }
+                        }}
+                        style={{ marginBottom: `${settings.paragraphSpacing}px` }}
+                        onPointerDown={(e) =>
+                          startParagraphLongPress(chunk.paragraphIndex, e.clientX, e.clientY)
+                        }
+                        onPointerMove={(e) => handleParagraphPointerMove(e.clientX, e.clientY)}
+                        onPointerUp={clearLongPressTimer}
+                        onPointerCancel={clearLongPressTimer}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          syncParagraphPosition(chunk.paragraphIndex, chunk.charOffset ?? 0, true);
+                          setActiveParaAction({ paragraphIndex: chunk.paragraphIndex });
+                        }}
+                        className={`relative rounded-lg px-1.5 py-0.5 transition-colors select-none ${
+                          isLongPressed ? 'ring-1 ring-amber-700/60 bg-amber-500/10' : ''
+                        } ${highlight ? HIGHLIGHT_CLASSES[highlight.color] : ''}`}
+                      >
+                        <p
+                          className={`${useDropCap ? 'editorial-dropcap' : ''} ${
+                            settings.firstLineIndent && chunk.isFirstOfParagraph && !useDropCap
+                              ? 'indent-7'
+                              : ''
+                          }`}
+                        >
+                          {renderIlluminatedText(chunk.original, isChunkSpoken, localCharOffset)}
+                        </p>
+
+                        {chunk.translated && (
+                          <p className="mt-2 pl-4 opacity-75 italic text-[0.92em]">
+                            {chunk.translated}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Scroll-mode Chapter Footer */}
+                {!isPaginatedMode && (
+                  <footer
+                    style={{ borderColor: activeTheme.border }}
+                    className="mt-8 pt-5 border-t flex items-center justify-between gap-4 font-sans text-xs"
                   >
-                    <ChevronLeft className="w-4 h-4" />
-                    <span>Chương trước</span>
-                  </button>
-                  <span className="tabular-nums opacity-70">
-                    Chương {chapterIndex + 1} / {book.chapters.length}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={chapterIndex >= book.chapters.length - 1}
-                    onClick={() => goToChapter(chapterIndex + 1)}
-                    className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-black/15 dark:border-white/15 disabled:opacity-40 min-h-[44px]"
+                    <button
+                      type="button"
+                      disabled={chapterIndex === 0}
+                      onClick={() => goToChapter(chapterIndex - 1)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-black/15 dark:border-white/15 disabled:opacity-40 min-h-[44px]"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>Chương trước</span>
+                    </button>
+                    <span className="tabular-nums opacity-70">
+                      Chương {chapterIndex + 1} / {book.chapters.length}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={chapterIndex >= book.chapters.length - 1}
+                      onClick={() => goToChapter(chapterIndex + 1)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-black/15 dark:border-white/15 disabled:opacity-40 min-h-[44px]"
+                    >
+                      <span>Chương tiếp</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </footer>
+                )}
+              </article>
+            </div>
+
+            {/* Apple Books-style Realistic 3D Corner Curl Flap: Mirrored Back-Face + Cast Shadow + Specular Crease */}
+            {isPaginatedMode && liveCurlGeom && liveCurlGeom.peel > 0.005 && liveCurlGeom.flapPath && (
+              <div
+                aria-hidden="true"
+                data-testid="reader-curl-overlay"
+                className="absolute inset-0 z-20 pointer-events-none overflow-hidden"
+              >
+                {/* Mirrored slightly-faded back-face of current page clipped inside the curled underside flap */}
+                <div
+                  className="absolute inset-0 px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden"
+                  style={{
+                    clipPath: liveCurlGeom.flapClipPath,
+                    WebkitClipPath: liveCurlGeom.flapClipPath,
+                    backgroundColor: activeTheme.surface || activeTheme.bg,
+                  }}
+                >
+                  <div
+                    className="w-full h-full opacity-[0.22] blur-[0.3px]"
+                    style={{
+                      transform: liveCurlGeom.backfaceTransform,
+                      color: activeTheme.text,
+                    }}
                   >
-                    <span>Chương tiếp</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </footer>
-              )}
-            </article>
+                    {renderStaticPageContent({
+                      page: topLayerPage,
+                      chapterTitle: topLayerChapterTitle,
+                      chapterNum: topLayerChapterNum,
+                    })}
+                  </div>
+                </div>
+
+                {/* Curved Paper Highlight, Underside Shading & Dynamic Cast Shadow */}
+                <svg
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  className="absolute inset-0 w-full h-full"
+                >
+                  <defs>
+                    <linearGradient
+                      id="bookhad-curl-flap-grad"
+                      x1="0%"
+                      y1="0%"
+                      x2="100%"
+                      y2="100%"
+                    >
+                      <stop offset="0%" stopColor={activeTheme.isDark ? '#32353d' : '#ffffff'} stopOpacity="0.65" />
+                      <stop offset="52%" stopColor={activeTheme.surface || activeTheme.bg} stopOpacity="0.58" />
+                      <stop offset="100%" stopColor={activeTheme.isDark ? '#111317' : '#d6cbb7'} stopOpacity="0.82" />
+                    </linearGradient>
+                    <linearGradient
+                      id="bookhad-curl-shadow-grad"
+                      x1="0%"
+                      y1="0%"
+                      x2="100%"
+                      y2="100%"
+                    >
+                      <stop offset="0%" stopColor="#000000" stopOpacity={liveCurlGeom.shadowOpacity} />
+                      <stop offset="100%" stopColor="#000000" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                  {liveCurlGeom.castShadowPath && (
+                    <path d={liveCurlGeom.castShadowPath} fill="url(#bookhad-curl-shadow-grad)" />
+                  )}
+                  <path
+                    d={liveCurlGeom.flapPath}
+                    fill="url(#bookhad-curl-flap-grad)"
+                    stroke={activeTheme.isDark ? 'rgba(255,255,255,0.16)' : 'rgba(60,42,20,0.18)'}
+                    strokeWidth="0.35"
+                  />
+                  {liveCurlGeom.creasePath && (
+                    <path
+                      d={liveCurlGeom.creasePath}
+                      fill="none"
+                      stroke={activeTheme.isDark ? 'rgba(255,255,255,0.34)' : 'rgba(255,255,255,0.85)'}
+                      strokeWidth="0.7"
+                      strokeOpacity={liveCurlGeom.creaseHighlightOpacity}
+                    />
+                  )}
+                </svg>
+              </div>
+            )}
           </div>
 
           {/* Dedicated Opaque 3-Button Bottom Navigation Bar (Trước | Trang/Tổng | Tiếp) */}
@@ -2859,25 +2992,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
 
         {/* Quick Page Jump Popover triggered by Center Page Counter Button */}
-        {showPageJump &&
-          isPaginatedMode &&
-          typeof document !== 'undefined' &&
-          createPortal(
-            <div
-              className="fixed inset-0 z-[82] ios-frosted-backdrop flex items-end sm:items-center justify-center p-3 pb-16"
-              onClick={() => setShowPageJump(false)}
-            >
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-label="Chọn trang hiển thị"
-                data-testid="reader-page-jump-modal"
-                onClick={(e) => e.stopPropagation()}
-                className="ios-sheet-enter ios-frosted-surface w-full max-w-xs rounded-[22px] text-stone-900 dark:text-stone-100 p-4 space-y-3 font-sans text-xs shadow-2xl"
-              >
+        <IosSheet
+          isOpen={showPageJump && isPaginatedMode}
+          onClose={() => setShowPageJump(false)}
+          variant="center-dialog"
+          zIndexClass="z-[82]"
+          ariaLabel="Chọn trang hiển thị"
+          panelClassName="ios-frosted-surface w-full max-w-xs rounded-[22px] text-stone-900 dark:text-stone-100 p-4 space-y-3 font-sans text-xs shadow-2xl"
+        >
+                <div data-testid="reader-page-jump-modal" className="space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <h2 className="text-[13px] font-semibold">Đi tới trang</h2>
+                    <h2 className="text-[13px] font-sans font-semibold">Đi tới trang</h2>
                     <p className="text-[10.5px] text-stone-500 dark:text-stone-400 tabular-nums">
                       Trang {globalCurrentPage} / {globalTotalPages} · Ch.{chapterIndex + 1}/
                       {book.chapters.length}
@@ -2932,10 +3058,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     Đi tới
                   </button>
                 </form>
-              </div>
-            </div>,
-            document.body
-          )}
+                </div>
+        </IosSheet>
 
         {/* Long-Press Floating Paragraph Action Menu (Nghe từ đây & Đánh dấu — hidden until long-press) */}
         {activeParaAction !== null &&
@@ -3023,25 +3147,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             document.body
           )}
 
-        {/* Table of Contents & Bookmarks Sidebar (Portaled frosted-glass panel) */}
-        {showToc &&
-          typeof document !== 'undefined' &&
-          createPortal(
-            <div className="fixed inset-0 z-[75] flex items-end sm:items-start sm:justify-start">
-              <div
-                className="fixed inset-0 ios-frosted-backdrop"
-                onClick={() => setShowToc(false)}
-                aria-hidden="true"
-              />
-              <aside
-                aria-label="Mục lục và đánh dấu trang"
-                className="ios-sheet-enter sm:ios-drawer-left ios-frosted-surface relative z-10 w-full sm:w-80 sm:mt-[56px] sm:ml-3 h-auto max-h-[82dvh] sm:max-h-[calc(100dvh-72px)] text-stone-900 dark:text-stone-100 rounded-t-[28px] sm:rounded-[24px] flex flex-col overflow-hidden"
-              >
+        {/* Table of Contents & Bookmarks Sidebar */}
+        <IosSheet
+          isOpen={showToc}
+          onClose={() => setShowToc(false)}
+          variant="drawer-left"
+          zIndexClass="z-[75]"
+          ariaLabel="Mục lục và đánh dấu trang"
+          panelClassName="ios-frosted-surface w-full sm:w-80 h-auto max-h-[82dvh] sm:max-h-[calc(100dvh-72px)] text-stone-900 dark:text-stone-100 rounded-t-[28px] sm:rounded-[24px] flex flex-col overflow-hidden"
+        >
                 <div className="sm:hidden flex justify-center pt-2 pb-1 shrink-0">
                   <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
                 </div>
                 <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
-                  <h2 className="text-base font-display font-semibold">Mục lục</h2>
+                  <h2 className="text-base font-sans font-semibold">Mục lục</h2>
                   <button
                     type="button"
                     onClick={() => setShowToc(false)}
@@ -3108,10 +3227,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     </div>
                   )}
                 </div>
-              </aside>
-            </div>,
-            document.body
-          )}
+        </IosSheet>
 
         {/* Typography & Background Drawer */}
         <ReaderSettingsDrawer
@@ -3178,6 +3294,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               patchActiveBook((prev) => ({
                 ...prev,
                 characterVoicesEnabled: enabled,
+                characterVoicesConfigured: enabled ? true : prev.characterVoicesConfigured,
               }))
             }
             externalVoices={externalVoices}

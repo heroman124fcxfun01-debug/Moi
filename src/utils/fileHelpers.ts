@@ -386,15 +386,82 @@ export const TARGET_LANGUAGES = [
   { code: 'fr', label: 'Français (Tiếng Pháp)' },
 ];
 
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
+export async function downloadBlob(blob: Blob, filename: string): Promise<'shared' | 'downloaded'> {
+  const isTouchMobile =
+    typeof navigator !== 'undefined' &&
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+
+  // On mobile WebViews / iOS Safari, Web Share with files gives the most reliable save-to-Files/Downloads dialog
+  if (
+    isTouchMobile &&
+    typeof navigator !== 'undefined' &&
+    typeof navigator.share === 'function' &&
+    typeof File !== 'undefined'
+  ) {
+    try {
+      const file = new File([blob], filename, {
+        type: blob.type || 'application/epub+zip',
+      });
+      if (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: filename,
+        });
+        return 'shared';
+      }
+    } catch (shareErr) {
+      // If user dismissed share sheet or share failed, fall through to direct anchor download
+      if (shareErr instanceof Error && shareErr.name === 'AbortError') {
+        return 'shared';
+      }
+    }
+  }
+
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    // Keep anchor & ObjectURL alive long enough for mobile download managers (15 seconds)
+    setTimeout(() => {
+      try {
+        document.body.removeChild(a);
+      } catch {
+        // already removed
+      }
+      URL.revokeObjectURL(url);
+    }, 15000);
+    return 'downloaded';
+  } catch {
+    // Fallback via FileReader DataURL for restrictive WebViews where createObjectURL fails
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+        if (dataUrl) {
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          a.download = filename;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => {
+            try {
+              document.body.removeChild(a);
+            } catch {
+              // ignore
+            }
+          }, 3000);
+        }
+        resolve('downloaded');
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
 }
 
 export function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {

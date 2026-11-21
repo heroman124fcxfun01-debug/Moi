@@ -86,6 +86,8 @@ import {
 } from './utils/edgeSwipeBack';
 import { triggerDeviceHaptic } from './utils/deviceHardware';
 import { ensureRamCacheLifecycle, scheduleIdleWarmup } from './utils/ramCache';
+import { getAppStrings } from './utils/i18n';
+import { warmCommunityRamCache } from './utils/communityDriveStore';
 
 // Secondary modals stay code-split for fast startup and are silently pre-warmed into RAM during idle
 const loadImportBookModal = () =>
@@ -614,6 +616,35 @@ export default function App() {
     saveUserCollections(nextCollections);
   };
 
+  const handleEnsureYoutubeCollection = async (bookId: string) => {
+    setUserCollections((prev) => {
+      const existing = prev.find((c) => c.name === '/YouTube_Notes');
+      let next: UserCollection[];
+      if (existing) {
+        if (existing.bookIds.includes(bookId)) return prev;
+        next = prev.map((c) =>
+          c.id === existing.id ? { ...c, bookIds: [bookId, ...c.bookIds] } : c
+        );
+      } else {
+        const created: UserCollection = {
+          id: `col-yt-notes-${Date.now().toString(36)}`,
+          name: '/YouTube_Notes',
+          bookIds: [bookId],
+          createdAt: Date.now(),
+        };
+        next = [created, ...prev];
+      }
+      saveUserCollections(next);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    warmCommunityRamCache();
+  }, []);
+
+  const appStrings = getAppStrings(basicSettings.appLanguage);
+
   const handleDeleteBook = async (bookId: string) => {
     setBooks((prev) => prev.filter((b) => b.id !== bookId));
     await removeBook(bookId);
@@ -937,7 +968,7 @@ export default function App() {
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
               }`}
             >
-              Thư viện
+              {appStrings.navLibrary}
             </button>
             <button
               type="button"
@@ -959,7 +990,7 @@ export default function App() {
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
               }`}
             >
-              Cộng đồng
+              {appStrings.navCommunity}
             </button>
             <button
               type="button"
@@ -971,7 +1002,7 @@ export default function App() {
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
               }`}
             >
-              Studio
+              {appStrings.navStudio}
             </button>
             <button
               type="button"
@@ -983,7 +1014,7 @@ export default function App() {
                   : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
               }`}
             >
-              Cài đặt
+              {appStrings.navSettings}
             </button>
           </nav>
 
@@ -1095,7 +1126,12 @@ export default function App() {
                     : 'hidden'
                 }
               >
-                <WebScraperView crawler={crawler} />
+                <WebScraperView
+                  crawler={crawler}
+                  onAddBook={handleAddBook}
+                  onEnsureYoutubeCollection={handleEnsureYoutubeCollection}
+                  onBackgroundToLibrary={() => setActiveTab('library')}
+                />
               </div>
             )}
 
@@ -1181,10 +1217,10 @@ export default function App() {
           />
           {(
             [
-              { id: 'library', label: 'Thư viện', icon: BookOpen },
-              { id: 'web', label: 'Cộng đồng', icon: Globe },
-              { id: 'studio', label: 'Studio', icon: Mic2 },
-              { id: 'settings', label: 'Cài đặt', icon: Settings },
+              { id: 'library', label: appStrings.navLibrary, icon: BookOpen },
+              { id: 'web', label: appStrings.navCommunity, icon: Globe },
+              { id: 'studio', label: appStrings.navStudio, icon: Mic2 },
+              { id: 'settings', label: appStrings.navSettings, icon: Settings },
             ] as const
           ).map((item) => {
             const Icon = item.icon;

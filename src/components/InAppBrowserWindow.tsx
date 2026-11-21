@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   ArrowLeft,
+  EyeOff,
   Loader2,
   Sparkles,
   Square,
@@ -16,22 +17,23 @@ interface InAppBrowserWindowProps {
   initialUrl: string;
   crawler: WebCrawlerController;
   onClose: () => void;
+  onBackgroundToLibrary?: () => void;
   onUrlChange?: (url: string) => void;
 }
 
 /**
  * Full-screen In-App Native Browser Window opened from "Cộng đồng -> Trình duyệt gốc".
- * - Top rectangular toolbar contains ONLY:
+ * Top toolbar strictly contains 3 elevated buttons:
  *   1) "Quay lại" (left)
- *   2) "Bắt đầu AI quét tự động" (right — switches to live scan status / stop while crawling)
- * - Below the toolbar: live embedded browser viewport proxied through /api/web/browse so
- *   users can search, open stories, and tap "Bắt đầu AI quét tự động" on the exact page they view.
+ *   2) "AI bắt đầu quét" (center)
+ *   3) "Chạy ẩn" (right — immediately closes browser and returns user to Library while AI keeps scanning in background)
  */
 export function InAppBrowserWindow({
   open,
   initialUrl,
   crawler,
   onClose,
+  onBackgroundToLibrary,
   onUrlChange,
 }: InAppBrowserWindowProps) {
   const [liveUrl, setLiveUrl] = useState(initialUrl.trim());
@@ -49,7 +51,6 @@ export function InAppBrowserWindow({
     setIframeSrc(resolveApiUrl(browsePath));
   }, [open, initialUrl]);
 
-  // Listen to live navigation updates reported by the embedded browser bridge script
   useEffect(() => {
     if (!open) return;
     const handleMessage = (event: MessageEvent) => {
@@ -82,12 +83,21 @@ export function InAppBrowserWindow({
     const target = liveUrl.trim() || initialUrl.trim();
     if (!target) {
       setLocalError(
-        'Hãy mở một trang truyện trong trình duyệt phía dưới rồi bấm Bắt đầu AI quét tự động.'
+        'Hãy mở một trang truyện trong trình duyệt phía dưới rồi bấm AI bắt đầu quét.'
       );
       return;
     }
     setLocalError(null);
     crawler.startAiAutoScanAndSave(target);
+  };
+
+  const handleRunInBackground = () => {
+    const target = liveUrl.trim() || initialUrl.trim();
+    if (!isCrawling && target) {
+      crawler.startAiAutoScanAndSave(target);
+    }
+    onClose();
+    onBackgroundToLibrary?.();
   };
 
   const windowContent = (
@@ -96,22 +106,25 @@ export function InAppBrowserWindow({
       role="dialog"
       aria-modal="true"
       aria-label="Trình duyệt gốc trong ứng dụng"
+      data-testid="in-app-browser-window"
     >
-      {/* Top Rectangular Bar — strictly ONLY "Quay lại" and "Bắt đầu AI quét tự động" */}
-      <div className="h-12 px-2.5 bg-white dark:bg-zinc-900 border-b border-stone-200 dark:border-zinc-800 rounded-none flex items-center justify-between gap-2 shrink-0">
+      {/* Top Bar — strictly 3 buttons: (1) Quay lại, (2) AI bắt đầu quét, (3) Chạy ẩn */}
+      <div className="h-14 px-2.5 bg-white dark:bg-zinc-900 border-b border-stone-200 dark:border-zinc-800 flex items-center justify-between gap-1.5 shrink-0">
         <button
           type="button"
+          data-testid="browser-back-btn"
           onClick={onClose}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none border border-stone-200 dark:border-zinc-700 bg-stone-50 dark:bg-zinc-800 text-stone-800 dark:text-stone-100 text-xs font-semibold hover:bg-stone-100 dark:hover:bg-zinc-700 transition-colors shrink-0"
+          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-stone-800 dark:text-stone-100 text-[11.5px] font-semibold shadow-xs hover:bg-stone-50 transition-colors shrink-0"
         >
-          <ArrowLeft className="w-3.5 h-3.5" />
+          <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
           <span>Quay lại</span>
         </button>
 
         <button
           type="button"
+          data-testid="browser-ai-scan-btn"
           onClick={handleToggleAutoScan}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-none text-xs font-semibold transition-all shrink-0 ${
+          className={`inline-flex items-center justify-center gap-1 px-3.5 py-1.5 rounded-full text-[11.5px] font-semibold shadow-xs transition-all min-w-0 truncate ${
             isCrawling
               ? 'bg-red-600 hover:bg-red-700 text-white'
               : 'bg-amber-800 hover:bg-amber-900 text-white'
@@ -119,16 +132,26 @@ export function InAppBrowserWindow({
         >
           {isCrawling ? (
             <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span>Đang quét ({crawler.scrapedList.length} ch) · Dừng</span>
-              <Square className="w-3 h-3 fill-current" />
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span className="truncate">Đang quét ({crawler.scrapedList.length})</span>
+              <Square className="w-2.5 h-2.5 fill-current shrink-0" />
             </>
           ) : (
             <>
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Bắt đầu AI quét tự động</span>
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">AI bắt đầu quét</span>
             </>
           )}
+        </button>
+
+        <button
+          type="button"
+          data-testid="browser-background-btn"
+          onClick={handleRunInBackground}
+          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-amber-700/35 bg-amber-50 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200 text-[11.5px] font-semibold shadow-xs hover:bg-amber-100/80 transition-colors shrink-0"
+        >
+          <EyeOff className="w-3.5 h-3.5 shrink-0" />
+          <span>Chạy ẩn</span>
         </button>
       </div>
 

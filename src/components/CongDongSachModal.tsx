@@ -1,50 +1,30 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft,
-  BookOpen,
   Check,
+  ClipboardPaste,
+  Copy,
   Download,
+  Flag,
   Loader2,
-  MessageSquare,
+  Plus,
   Search,
-  Send,
   Shield,
-  Star,
-  Upload,
   X,
 } from 'lucide-react';
 import type { Book } from '../types/book';
+import {
+  filterCommunityBooks,
+  getCachedCommunityBooksWithLinks,
+  listCommunityBooksWithLinks,
+  parseGoogleDriveLink,
+  recordLinkFeedback,
+  submitAnonymousBookShare,
+  type CommunityBookWithLinks,
+  type CommunityFormat,
+} from '../utils/communityDriveStore';
 import { resolveApiUrl } from '../utils/apiClient';
-import { computeBookFingerprint } from '../utils/syncAndStats';
-
-interface CongDongComment {
-  id: string;
-  authorAlias: string;
-  content: string;
-  rating: number;
-  createdAt: number;
-}
-
-interface CongDongBookSummary {
-  id: string;
-  title: string;
-  author: string;
-  uploaderAlias: string;
-  category: string;
-  description: string;
-  coverGradient: string;
-  coverImage?: string;
-  downloads: number;
-  uploadedAt: number;
-  chapterCount: number;
-  commentCount: number;
-}
-
-interface CongDongBookDetail extends CongDongBookSummary {
-  chapters: Array<{ title: string; paragraphs: string[] }>;
-  comments: CongDongComment[];
-}
+import { IosSheet } from './IosSheet';
 
 interface CongDongSachModalProps {
   open: boolean;
@@ -53,60 +33,18 @@ interface CongDongSachModalProps {
   onImportBook: (book: Book, openImmediately?: boolean) => Promise<void>;
 }
 
-const LOCAL_FALLBACK_KEY = 'bookhad_congdongsach_cache_v1';
+const FILTER_CHIPS = [
+  'Mới nhất',
+  'Tải nhiều',
+  'Tiên hiệp',
+  'Ngôn tình',
+  'Kinh dị',
+  'EPUB',
+  'PDF',
+] as const;
 
-const OFFLINE_FALLBACK_BOOKS: CongDongBookDetail[] = [
-  {
-    id: 'cds-offline-1',
-    title: 'Hành Trình Về Phương Đông (Bản Cộng Đồng)',
-    author: 'Baird T. Spalding',
-    uploaderAlias: 'Độc Giả Ẩn Danh #104',
-    category: 'Tản văn & Triết lý',
-    description: 'Bản biên tập tối ưu cho giọng đọc AI tiểu thuyết & tản văn trên BOOKHAD.',
-    coverGradient: 'from-amber-800 via-stone-800 to-zinc-900',
-    downloads: 1284,
-    uploadedAt: Date.now() - 86_400_000 * 6,
-    chapterCount: 1,
-    commentCount: 1,
-    chapters: [
-      {
-        title: 'Chương 1: Khởi hành giữa mùa gió chướng',
-        paragraphs: [
-          'Đoàn thám hiểm rời bến cảng vào một buổi sáng sương giăng trắng xóa.',
-          '"Khi tâm trí thôi ồn ào, từng nhịp thở cũng trở thành một trang sách," vị đạo sư mỉm cười nói.',
-        ],
-      },
-    ],
-    comments: [
-      {
-        id: 'off-cmt-1',
-        authorAlias: 'Người Đọc Đêm',
-        content: 'Bản này ngắt đoạn cực gọn, bật giọng Tản văn nghe rất êm.',
-        rating: 5,
-        createdAt: Date.now() - 86_400_000 * 2,
-      },
-    ],
-  },
-];
-
-function loadOfflineFallback(): CongDongBookDetail[] {
-  try {
-    const raw = localStorage.getItem(LOCAL_FALLBACK_KEY);
-    if (!raw) return OFFLINE_FALLBACK_BOOKS;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : OFFLINE_FALLBACK_BOOKS;
-  } catch {
-    return OFFLINE_FALLBACK_BOOKS;
-  }
-}
-
-function saveOfflineFallback(list: CongDongBookDetail[]) {
-  try {
-    localStorage.setItem(LOCAL_FALLBACK_KEY, JSON.stringify(list));
-  } catch {
-    // ignore quota errors
-  }
-}
+const GENRE_OPTIONS = ['Tiên hiệp', 'Ngôn tình', 'Kinh dị', 'Kỹ năng', 'Tiểu thuyết', 'Tản văn'];
+const FORMAT_OPTIONS: CommunityFormat[] = ['EPUB', 'PDF', 'TXT'];
 
 export function CongDongSachModal({
   open,
@@ -114,59 +52,39 @@ export function CongDongSachModal({
   onClose,
   onImportBook,
 }: CongDongSachModalProps) {
-  const [books, setBooks] = useState<CongDongBookSummary[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [items, setItems] = useState<CommunityBookWithLinks[]>(() =>
+    getCachedCommunityBooksWithLinks()
+  );
   const [isLoading, setIsLoading] = useState(false);
-  const [isOfflineMode, setIsOfflineMode] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-
-  // Active subview: list | detail | upload
-  const [viewMode, setViewMode] = useState<'list' | 'detail' | 'upload'>('list');
-  const [selectedBook, setSelectedBook] = useState<CongDongBookDetail | null>(null);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [activeChip, setActiveChip] = useState<string>('Mới nhất');
+  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [downloadedIds, setDownloadedIds] = useState<Record<string, boolean>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Comment form
-  const [commentAlias, setCommentAlias] = useState('');
-  const [commentText, setCommentText] = useState('');
-  const [commentRating, setCommentRating] = useState(5);
-  const [isPostingComment, setIsPostingComment] = useState(false);
+  // Share Bottom Sheet State
+  const [isShareOpen, setIsShareOpen] = useState(false);
+  const [shareTitle, setShareTitle] = useState('');
+  const [shareAuthor, setShareAuthor] = useState('');
+  const [shareGenre, setShareGenre] = useState('Tiên hiệp');
+  const [shareFormat, setShareFormat] = useState<CommunityFormat>('EPUB');
+  const [shareDriveUrl, setShareDriveUrl] = useState('');
+  const [shareError, setShareError] = useState('');
+  const [isSubmittingShare, setIsSubmittingShare] = useState(false);
 
-  // Upload form
-  const [uploadSource, setUploadSource] = useState<'library' | 'manual'>('library');
-  const [selectedLibraryBookId, setSelectedLibraryBookId] = useState<string>('');
-  const [uploadTitle, setUploadTitle] = useState('');
-  const [uploadAuthor, setUploadAuthor] = useState('');
-  const [uploadAlias, setUploadAlias] = useState('');
-  const [uploadCategory, setUploadCategory] = useState('Tiểu thuyết');
-  const [uploadDescription, setUploadDescription] = useState('');
-  const [uploadContent, setUploadContent] = useState('');
-  const [isUploading, setIsUploading] = useState(false);
+  const showToast = useCallback((kind: 'ok' | 'err', text: string) => {
+    setToast({ kind, text });
+    window.setTimeout(() => {
+      setToast((prev) => (prev?.text === text ? null : prev));
+    }, 3200);
+  }, []);
 
-  const fetchBooks = useCallback(async (query = '') => {
+  const refreshCatalog = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(
-        resolveApiUrl(`/api/congdongsach/books?q=${encodeURIComponent(query.trim())}`)
-      );
-      if (!res.ok) throw new Error('offline');
-      const data = (await res.json()) as { books?: CongDongBookSummary[] };
-      setBooks(data.books || []);
-      setIsOfflineMode(false);
-    } catch {
-      const local = loadOfflineFallback();
-      const q = query.trim().toLowerCase();
-      const filtered = q
-        ? local.filter(
-            (b) =>
-              b.title.toLowerCase().includes(q) ||
-              b.author.toLowerCase().includes(q) ||
-              b.category.toLowerCase().includes(q)
-          )
-        : local;
-      setBooks(filtered);
-      setIsOfflineMode(true);
+      const list = await listCommunityBooksWithLinks();
+      setItems(list);
     } finally {
       setIsLoading(false);
     }
@@ -174,715 +92,595 @@ export function CongDongSachModal({
 
   useEffect(() => {
     if (!open) return;
-    setViewMode('list');
-    setSelectedBook(null);
-    setStatusMessage(null);
-    if (localBooks.length > 0 && !selectedLibraryBookId) {
-      setSelectedLibraryBookId(localBooks[0].id);
-    }
-    void fetchBooks(searchQuery);
-  }, [open, fetchBooks]);
+    void refreshCatalog();
+  }, [open, refreshCatalog]);
 
-  // Debounced search
-  useEffect(() => {
-    if (!open) return;
-    const t = window.setTimeout(() => {
-      void fetchBooks(searchQuery);
-    }, 220);
-    return () => window.clearTimeout(t);
-  }, [searchQuery, open, fetchBooks]);
+  const filteredItems = useMemo(
+    () => filterCommunityBooks(items, searchQuery, activeChip),
+    [items, searchQuery, activeChip]
+  );
 
-  if (!open) return null;
+  // Instant diacritic-insensitive live suggestions
+  const suggestions = useMemo(() => {
+    if (!searchFocused || !searchQuery.trim()) return [];
+    return filterCommunityBooks(items, searchQuery, 'Mới nhất').slice(0, 5);
+  }, [items, searchFocused, searchQuery]);
 
-  const openBookDetail = async (id: string) => {
-    setIsDetailLoading(true);
-    setViewMode('detail');
+  const handleCopyDriveLink = async (item: CommunityBookWithLinks) => {
+    if (!item.bestLink) return;
     try {
-      const res = await fetch(resolveApiUrl(`/api/congdongsach/books/${encodeURIComponent(id)}`));
-      if (!res.ok) throw new Error('offline');
-      const data = (await res.json()) as { book: CongDongBookDetail };
-      setSelectedBook({
-        ...data.book,
-        chapterCount: data.book.chapters.length,
-        commentCount: data.book.comments.length,
-      });
+      await navigator.clipboard.writeText(item.bestLink.drive_url);
+      setCopiedId(item.book.id);
+      showToast('ok', 'Đã sao chép link Google Drive.');
+      window.setTimeout(() => setCopiedId((id) => (id === item.book.id ? null : id)), 1800);
     } catch {
-      const local = loadOfflineFallback().find((b) => b.id === id) || null;
-      setSelectedBook(local);
-    } finally {
-      setIsDetailLoading(false);
+      showToast('err', 'Không thể sao chép vào bộ nhớ tạm.');
     }
   };
 
-  const handleDownloadBook = async (id: string) => {
-    setDownloadingId(id);
-    setStatusMessage(null);
+  const handleReportBroken = async (item: CommunityBookWithLinks) => {
+    if (!item.bestLink) return;
+    const updated = await recordLinkFeedback(item.book.id, item.bestLink.id, 'fail');
+    setItems(updated);
+    showToast('ok', 'Đã báo lỗi link. Hệ thống sẽ tự động hạ điểm hoặc ẩn link hỏng.');
+  };
+
+  const handleDownloadBook = async (item: CommunityBookWithLinks) => {
+    if (!item.links.length) return;
+    setDownloadingId(item.book.id);
+
     try {
-      let detail: CongDongBookDetail | null = null;
-      if (!isOfflineMode) {
-        const res = await fetch(
-          resolveApiUrl(`/api/congdongsach/books/${encodeURIComponent(id)}/download`)
-        );
-        if (res.ok) {
-          const data = (await res.json()) as { book: CongDongBookDetail };
-          detail = data.book;
+      let succeededLink = item.bestLink;
+      let downloadedText = '';
+
+      // Auto-fallback across ranked active links if 403/404 occurs
+      for (const candidate of item.links) {
+        const parsed = parseGoogleDriveLink(candidate.drive_url);
+        if (!parsed.valid) {
+          const next = await recordLinkFeedback(item.book.id, candidate.id, 'fail');
+          setItems(next);
+          continue;
+        }
+
+        try {
+          const probeRes = await fetch(resolveApiUrl('/api/web/fetch'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: parsed.directDownloadUrl }),
+          });
+          if (probeRes.status === 403 || probeRes.status === 404) {
+            const next = await recordLinkFeedback(item.book.id, candidate.id, 'fail');
+            setItems(next);
+            continue;
+          }
+          if (probeRes.ok) {
+            const data = await probeRes.json().catch(() => null);
+            if (data?.paragraphs?.length) {
+              downloadedText = data.paragraphs.join('\n\n');
+            }
+          }
+          succeededLink = candidate;
+          break;
+        } catch {
+          succeededLink = candidate;
+          break;
         }
       }
-      if (!detail) {
-        detail = loadOfflineFallback().find((b) => b.id === id) || selectedBook;
+
+      if (!succeededLink) {
+        showToast('err', 'Tất cả link của sách này hiện không khả dụng (403/404).');
+        return;
       }
-      if (!detail) throw new Error('Không tải được nội dung sách.');
 
-      const chapters = (detail.chapters || []).map((ch, idx) => ({
-        id: `cds-ch-${idx}-${Date.now()}`,
-        index: idx,
-        title: ch.title || `Chương ${idx + 1}`,
-        paragraphs: ch.paragraphs && ch.paragraphs.length > 0 ? ch.paragraphs : [detail!.description],
-      }));
+      const updated = await recordLinkFeedback(item.book.id, succeededLink.id, 'success');
+      setItems(updated);
 
-      const bookPayload: Book = {
-        id: `book-cds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        title: detail.title,
-        author: detail.author,
-        description: detail.description,
-        language: 'vi',
-        sourceType: 'web',
-        coverUrl: detail.coverImage,
-        collection: 'congdongsach',
-        chapters,
-        currentChapterIndex: 0,
-        currentParagraphIndex: 0,
-        progressPercent: 0,
-        bookmarks: [],
-        highlights: [],
-        voiceAssignments: {},
-        addedAt: Date.now(),
-        lastReadAt: Date.now(),
-      };
-      bookPayload.fingerprint = computeBookFingerprint(bookPayload);
-
-      await onImportBook(bookPayload, false);
-      setDownloadedIds((prev) => ({ ...prev, [id]: true }));
-      setBooks((prev) =>
-        prev.map((b) => (b.id === id ? { ...b, downloads: b.downloads + 1 } : b))
+      const alreadyOwned = localBooks.some(
+        (b) => b.title.trim().toLowerCase() === item.book.title.trim().toLowerCase()
       );
-      if (selectedBook?.id === id) {
-        setSelectedBook((prev) => (prev ? { ...prev, downloads: prev.downloads + 1 } : prev));
+
+      if (!alreadyOwned) {
+        const now = Date.now();
+        const bookId = `comm-${item.book.id}-${now.toString(36)}`;
+        const paragraphs = downloadedText
+          ? downloadedText.split(/\n{2,}/).filter((p) => p.trim().length > 0)
+          : [
+              `Sách "${item.book.title}" của tác giả ${item.book.author} (${item.book.genre} · ${item.book.format}).`,
+              `Liên kết Google Drive gốc: ${succeededLink.drive_url}`,
+              'Bạn có thể mở liên kết Drive trên máy để tải tệp đầy đủ hoặc đọc ngay bản tóm tắt này trong BOOKHAD.',
+            ];
+
+        const imported: Book = {
+          id: bookId,
+          title: item.book.title,
+          author: item.book.author,
+          description: `Chia sẻ ẩn danh cộng đồng · ${item.book.genre}`,
+          coverUrl: '',
+          sourceType: item.book.format === 'PDF' ? 'pdf' : 'epub',
+          language: 'vi',
+          readingStyle: 'novel',
+          chapters: [
+            {
+              id: `${bookId}-ch-1`,
+              index: 0,
+              title: 'Chương 1',
+              paragraphs,
+            },
+          ],
+          currentChapterIndex: 0,
+          currentParagraphIndex: 0,
+          progressPercent: 0,
+          bookmarks: [],
+          highlights: [],
+          addedAt: now,
+          lastReadAt: now,
+          voiceAssignments: {},
+          characterVoicesEnabled: false,
+          characterVoicesConfigured: false,
+          driveFileId: succeededLink.drive_file_id,
+        };
+        await onImportBook(imported, false);
       }
-      setStatusMessage(`Đã tải "${detail.title}" từ congdongsach vào Thư viện BOOKHAD!`);
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : 'Lỗi tải sách từ congdongsach.');
+
+      showToast('ok', `Đã thêm "${item.book.title}" vào Kho sách riêng.`);
     } finally {
       setDownloadingId(null);
     }
   };
 
-  const handlePostComment = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!selectedBook || !commentText.trim()) return;
-    setIsPostingComment(true);
+  const handlePasteDriveUrl = async () => {
+    setShareError('');
     try {
-      let createdComment: CongDongComment;
-      if (!isOfflineMode) {
-        const res = await fetch(
-          resolveApiUrl(`/api/congdongsach/books/${encodeURIComponent(selectedBook.id)}/comments`),
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              authorAlias: commentAlias.trim() || 'Độc giả ẩn danh',
-              content: commentText.trim(),
-              rating: commentRating,
-            }),
-          }
-        );
-        if (!res.ok) throw new Error('Không gửi được bình luận.');
-        const data = (await res.json()) as { comment: CongDongComment };
-        createdComment = data.comment;
+      const text = await navigator.clipboard.readText();
+      if (text?.trim()) {
+        setShareDriveUrl(text.trim());
       } else {
-        createdComment = {
-          id: `cmt-local-${Date.now()}`,
-          authorAlias: commentAlias.trim() || 'Độc giả ẩn danh',
-          content: commentText.trim(),
-          rating: commentRating,
-          createdAt: Date.now(),
-        };
-        const cache = loadOfflineFallback().map((b) =>
-          b.id === selectedBook.id
-            ? { ...b, comments: [createdComment, ...b.comments], commentCount: b.comments.length + 1 }
-            : b
-        );
-        saveOfflineFallback(cache);
+        setShareError('Bộ nhớ tạm đang trống.');
       }
-
-      setSelectedBook((prev) =>
-        prev
-          ? {
-              ...prev,
-              comments: [createdComment, ...(prev.comments || [])],
-              commentCount: (prev.comments?.length || 0) + 1,
-            }
-          : prev
-      );
-      setBooks((prev) =>
-        prev.map((b) =>
-          b.id === selectedBook.id ? { ...b, commentCount: b.commentCount + 1 } : b
-        )
-      );
-      setCommentText('');
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : 'Không thể gửi bình luận.');
-    } finally {
-      setIsPostingComment(false);
+    } catch {
+      setShareError('Hãy chạm giữ ô nhập để dán link Google Drive.');
     }
   };
 
-  const handleUploadSubmit = async (e: FormEvent) => {
+  const handleSubmitShare = async (e: FormEvent) => {
     e.preventDefault();
-    setIsUploading(true);
-    setStatusMessage(null);
+    setShareError('');
+    setIsSubmittingShare(true);
     try {
-      let payload: {
-        title: string;
-        author: string;
-        uploaderAlias: string;
-        category: string;
-        description: string;
-        coverGradient?: string;
-        coverImage?: string;
-        chapters: Array<{ title: string; paragraphs: string[] }>;
-      };
-
-      if (uploadSource === 'library') {
-        const picked = localBooks.find((b) => b.id === selectedLibraryBookId);
-        if (!picked) throw new Error('Vui lòng chọn 1 cuốn sách trong thư viện để đăng lên.');
-        payload = {
-          title: uploadTitle.trim() || picked.title,
-          author: uploadAuthor.trim() || picked.author || 'Tác giả ẩn danh',
-          uploaderAlias: uploadAlias.trim() || 'Độc giả ẩn danh',
-          category: uploadCategory.trim() || picked.collection || 'Cộng đồng chia sẻ',
-          description:
-            uploadDescription.trim() ||
-            picked.description ||
-            `Sách gồm ${picked.chapters.length} chương được chia sẻ ẩn danh lên congdongsach.`,
-          coverImage: picked.coverUrl,
-          chapters: picked.chapters.slice(0, 80).map((ch) => ({
-            title: ch.title,
-            paragraphs: ch.paragraphs,
-          })),
-        };
-      } else {
-        const title = uploadTitle.trim();
-        const paragraphs = uploadContent
-          .split(/\n+/)
-          .map((p) => p.trim())
-          .filter(Boolean);
-        if (!title || paragraphs.length === 0) {
-          throw new Error('Vui lòng nhập tên sách và nội dung trước khi đăng lên congdongsach.');
-        }
-        payload = {
-          title,
-          author: uploadAuthor.trim() || 'Tác giả ẩn danh',
-          uploaderAlias: uploadAlias.trim() || 'Độc giả ẩn danh',
-          category: uploadCategory.trim() || 'Cộng đồng chia sẻ',
-          description:
-            uploadDescription.trim() || paragraphs[0].slice(0, 140),
-          chapters: [{ title: 'Chương 1', paragraphs }],
-        };
+      const result = await submitAnonymousBookShare({
+        title: shareTitle,
+        author: shareAuthor,
+        genre: shareGenre,
+        format: shareFormat,
+        driveUrl: shareDriveUrl,
+      });
+      if (!result.ok) {
+        setShareError(result.error || 'Không thể đăng chia sẻ.');
+        return;
       }
 
-      if (!isOfflineMode) {
-        const res = await fetch(resolveApiUrl('/api/congdongsach/books'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          const err = (await res.json().catch(() => ({}))) as { error?: string };
-          throw new Error(err.error || 'Không đăng được sách lên congdongsach.');
-        }
-      } else {
-        const localRecord: CongDongBookDetail = {
-          id: `cds-local-${Date.now()}`,
-          ...payload,
-          coverGradient: payload.coverGradient || 'from-amber-800 via-stone-800 to-zinc-900',
-          downloads: 0,
-          uploadedAt: Date.now(),
-          chapterCount: payload.chapters.length,
-          commentCount: 0,
-          comments: [],
-        };
-        const updated = [localRecord, ...loadOfflineFallback()];
-        saveOfflineFallback(updated);
-      }
-
-      setUploadTitle('');
-      setUploadAuthor('');
-      setUploadDescription('');
-      setUploadContent('');
-      setViewMode('list');
-      setStatusMessage(`Đã đăng ẩn danh "${payload.title}" lên congdongsach thành công!`);
-      await fetchBooks(searchQuery);
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : 'Lỗi đăng sách.');
+      const refreshed = await listCommunityBooksWithLinks();
+      setItems(refreshed);
+      setShareTitle('');
+      setShareAuthor('');
+      setShareDriveUrl('');
+      setIsShareOpen(false);
+      showToast('ok', 'Đã đăng sách ẩn danh thành công!');
     } finally {
-      setIsUploading(false);
+      setIsSubmittingShare(false);
     }
   };
 
-  const modalContent = (
+  if (!open || typeof document === 'undefined') return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 ios-frosted-backdrop flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="congdongsach - Cộng đồng sách ẩn danh"
+      data-testid="community-anonymous-modal"
+      className="fixed inset-0 z-[95] ios-frosted-backdrop ios-backdrop-fade flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full sm:max-w-xl h-[92vh] sm:h-[85vh] rounded-t-[28px] sm:rounded-[28px] ios-frosted-surface flex flex-col overflow-hidden animate-ios-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Cộng đồng sách ẩn danh"
+        className="ios-sheet-enter w-full sm:max-w-xl h-[92dvh] sm:h-[85dvh] rounded-t-[28px] sm:rounded-[26px] bg-[#F6F4EF] dark:bg-[#111317] text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-white/10 shadow-2xl flex flex-col overflow-hidden"
       >
-        {/* Top iPhone Glass Header */}
-        <div className="px-4 py-3 border-b border-stone-200/70 dark:border-zinc-800/80 flex items-center justify-between gap-2 shrink-0">
+        {/* Top Handle (mobile) */}
+        <div className="sm:hidden flex justify-center pt-2 shrink-0">
+          <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
+        </div>
+
+        {/* Header Row: Title + Top-Right Accent Oval "+ Chia sẻ" + Close */}
+        <div className="px-4 pt-3 pb-2.5 flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 min-w-0">
-            {viewMode !== 'list' && (
-              <button
-                type="button"
-                onClick={() => {
-                  setViewMode('list');
-                  setSelectedBook(null);
-                }}
-                className="p-1.5 rounded-full bg-stone-100/90 dark:bg-zinc-800/90 text-stone-700 dark:text-stone-200 hover:bg-stone-200/80 shrink-0"
-                aria-label="Quay lại danh sách congdongsach"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-            )}
-            <div className="w-8 h-8 rounded-2xl bg-gradient-to-br from-amber-700 to-stone-900 flex items-center justify-center text-white shrink-0 shadow-xs">
-              <Shield className="w-4 h-4" />
+            <div className="w-7 h-7 rounded-full bg-amber-800/10 dark:bg-amber-500/15 flex items-center justify-center shrink-0">
+              <Shield className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <h2 className="text-sm font-bold text-stone-900 dark:text-stone-100 truncate">
-                  congdongsach
-                </h2>
-                <span className="px-1.5 py-0.5 rounded-full bg-amber-800/10 dark:bg-amber-400/15 text-[9px] font-semibold text-amber-900 dark:text-amber-300">
-                  Ẩn danh
-                </span>
-              </div>
+              <h2 className="text-[14.5px] font-sans font-bold tracking-tight truncate">
+                Kho sách Ẩn danh
+              </h2>
               <p className="text-[10px] text-stone-500 dark:text-stone-400 truncate">
-                Kho sách cộng đồng chia sẻ, tải về & bình luận tự do
+                Không cần đăng nhập · Chia sẻ qua link Drive
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Đóng congdongsach"
-            className="p-1.5 rounded-full bg-stone-100/90 dark:bg-zinc-800/90 text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Status Toast */}
-        {statusMessage && (
-          <div className="mx-4 mt-2.5 px-3 py-2 rounded-2xl bg-emerald-50/90 dark:bg-emerald-950/50 border border-emerald-200/80 dark:border-emerald-800/70 text-[11px] text-emerald-800 dark:text-emerald-200 flex items-center justify-between gap-2 shrink-0">
-            <span className="truncate">{statusMessage}</span>
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={() => setStatusMessage(null)}
-              className="p-0.5 text-emerald-600 hover:text-emerald-900 shrink-0"
+              data-testid="community-open-share-btn"
+              onClick={() => {
+                setShareError('');
+                setIsShareOpen(true);
+              }}
+              className="ios-elevated-oval ios-liquid-btn inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 whitespace-nowrap"
             >
-              <X className="w-3.5 h-3.5" />
+              <Plus className="w-3.5 h-3.5 shrink-0" />
+              <span>Chia sẻ</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Đóng cộng đồng ẩn danh"
+              className="w-8 h-8 rounded-full bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-stone-700 flex items-center justify-center text-stone-600 dark:text-stone-300"
+            >
+              <X className="w-4 h-4" />
             </button>
           </div>
-        )}
+        </div>
 
-        {/* VIEW 1: BOOK LIST + SEARCH + UPLOAD CTA */}
-        {viewMode === 'list' && (
-          <>
-            <div className="px-4 py-3 flex items-center gap-2 shrink-0">
-              <div className="relative flex-1 min-w-0">
-                <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Tìm sách trên congdongsach..."
-                  className="w-full pl-8 pr-3 py-2 rounded-2xl bg-white/80 dark:bg-zinc-900/80 border border-stone-200/80 dark:border-zinc-700/80 text-xs text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-2 focus:ring-amber-600/35"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => setViewMode('upload')}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-amber-800 hover:bg-amber-900 text-white text-[11px] font-semibold shadow-xs transition-all active:scale-95 whitespace-nowrap shrink-0"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>Up sách lên web</span>
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-4 pb-5 space-y-2.5">
-              {isLoading ? (
-                <div className="py-12 flex flex-col items-center justify-center gap-2 text-stone-500">
-                  <Loader2 className="w-5 h-5 animate-spin text-amber-700" />
-                  <span className="text-xs">Đang kết nối congdongsach...</span>
-                </div>
-              ) : books.length === 0 ? (
-                <div className="py-12 text-center space-y-2">
-                  <BookOpen className="w-8 h-8 mx-auto text-stone-300 dark:text-zinc-600" />
-                  <p className="text-xs text-stone-500">Không tìm thấy sách phù hợp trên congdongsach.</p>
-                </div>
-              ) : (
-                books.map((book) => {
-                  const isDownloaded = Boolean(downloadedIds[book.id]);
-                  const isBusy = downloadingId === book.id;
-                  return (
-                    <div
-                      key={book.id}
-                      onClick={() => openBookDetail(book.id)}
-                      className="group cursor-pointer rounded-2xl p-2.5 bg-white/75 dark:bg-zinc-900/75 border border-stone-200/75 dark:border-zinc-800/80 hover:border-amber-600/50 transition-all flex items-center gap-3"
-                    >
-                      <div
-                        className={`w-12 h-16 rounded-xl bg-gradient-to-br ${book.coverGradient} shrink-0 overflow-hidden shadow-xs flex items-end p-1.5 relative`}
-                      >
-                        {book.coverImage ? (
-                          <img
-                            src={book.coverImage}
-                            alt={book.title}
-                            className="absolute inset-0 w-full h-full object-cover"
-                          />
-                        ) : (
-                          <span className="text-[8px] font-bold text-white/90 line-clamp-2 leading-tight">
-                            {book.title}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-xs font-bold text-stone-900 dark:text-stone-100 truncate">
-                          {book.title}
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400 truncate mt-0.5">
-                          {book.author} · {book.uploaderAlias}
-                        </p>
-                        <div className="mt-1.5 flex items-center gap-2.5 text-[10px] text-stone-500 dark:text-stone-400">
-                          <span className="inline-flex items-center gap-0.5">
-                            <Download className="w-3 h-3 text-amber-700 dark:text-amber-400" />
-                            {book.downloads}
-                          </span>
-                          <span className="inline-flex items-center gap-0.5">
-                            <MessageSquare className="w-3 h-3 text-sky-600 dark:text-sky-400" />
-                            {book.commentCount} bình luận
-                          </span>
-                          <span className="truncate text-stone-400">{book.chapterCount} ch</span>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handleDownloadBook(book.id);
-                        }}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition-all active:scale-95 shrink-0 ${
-                          isDownloaded
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-amber-800/12 dark:bg-amber-400/15 text-amber-900 dark:text-amber-300 hover:bg-amber-800 hover:text-white'
-                        }`}
-                      >
-                        {isBusy ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : isDownloaded ? (
-                          <Check className="w-3.5 h-3.5" />
-                        ) : (
-                          <Download className="w-3.5 h-3.5" />
-                        )}
-                        <span>{isDownloaded ? 'Đã tải' : 'Tải về'}</span>
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </>
-        )}
-
-        {/* VIEW 2: BOOK DETAIL + COMMENTS */}
-        {viewMode === 'detail' && (
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-            {isDetailLoading || !selectedBook ? (
-              <div className="py-12 flex items-center justify-center">
-                <Loader2 className="w-5 h-5 animate-spin text-amber-700" />
-              </div>
-            ) : (
-              <>
-                <div className="rounded-2xl p-3.5 bg-white/75 dark:bg-zinc-900/75 border border-stone-200/75 dark:border-zinc-800/80 flex gap-3">
-                  <div
-                    className={`w-16 h-22 rounded-xl bg-gradient-to-br ${selectedBook.coverGradient} shrink-0 overflow-hidden shadow-sm relative flex items-end p-1.5`}
-                  >
-                    {selectedBook.coverImage ? (
-                      <img
-                        src={selectedBook.coverImage}
-                        alt={selectedBook.title}
-                        className="absolute inset-0 w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-[9px] font-bold text-white/90 line-clamp-3 leading-tight">
-                        {selectedBook.title}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0 space-y-1">
-                    <span className="inline-block px-2 py-0.5 rounded-full bg-stone-100 dark:bg-zinc-800 text-[10px] font-medium text-stone-600 dark:text-stone-300">
-                      {selectedBook.category}
-                    </span>
-                    <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 leading-snug">
-                      {selectedBook.title}
-                    </h3>
-                    <p className="text-[11px] text-stone-500">
-                      Tác giả: {selectedBook.author} · Đăng bởi: {selectedBook.uploaderAlias}
-                    </p>
-                    <div className="pt-1 flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={downloadingId === selectedBook.id}
-                        onClick={() => handleDownloadBook(selectedBook.id)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-800 hover:bg-amber-900 text-white text-xs font-semibold shadow-xs transition-all active:scale-95"
-                      >
-                        {downloadingId === selectedBook.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Download className="w-3.5 h-3.5" />
-                        )}
-                        <span>Tải về Thư viện ({selectedBook.downloads})</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl p-3 bg-white/65 dark:bg-zinc-900/65 border border-stone-200/70 dark:border-zinc-800/70 text-xs text-stone-700 dark:text-stone-300 leading-relaxed">
-                  {selectedBook.description}
-                </div>
-
-                {/* Comment Composer */}
-                <form
-                  onSubmit={handlePostComment}
-                  className="rounded-2xl p-3 bg-white/80 dark:bg-zinc-900/80 border border-stone-200/80 dark:border-zinc-800/80 space-y-2.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-stone-900 dark:text-stone-100 inline-flex items-center gap-1.5">
-                      <MessageSquare className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400" />
-                      Bình luận về sách ({selectedBook.comments?.length || 0})
-                    </span>
-                    <div className="flex items-center gap-0.5">
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                          key={star}
-                          type="button"
-                          onClick={() => setCommentRating(star)}
-                          className="p-0.5"
-                          aria-label={`Đánh giá ${star} sao`}
-                        >
-                          <Star
-                            className={`w-3.5 h-3.5 ${
-                              star <= commentRating
-                                ? 'fill-amber-500 text-amber-500'
-                                : 'text-stone-300 dark:text-zinc-600'
-                            }`}
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <input
-                    type="text"
-                    value={commentAlias}
-                    onChange={(e) => setCommentAlias(e.target.value)}
-                    placeholder="Biệt danh ẩn danh (để trống = Độc giả ẩn danh)"
-                    className="w-full px-3 py-1.5 rounded-xl bg-stone-50/90 dark:bg-zinc-950/70 border border-stone-200/80 dark:border-zinc-700/80 text-xs"
-                  />
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={commentText}
-                      onChange={(e) => setCommentText(e.target.value)}
-                      placeholder="Viết cảm nhận, review hoặc gợi ý giọng đọc..."
-                      className="flex-1 px-3 py-2 rounded-xl bg-stone-50/90 dark:bg-zinc-950/70 border border-stone-200/80 dark:border-zinc-700/80 text-xs"
-                    />
-                    <button
-                      type="submit"
-                      disabled={isPostingComment || !commentText.trim()}
-                      className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-amber-800 hover:bg-amber-900 disabled:opacity-45 text-white text-xs font-semibold shrink-0"
-                    >
-                      {isPostingComment ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Send className="w-3.5 h-3.5" />
-                      )}
-                      <span>Gửi</span>
-                    </button>
-                  </div>
-                </form>
-
-                {/* Comment List */}
-                <div className="space-y-2 pb-4">
-                  {(selectedBook.comments || []).length === 0 ? (
-                    <p className="text-center text-xs text-stone-400 py-4">
-                      Chưa có bình luận nào. Hãy là người đầu tiên nhận xét cuốn sách này!
-                    </p>
-                  ) : (
-                    selectedBook.comments.map((cmt) => (
-                      <div
-                        key={cmt.id}
-                        className="rounded-2xl p-3 bg-white/70 dark:bg-zinc-900/70 border border-stone-200/70 dark:border-zinc-800/70 space-y-1"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[11px] font-bold text-stone-800 dark:text-stone-100">
-                            {cmt.authorAlias}
-                          </span>
-                          <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">
-                            {'★'.repeat(cmt.rating)}
-                          </span>
-                        </div>
-                        <p className="text-xs text-stone-700 dark:text-stone-300 leading-relaxed">
-                          {cmt.content}
-                        </p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* VIEW 3: ANONYMOUS BOOK UPLOADER */}
-        {viewMode === 'upload' && (
-          <form
-            onSubmit={handleUploadSubmit}
-            className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
-          >
-            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-stone-200/70 dark:bg-zinc-800/80">
-              <button
-                type="button"
-                onClick={() => setUploadSource('library')}
-                className={`py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                  uploadSource === 'library'
-                    ? 'bg-white dark:bg-zinc-900 text-amber-800 dark:text-amber-300 shadow-xs'
-                    : 'text-stone-600 dark:text-stone-400'
-                }`}
-              >
-                Chọn từ Thư viện
-              </button>
-              <button
-                type="button"
-                onClick={() => setUploadSource('manual')}
-                className={`py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                  uploadSource === 'manual'
-                    ? 'bg-white dark:bg-zinc-900 text-amber-800 dark:text-amber-300 shadow-xs'
-                    : 'text-stone-600 dark:text-stone-400'
-                }`}
-              >
-                Dán / Nhập sách mới
-              </button>
-            </div>
-
-            {uploadSource === 'library' && (
-              <label className="block space-y-1">
-                <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-300">
-                  Chọn sách trong Thư viện BOOKHAD để up lên congdongsach
-                </span>
-                <select
-                  value={selectedLibraryBookId}
-                  onChange={(e) => setSelectedLibraryBookId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs"
-                >
-                  {localBooks.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.title} ({b.chapters.length} chương)
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <input
-                type="text"
-                value={uploadTitle}
-                onChange={(e) => setUploadTitle(e.target.value)}
-                placeholder={
-                  uploadSource === 'library'
-                    ? 'Đổi tên sách (tùy chọn)'
-                    : 'Tên sách *'
-                }
-                className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs"
-              />
-              <input
-                type="text"
-                value={uploadAuthor}
-                onChange={(e) => setUploadAuthor(e.target.value)}
-                placeholder="Tác giả"
-                className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2.5">
-              <input
-                type="text"
-                value={uploadAlias}
-                onChange={(e) => setUploadAlias(e.target.value)}
-                placeholder="Biệt danh ẩn danh"
-                className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs"
-              />
-              <input
-                type="text"
-                value={uploadCategory}
-                onChange={(e) => setUploadCategory(e.target.value)}
-                placeholder="Thể loại"
-                className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs"
-              />
-            </div>
-
+        {/* Elevated Oval Full-Width Search Bar with Instant Live Suggestions */}
+        <div className="px-4 pb-2.5 shrink-0 relative z-20">
+          <div className="relative">
+            <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
-              value={uploadDescription}
-              onChange={(e) => setUploadDescription(e.target.value)}
-              placeholder="Mô tả ngắn giới thiệu sách..."
-              className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs"
+              data-testid="community-search-input"
+              value={searchQuery}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setSearchFocused(false), 160)}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Tìm tên sách, tác giả (gõ không dấu vẫn ra)..."
+              className="ios-elevated-oval w-full pl-10 pr-9 py-2.5 rounded-full bg-white dark:bg-[#181A1F] border border-stone-200/90 dark:border-stone-800 text-[12px] text-stone-900 dark:text-stone-100 placeholder:text-stone-400 focus:outline-none focus:border-amber-700"
             />
-
-            {uploadSource === 'manual' && (
-              <textarea
-                rows={6}
-                value={uploadContent}
-                onChange={(e) => setUploadContent(e.target.value)}
-                placeholder="Dán nội dung sách tại đây (mỗi đoạn 1 dòng)..."
-                className="w-full px-3 py-2 rounded-2xl bg-white/85 dark:bg-zinc-900/85 border border-stone-200 dark:border-zinc-700 text-xs resize-none"
-              />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                aria-label="Xóa từ khóa tìm kiếm"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full flex items-center justify-center text-stone-400 hover:text-stone-700"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             )}
+          </div>
 
-            <button
-              type="submit"
-              disabled={isUploading}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-2xl bg-amber-800 hover:bg-amber-900 disabled:opacity-45 text-white text-xs font-semibold shadow-sm transition-all active:scale-[0.98]"
+          {suggestions.length > 0 && (
+            <div className="absolute left-4 right-4 mt-1.5 rounded-2xl bg-white dark:bg-[#181A1F] border border-stone-200 dark:border-stone-800 shadow-lg overflow-hidden">
+              {suggestions.map((s) => (
+                <button
+                  key={s.book.id}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setSearchQuery(s.book.title);
+                    setSearchFocused(false);
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-[11.5px] hover:bg-stone-50 dark:hover:bg-stone-800/70 flex items-center justify-between gap-2 border-b last:border-b-0 border-stone-100 dark:border-stone-800/80"
+                >
+                  <span className="font-medium truncate">{s.book.title}</span>
+                  <span className="text-[10px] text-stone-500 shrink-0">{s.book.author}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Horizontally Scrollable Elevated Oval Filter Chips */}
+        <div className="px-4 pb-2.5 shrink-0">
+          <div
+            role="tablist"
+            aria-label="Bộ lọc sách cộng đồng"
+            className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar"
+          >
+            {FILTER_CHIPS.map((chip) => {
+              const active = activeChip === chip;
+              return (
+                <button
+                  key={chip}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  data-testid={`community-chip-${chip}`}
+                  onClick={() => setActiveChip(chip)}
+                  className={`ios-elevated-oval px-3 py-1.5 rounded-full text-[11px] font-semibold whitespace-nowrap border transition-colors shrink-0 ${
+                    active
+                      ? 'bg-amber-800 text-white border-amber-800'
+                      : 'bg-white dark:bg-[#181A1F] text-stone-700 dark:text-stone-300 border-stone-200/90 dark:border-stone-800 hover:border-amber-700'
+                  }`}
+                >
+                  {chip}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Toast Banner */}
+        {toast && (
+          <div className="px-4 pb-2 shrink-0">
+            <div
+              className={`px-3 py-2 rounded-full text-[11px] font-medium flex items-center justify-between gap-2 ${
+                toast.kind === 'ok'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                  : 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+              }`}
             >
-              {isUploading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Upload className="w-4 h-4" />
-              )}
-              <span>Đăng ẩn danh lên congdongsach</span>
-            </button>
-          </form>
+              <span className="truncate">{toast.text}</span>
+              <button type="button" onClick={() => setToast(null)}>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
         )}
-      </div>
-    </div>
-  );
 
-  return typeof document !== 'undefined' ? createPortal(modalContent, document.body) : modalContent;
+        {/* Vertical List of Clean Elevated Book Cards */}
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-5 space-y-2.5">
+          {isLoading && items.length === 0 ? (
+            <div className="py-12 flex items-center justify-center gap-2 text-xs text-stone-500">
+              <Loader2 className="w-4 h-4 animate-spin text-amber-800" />
+              <span>Đang tải kho sách cộng đồng...</span>
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className="ios-elevated-card p-8 rounded-2xl bg-white dark:bg-[#181A1F] border border-stone-200/90 dark:border-stone-800 text-center space-y-2">
+              <p className="text-xs font-semibold text-stone-700 dark:text-stone-200">
+                Chưa tìm thấy sách phù hợp.
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsShareOpen(true)}
+                className="ios-elevated-oval inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full bg-amber-800 text-white text-[11px] font-semibold"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Chia sẻ cuốn đầu tiên</span>
+              </button>
+            </div>
+          ) : (
+            filteredItems.map((item) => {
+              const isDownloading = downloadingId === item.book.id;
+              const isCopied = copiedId === item.book.id;
+              return (
+                <article
+                  key={item.book.id}
+                  data-testid={`community-book-card-${item.book.id}`}
+                  className="ios-elevated-card rounded-2xl bg-white dark:bg-[#181A1F] border border-stone-200/90 dark:border-stone-800 p-3.5 space-y-2.5"
+                >
+                  {/* Row 1: Bold Book Title + Small Oval Format Badge */}
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="text-[13.5px] font-sans font-bold text-stone-900 dark:text-stone-100 leading-snug line-clamp-2">
+                      {item.book.title}
+                    </h3>
+                    <span className="ios-elevated-oval px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 border border-amber-200/80 dark:border-amber-800/60 text-[10px] font-bold text-amber-900 dark:text-amber-300 shrink-0">
+                      {item.book.format}
+                    </span>
+                  </div>
+
+                  {/* Row 2: Author • Genre • Download Count */}
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-stone-500 dark:text-stone-400">
+                    <span className="font-medium text-stone-700 dark:text-stone-300">
+                      {item.book.author}
+                    </span>
+                    <span>•</span>
+                    <span>{item.book.genre}</span>
+                    <span>•</span>
+                    <span className="tabular-nums">{item.book.downloads} lượt tải</span>
+                    {item.links.length > 1 && (
+                      <>
+                        <span>•</span>
+                        <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                          {item.links.length} link dự phòng
+                        </span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Row 3: Accent Oval Tải về máy + White Oval Sao chép link + Flag Báo lỗi */}
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      disabled={isDownloading}
+                      onClick={() => handleDownloadBook(item)}
+                      className="ios-elevated-oval ios-liquid-btn flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-full bg-amber-800 text-white text-[11.5px] font-semibold hover:bg-amber-900 disabled:opacity-50"
+                    >
+                      {isDownloading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isDownloading ? 'Đang tải...' : 'Tải về máy'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleCopyDriveLink(item)}
+                      className="ios-elevated-oval ios-liquid-pill inline-flex items-center justify-center gap-1 px-3 py-2 rounded-full bg-white dark:bg-[#22252C] border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-100 text-[11px] font-semibold whitespace-nowrap"
+                    >
+                      {isCopied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Đã chép</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Sao chép link</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleReportBroken(item)}
+                      aria-label={`Báo lỗi link cho ${item.book.title}`}
+                      title="Báo lỗi link hỏng"
+                      className="ios-elevated-oval w-9 h-9 rounded-full bg-white dark:bg-[#22252C] border border-stone-200 dark:border-stone-700 flex items-center justify-center text-stone-500 hover:text-red-600 dark:hover:text-red-400 shrink-0"
+                    >
+                      <Flag className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Smooth Share Book Bottom Sheet */}
+      <IosSheet
+        isOpen={isShareOpen}
+        onClose={() => setIsShareOpen(false)}
+        ariaLabel="Chia sẻ sách ẩn danh"
+        variant="bottom-sheet"
+        zIndexClass="z-[105]"
+        showGrabHandle
+        panelClassName="w-full sm:max-w-md rounded-t-[26px] sm:rounded-[24px] text-stone-900 dark:text-stone-100 overflow-hidden max-h-[88dvh] flex flex-col"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200/70 dark:border-white/10 shrink-0">
+          <h3 className="text-[13.5px] font-sans font-bold">Chia sẻ sách ẩn danh</h3>
+          <button
+            type="button"
+            onClick={() => setIsShareOpen(false)}
+            aria-label="Đóng cửa sổ chia sẻ"
+            className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-600 dark:text-stone-300"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmitShare} className="p-4 space-y-3 text-xs overflow-y-auto">
+          <div className="space-y-1">
+            <span className="inline-block ios-elevated-oval px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-[10.5px] font-semibold text-stone-700 dark:text-stone-200">
+              Tên sách
+            </span>
+            <input
+              type="text"
+              required
+              data-testid="share-title-input"
+              value={shareTitle}
+              onChange={(e) => setShareTitle(e.target.value)}
+              placeholder="Ví dụ: Đấu Phá Thương Khung"
+              className="w-full px-3.5 py-2.5 rounded-2xl bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-stone-700 text-xs focus:outline-none focus:border-amber-700"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="space-y-1">
+              <span className="inline-block ios-elevated-oval px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-[10.5px] font-semibold text-stone-700 dark:text-stone-200">
+                Tác giả
+              </span>
+              <input
+                type="text"
+                data-testid="share-author-input"
+                value={shareAuthor}
+                onChange={(e) => setShareAuthor(e.target.value)}
+                placeholder="Tên tác giả"
+                className="w-full px-3 py-2 rounded-2xl bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-stone-700 text-xs focus:outline-none focus:border-amber-700"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <span className="inline-block ios-elevated-oval px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-[10.5px] font-semibold text-stone-700 dark:text-stone-200">
+                Thể loại
+              </span>
+              <select
+                value={shareGenre}
+                onChange={(e) => setShareGenre(e.target.value)}
+                aria-label="Thể loại sách"
+                className="w-full px-3 py-2 rounded-2xl bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-stone-700 text-xs focus:outline-none focus:border-amber-700"
+              >
+                {GENRE_OPTIONS.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <span className="inline-block ios-elevated-oval px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-[10.5px] font-semibold text-stone-700 dark:text-stone-200">
+              Định dạng
+            </span>
+            <div className="grid grid-cols-3 gap-1.5">
+              {FORMAT_OPTIONS.map((fmt) => {
+                const active = shareFormat === fmt;
+                return (
+                  <button
+                    key={fmt}
+                    type="button"
+                    onClick={() => setShareFormat(fmt)}
+                    className={`ios-elevated-oval py-1.5 rounded-full text-[11px] font-semibold border ${
+                      active
+                        ? 'bg-amber-800 text-white border-amber-800'
+                        : 'bg-white dark:bg-[#1C1E24] text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
+                    }`}
+                  >
+                    {fmt}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="inline-block ios-elevated-oval px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-[10.5px] font-semibold text-stone-700 dark:text-stone-200">
+                Link Google Drive
+              </span>
+              <button
+                type="button"
+                onClick={handlePasteDriveUrl}
+                className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-amber-800 dark:text-amber-400"
+              >
+                <ClipboardPaste className="w-3 h-3" />
+                <span>Dán link</span>
+              </button>
+            </div>
+            <input
+              type="url"
+              required
+              data-testid="share-drive-url-input"
+              value={shareDriveUrl}
+              onChange={(e) => setShareDriveUrl(e.target.value)}
+              placeholder="https://drive.google.com/file/d/..."
+              className="w-full px-3.5 py-2.5 rounded-2xl bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-stone-700 text-xs focus:outline-none focus:border-amber-700"
+            />
+            <p className="text-[10.5px] text-amber-900 dark:text-amber-300 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-800/50 rounded-xl px-2.5 py-1.5 leading-snug">
+              Bật quyền &quot;Bất kỳ ai có đường liên kết đều có thể xem&quot; trên Drive trước khi
+              dán.
+            </p>
+          </div>
+
+          {shareError && (
+            <div className="px-3 py-2 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-[11px]">
+              {shareError}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            data-testid="share-submit-anonymous-btn"
+            disabled={isSubmittingShare}
+            className="w-full ios-elevated-oval py-2.5 rounded-full bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+          >
+            {isSubmittingShare && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            <span>Đăng ẩn danh</span>
+          </button>
+        </form>
+      </IosSheet>
+    </div>,
+    document.body
+  );
 }

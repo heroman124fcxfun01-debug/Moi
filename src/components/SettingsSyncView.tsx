@@ -1014,19 +1014,6 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Rung phản hồi</span>
-                <input
-                  type="checkbox"
-                  checked={basicSettings.hapticFeedback !== false}
-                  onChange={(e) => {
-                    onUpdateBasicSettings({ hapticFeedback: e.target.checked });
-                    if (e.target.checked) triggerDeviceHaptic('tap', true);
-                  }}
-                  className="w-3.5 h-3.5 accent-amber-800 shrink-0"
-                />
-              </label>
-
-              <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
                 <span>Phím âm lượng</span>
                 <input
                   type="checkbox"
@@ -1037,6 +1024,46 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                   className="w-3.5 h-3.5 accent-amber-800 shrink-0"
                 />
               </label>
+
+              {/* 3-Language System Selector: Tiếng Việt / English / 中文 */}
+              <div className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-1.5">
+                <span className="block text-[11px] font-medium text-stone-600 dark:text-stone-400">
+                  Ngôn ngữ hệ thống
+                </span>
+                <div
+                  role="radiogroup"
+                  aria-label="Ngôn ngữ hệ thống"
+                  data-testid="system-language-selector"
+                  className="grid grid-cols-3 gap-1.5"
+                >
+                  {(
+                    [
+                      { id: 'vi', label: 'Tiếng Việt' },
+                      { id: 'en', label: 'English' },
+                      { id: 'zh', label: '中文' },
+                    ] as const
+                  ).map((lang) => {
+                    const active = (basicSettings.appLanguage || 'vi') === lang.id;
+                    return (
+                      <button
+                        key={lang.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        data-testid={`lang-btn-${lang.id}`}
+                        onClick={() => onUpdateBasicSettings({ appLanguage: lang.id })}
+                        className={`ios-elevated-oval py-1.5 px-2 rounded-full text-[10.5px] font-semibold border transition-colors ${
+                          active
+                            ? 'bg-amber-800 text-white border-amber-800'
+                            : 'bg-white dark:bg-[#1C1E24] text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700 hover:border-amber-700'
+                        }`}
+                      >
+                        {lang.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </section>
 
@@ -2248,7 +2275,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
                 <div className="flex items-center gap-1.5">
                   <Palette className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                  <h3 className="text-[13.5px] font-display font-semibold">
+                  <h3 className="text-[13.5px] font-sans font-semibold">
                     Màu chủ đạo giao diện
                   </h3>
                 </div>
@@ -2341,7 +2368,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
                 <div className="flex items-center gap-1.5">
                   <ImageIcon className="w-4 h-4 text-amber-800 dark:text-amber-400" />
-                  <h3 className="text-[13.5px] font-display font-semibold">
+                  <h3 className="text-[13.5px] font-sans font-semibold">
                     Ảnh nền giao diện ứng dụng
                   </h3>
                 </div>

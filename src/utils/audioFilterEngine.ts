@@ -168,6 +168,12 @@ export class FilteredAudioPlayer {
   private mediaSourceConnected = false;
   private lowShelf: BiquadFilterNode | null = null;
   private highShelf: BiquadFilterNode | null = null;
+  private lowPass: BiquadFilterNode | null = null;
+  private presencePeak: BiquadFilterNode | null = null;
+  private masterGain: GainNode | null = null;
+  private reverbDelay: DelayNode | null = null;
+  private reverbFeedback: GainNode | null = null;
+  private reverbWetGain: GainNode | null = null;
   private rafId: number | null = null;
   private objectUrl: string | null = null;
   private activeResolve: (() => void) | null = null;
@@ -229,6 +235,39 @@ export class FilteredAudioPlayer {
     }
     this.lowShelf = null;
     this.highShelf = null;
+    this.lowPass = null;
+    this.presencePeak = null;
+    this.masterGain = null;
+    this.reverbDelay = null;
+    this.reverbFeedback = null;
+    this.reverbWetGain = null;
+  }
+
+  /**
+   * Smoothly fades out audio volume before stopping (used by Sleep Timer).
+   */
+  async fadeOutAndStop(durationMs = 1200): Promise<void> {
+    if (!this.audioEl) {
+      this.stop();
+      return;
+    }
+    const steps = 16;
+    const stepMs = Math.max(25, Math.floor(durationMs / steps));
+    const initialVol = this.audioEl.volume;
+    for (let i = 1; i <= steps; i++) {
+      if (!this.audioEl) break;
+      const ratio = Math.max(0, 1 - i / steps);
+      this.audioEl.volume = initialVol * ratio;
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setTargetAtTime(ratio, this.ctx.currentTime, 0.04);
+      }
+      await new Promise((r) => setTimeout(r, stepMs));
+    }
+    this.stop();
+    if (this.audioEl) this.audioEl.volume = initialVol || 1;
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setTargetAtTime(1, this.ctx.currentTime, 0.02);
+    }
   }
 
   updateTone(tone?: VoiceToneSettings, speedMultiplier = 1.0) {
@@ -271,15 +310,60 @@ export class FilteredAudioPlayer {
     }
   }
 
-  private ensureEqGraph(audio: HTMLAudioElement, tone: VoiceToneSettings) {
-    const needsEq = Math.abs(tone.warmthDb) > 0.1 || Math.abs(tone.clarityDb) > 0.1;
+  private applySpatialParams(
+    tone: VoiceToneSettings,
+    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none'
+  ) {
+    const now = this.ctx?.currentTime ?? 0;
+    if (this.lowShelf) {
+      const warmBoost = spatialEffect === 'inner_thought' ? 2.0 : spatialEffect === 'whisper' ? -1.5 : 0;
+      this.lowShelf.gain.setTargetAtTime(tone.warmthDb + warmBoost, now, 0.03);
+    }
+    if (this.highShelf) {
+      const clearBoost = spatialEffect === 'shout' ? 2.5 : spatialEffect === 'whisper' ? -2.0 : 0;
+      this.highShelf.gain.setTargetAtTime(tone.clarityDb + clearBoost, now, 0.03);
+    }
+    if (this.lowPass) {
+      const cutoff = spatialEffect === 'whisper' ? 3800 : spatialEffect === 'inner_thought' ? 5400 : 18000;
+      this.lowPass.frequency.setTargetAtTime(cutoff, now, 0.03);
+    }
+    if (this.presencePeak) {
+      const peakGain = spatialEffect === 'shout' ? 4.2 : 0;
+      this.presencePeak.gain.setTargetAtTime(peakGain, now, 0.03);
+    }
+    if (this.reverbWetGain) {
+      // Inner thought gets a subtle closed-room echo/reverb ("vang nhẹ phòng kín")
+      const wet = spatialEffect === 'inner_thought' ? 0.24 : 0;
+      this.reverbWetGain.gain.setTargetAtTime(wet, now, 0.03);
+    }
+    if (this.masterGain) {
+      const targetGain =
+        spatialEffect === 'whisper'
+          ? 0.72
+          : spatialEffect === 'inner_thought'
+          ? 0.86
+          : spatialEffect === 'shout'
+          ? 1.12
+          : 1.0;
+      this.masterGain.gain.setTargetAtTime(targetGain, now, 0.03);
+    }
+  }
+
+  private ensureEqGraph(
+    audio: HTMLAudioElement,
+    tone: VoiceToneSettings,
+    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none'
+  ) {
+    const needsEq =
+      Math.abs(tone.warmthDb) > 0.1 ||
+      Math.abs(tone.clarityDb) > 0.1 ||
+      spatialEffect !== 'none';
 
     if (this.mediaSourceConnected && this.ctx) {
       if (this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});
       }
-      if (this.lowShelf) this.lowShelf.gain.value = tone.warmthDb;
-      if (this.highShelf) this.highShelf.gain.value = tone.clarityDb;
+      this.applySpatialParams(tone, spatialEffect);
       return;
     }
 
@@ -295,21 +379,59 @@ export class FilteredAudioPlayer {
       const lowShelf = ctx.createBiquadFilter();
       lowShelf.type = 'lowshelf';
       lowShelf.frequency.value = 240;
-      lowShelf.gain.value = tone.warmthDb;
 
       const highShelf = ctx.createBiquadFilter();
       highShelf.type = 'highshelf';
       highShelf.frequency.value = 3200;
-      highShelf.gain.value = tone.clarityDb;
+
+      const presencePeak = ctx.createBiquadFilter();
+      presencePeak.type = 'peaking';
+      presencePeak.frequency.value = 2200;
+      presencePeak.Q.value = 1.1;
+
+      const lowPass = ctx.createBiquadFilter();
+      lowPass.type = 'lowpass';
+      lowPass.frequency.value = 18000;
+
+      const masterGain = ctx.createGain();
+      masterGain.gain.value = 1.0;
+
+      // Subtle closed-room reverb loop for inner thought
+      const reverbDelay = ctx.createDelay(0.4);
+      reverbDelay.delayTime.value = 0.075;
+      const reverbFeedback = ctx.createGain();
+      reverbFeedback.gain.value = 0.28;
+      const reverbWetGain = ctx.createGain();
+      reverbWetGain.gain.value = 0;
 
       source.connect(lowShelf);
       lowShelf.connect(highShelf);
-      highShelf.connect(ctx.destination);
+      highShelf.connect(presencePeak);
+      presencePeak.connect(lowPass);
+
+      // Dry path
+      lowPass.connect(masterGain);
+      // Wet closed-room echo path
+      lowPass.connect(reverbDelay);
+      reverbDelay.connect(reverbFeedback);
+      reverbFeedback.connect(reverbDelay);
+      reverbDelay.connect(reverbWetGain);
+      reverbWetGain.connect(masterGain);
+
+      masterGain.connect(ctx.destination);
 
       this.ctx = ctx;
       this.lowShelf = lowShelf;
       this.highShelf = highShelf;
+      this.presencePeak = presencePeak;
+      this.lowPass = lowPass;
+      this.masterGain = masterGain;
+      this.reverbDelay = reverbDelay;
+      this.reverbFeedback = reverbFeedback;
+      this.reverbWetGain = reverbWetGain;
       this.mediaSourceConnected = true;
+
+      this.applySpatialParams(tone, spatialEffect);
     } catch {
       // Fallback cleanly to native <audio> playback without EQ
     }
@@ -319,19 +441,23 @@ export class FilteredAudioPlayer {
     src: string,
     tone: VoiceToneSettings = DEFAULT_VOICE_TONE,
     speedMultiplier = 1.0,
-    onProgress?: (ratio: number) => void
+    onProgress?: (ratio: number) => void,
+    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none'
   ): Promise<void> {
     this.clearActiveListeners();
     const audio = this.ensureAudioElement();
     audio.pause();
+    audio.volume = spatialEffect === 'whisper' ? 0.78 : spatialEffect === 'inner_thought' ? 0.9 : 1.0;
 
     const playableUrl = this.toPlayableUrl(src);
     audio.src = playableUrl;
+    const spatialRateMod =
+      spatialEffect === 'shout' ? 1.05 : spatialEffect === 'whisper' ? 0.95 : 1.0;
     audio.playbackRate = Math.min(
       MAX_READING_SPEED,
-      Math.max(MIN_READING_SPEED, tone.rate * speedMultiplier)
+      Math.max(MIN_READING_SPEED, tone.rate * speedMultiplier * spatialRateMod)
     );
-    this.ensureEqGraph(audio, tone);
+    this.ensureEqGraph(audio, tone, spatialEffect);
 
     return new Promise((resolve, reject) => {
       this.activeResolve = resolve;

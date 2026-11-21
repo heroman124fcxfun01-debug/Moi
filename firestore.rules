@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model (Zero PII — Anonymous Book Sharing)
+    // ===============================================================
+    // Collection: books
+    // Fields: id, title, title_normalized, author, genre, format (EPUB|PDF|TXT),
+    //         downloads, created_at, updated_at
+    //
+    // Collection: book_links
+    // Fields: id, book_id, drive_url, drive_file_id, format (EPUB|PDF|TXT),
+    //         success_count, good_votes, fail_count, consecutive_fails,
+    //         score, is_active, created_at
+
+    function hasOnlyAllowedFields(allowed) {
+      return request.resource.data.keys().hasOnly(allowed);
+    }
+
+    function isValidFormat(fmt) {
+      return fmt in ['EPUB', 'PDF', 'TXT'];
+    }
+
+    function isValidDriveUrl(url) {
+      return url is string
+        && url.size() >= 25
+        && url.size() <= 400
+        && url.matches('^https://(drive|docs)\\.google\\.com/.*');
+    }
+
+    function isValidBook(data) {
+      return hasOnlyAllowedFields([
+          'id', 'title', 'title_normalized', 'author', 'genre',
+          'format', 'downloads', 'created_at', 'updated_at'
+        ])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 120
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 200
+        && data.title_normalized is string && data.title_normalized.size() >= 2 && data.title_normalized.size() <= 200
+        && data.author is string && data.author.size() >= 1 && data.author.size() <= 120
+        && data.genre is string && data.genre.size() >= 1 && data.genre.size() <= 60
+        && isValidFormat(data.format)
+        && data.downloads is number && data.downloads >= 0
+        && data.created_at is number && data.created_at > 0
+        && data.updated_at is number && data.updated_at > 0;
+    }
+
+    function isValidBookLink(data) {
+      return hasOnlyAllowedFields([
+          'id', 'book_id', 'drive_url', 'drive_file_id', 'format',
+          'success_count', 'good_votes', 'fail_count', 'consecutive_fails',
+          'score', 'is_active', 'created_at'
+        ])
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 120
+        && data.book_id is string && data.book_id.size() > 0 && data.book_id.size() <= 120
+        && isValidDriveUrl(data.drive_url)
+        && data.drive_file_id is string && data.drive_file_id.size() >= 10 && data.drive_file_id.size() <= 120
+        && isValidFormat(data.format)
+        && data.success_count is number && data.success_count >= 0
+        && data.good_votes is number && data.good_votes >= 0
+        && data.fail_count is number && data.fail_count >= 0
+        && data.consecutive_fails is number && data.consecutive_fails >= 0
+        && data.score is number
+        && data.is_active is bool
+        && data.created_at is number && data.created_at > 0;
+    }
+
+    // Anonymous Community Books Catalog (Zero PII)
+    match /books/{bookId} {
+      allow read: if true;
+      allow create: if isValidBook(request.resource.data)
+        && request.resource.data.downloads == 0;
+      allow update: if isValidBook(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['downloads', 'updated_at'])
+        && request.resource.data.downloads >= resource.data.downloads
+        && request.resource.data.downloads <= resource.data.downloads + 1;
+      allow delete: if false;
+    }
+
+    // Anonymous Community Book Drive Links (Quality Ranking & Auto-Hide)
+    match /book_links/{linkId} {
+      allow read: if true;
+      allow create: if isValidBookLink(request.resource.data)
+        && request.resource.data.fail_count == 0
+        && request.resource.data.consecutive_fails == 0
+        && request.resource.data.is_active == true;
+      allow update: if isValidBookLink(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'success_count', 'good_votes', 'fail_count', 'consecutive_fails', 'score', 'is_active'
+        ])
+        && request.resource.data.drive_file_id == resource.data.drive_file_id
+        && request.resource.data.book_id == resource.data.book_id;
+      allow delete: if false;
+    }
+
+    // Default deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BOOKHAD — Chính sách Quyền riêng tư &amp; Miễn trừ Trách nhiệm</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        margin: 0;
+        padding: 24px 16px 48px;
+        background: #f7f4ee;
+        color: #1c1917;
+        line-height: 1.65;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #121316;
+          color: #e7e5e4;
+        }
+        .card {
+          background: #181a1f !important;
+          border-color: #292c34 !important;
+        }
+      }
+      .wrap {
+        max-width: 740px;
+        margin: 0 auto;
+      }
+      .card {
+        background: #ffffff;
+        border: 1px solid #e7e5e4;
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: 0 6px 20px rgba(24, 20, 16, 0.06);
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 6px;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 22px 0 8px;
+        color: #92400e;
+      }
+      @media (prefers-color-scheme: dark) {
+        h2 {
+          color: #f59e0b;
+        }
+      }
+      p,
+      li {
+        font-size: 14px;
+      }
+      .meta {
+        font-size: 12px;
+        opacity: 0.7;
+        margin-bottom: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Chính sách Quyền riêng tư &amp; Miễn trừ Trách nhiệm — BOOKHAD</h1>
+        <p class="meta">Cập nhật lần cuối: 2025 · Liên hệ hỗ trợ: support@bookhad.app</p>
+
+        <h2>1. Không thu thập dữ liệu cá nhân (Zero PII)</h2>
+        <p>
+          BOOKHAD được thiết kế theo nguyên tắc ưu tiên cục bộ (local-first). Ứng dụng không yêu cầu
+          đăng ký tài khoản, không thu thập họ tên, email, số điện thoại, định danh thiết bị hay dữ
+          liệu theo dõi quảng cáo. Toàn bộ tủ sách, tiến độ đọc, ghi chú và giọng đọc tùy chỉnh được
+          lưu trực tiếp trong bộ nhớ cục bộ của thiết bị.
+        </p>
+
+        <h2>2. Đồng bộ Google Drive (Phạm vi tối thiểu drive.file)</h2>
+        <p>
+          Khi người dùng chủ động bật tính năng sao lưu đám mây, BOOKHAD sử dụng quy trình xác thực
+          OAuth 2.0 + PKCE trực tiếp với Google và chỉ yêu cầu duy nhất phạm vi
+          <code>https://www.googleapis.com/auth/drive.file</code>. Ứng dụng chỉ có quyền đọc/ghi
+          trên đúng các tệp sao lưu do chính ứng dụng tạo ra và hoàn toàn không thể xem các tệp cá
+          nhân khác trên Google Drive của bạn.
+        </p>
+
+        <h2>3. Cộng đồng Chia sẻ Ẩn danh</h2>
+        <p>
+          Tính năng chia sẻ sách cộng đồng hoạt động hoàn toàn ẩn danh và chỉ lưu trữ siêu dữ liệu
+          văn bản (tên sách, tác giả, thể loại, liên kết Google Drive công khai do người dùng tự
+          cung cấp). BOOKHAD không lưu trữ tệp sách có bản quyền trên máy chủ của mình.
+        </p>
+
+        <h2>4. Công cụ Ghi chú Văn bản từ Phụ đề YouTube</h2>
+        <p>
+          Tính năng quét YouTube chỉ đọc văn bản phụ đề công khai (captions/transcripts) của video
+          để hỗ trợ người dùng biên tập thành ghi chú đọc sách cá nhân. Ứng dụng tuân thủ nghiêm
+          ngặt chính sách kho ứng dụng: không phát video chạy nền, không ghi âm hệ thống và không
+          tải xuống tệp âm thanh/video MP3 hay MP4.
+        </p>
+
+        <h2>5. Tuyên bố Miễn trừ Trách nhiệm</h2>
+        <p>
+          BOOKHAD là công cụ đọc tài liệu và hỗ trợ nghe đọc cá nhân. Người dùng hoàn toàn chịu
+          trách nhiệm về quyền sở hữu và bản quyền đối với mọi tệp EPUB, PDF, TXT cũng như các đường
+          dẫn mà mình tự nhập hoặc chia sẻ trong ứng dụng.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

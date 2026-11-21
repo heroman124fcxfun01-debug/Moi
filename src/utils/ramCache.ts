@@ -75,6 +75,7 @@ export const storageRamCache = new RamLruCache<unknown>(32);
 export const chapterPaginationRamCache = new RamLruCache<unknown>(80);
 export const bookPaginationRamCache = new RamLruCache<unknown>(24);
 export const renderedParagraphsRamCache = new RamLruCache<unknown>(60);
+export const ramCache = new RamLruCache<unknown>(80);
 
 let lifecycleHookAttached = false;
 
@@ -90,6 +91,7 @@ export function ensureRamCacheLifecycle(): void {
       chapterPaginationRamCache.trimTo(24);
       bookPaginationRamCache.trimTo(8);
       renderedParagraphsRamCache.trimTo(20);
+      ramCache.trimTo(24);
     }
   });
 }

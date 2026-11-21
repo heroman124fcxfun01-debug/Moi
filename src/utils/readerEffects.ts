@@ -184,6 +184,12 @@ export interface CornerCurlGeometry {
   tipY: number;
   /** Opacity for cast shadow & flap depth */
   shadowOpacity: number;
+  /** CSS clip-path polygon for the curled underside paper flap (matching mirrored back-face) */
+  flapClipPath: string;
+  /** CSS transform to mirror the back-face of current page onto the curled corner */
+  backfaceTransform: string;
+  /** Specular crease highlight opacity along the curved fold */
+  creaseHighlightOpacity: number;
 }
 
 /**
@@ -205,6 +211,9 @@ export function computeCornerCurlGeometry(peelInput: number): CornerCurlGeometry
       tipX: 100,
       tipY: 100,
       shadowOpacity: 0,
+      flapClipPath: 'polygon(100% 100%, 100% 100%, 100% 100%)',
+      backfaceTransform: 'none',
+      creaseHighlightOpacity: 0,
     };
   }
 
@@ -320,7 +329,18 @@ export function computeCornerCurlGeometry(peelInput: number): CornerCurlGeometry
       ? ''
       : `M ${pAx.toFixed(2)} ${pAy.toFixed(2)} L ${pBx.toFixed(2)} ${pBy.toFixed(2)}`;
 
-  const shadowOpacity = Number((Math.sin(peel * Math.PI) * 0.42).toFixed(3));
+  const shadowOpacity = Number((Math.sin(peel * Math.PI) * 0.44).toFixed(3));
+  const creaseHighlightOpacity = Number((Math.sin(peel * Math.PI) * 0.65).toFixed(3));
+  const flapClipPath =
+    peel >= 0.995
+      ? 'polygon(0% 0%, 0% 0%, 0% 0%)'
+      : `polygon(${pAx.toFixed(2)}% ${pAy.toFixed(2)}%, ${tipX.toFixed(2)}% ${tipY.toFixed(2)}%, ${pBx.toFixed(2)}% ${pBy.toFixed(2)}%)`;
+
+  // Mirror & rotate back-face slightly along fold angle so curled paper shows faint reversed text
+  const foldAngleDeg = Number(((Math.atan2(pBy - pAy, pBx - pAx) * 180) / Math.PI).toFixed(1));
+  const shiftX = Number(((tipX - 100) * 0.45).toFixed(1));
+  const shiftY = Number(((tipY - 100) * 0.45).toFixed(1));
+  const backfaceTransform = `translate3d(${shiftX}%, ${shiftY}%, 0) scaleX(-1) rotate(${(foldAngleDeg + 45) * 0.2}deg)`;
 
   return {
     peel,
@@ -333,6 +353,9 @@ export function computeCornerCurlGeometry(peelInput: number): CornerCurlGeometry
     tipX: Number(tipX.toFixed(2)),
     tipY: Number(tipY.toFixed(2)),
     shadowOpacity,
+    flapClipPath,
+    backfaceTransform,
+    creaseHighlightOpacity,
   };
 }
 
@@ -343,14 +366,16 @@ export interface InteractiveSlideFadeTransform {
   opacity: number;
   underlayOpacity: number;
   underlayScale: number;
+  underlayBrightness: number;
+  edgeShadowOpacity: number;
   shouldCommitFlip: boolean;
 }
 
 /**
- * Maps horizontal finger drag in Slide mode:
- * - Dragging horizontally immediately shifts the entire current page 1:1 with the finger
- * - Simultaneously fades the dragged page smoothly from opacity 1 -> 0.08 as you hold & pull
- * - Releasing past threshold lets the page finish gliding away and disappearing (opacity -> 0).
+ * Maps horizontal finger drag in Modern Slide & Depth Parallax mode:
+ * - Dragging shifts the top page 1:1 with finger while fading smoothly
+ * - Thin dark edge shadow trails along the sliding edge
+ * - Underlying next page scales cleanly 0.95 -> 1.0 and brightens 0.86 -> 1.0
  */
 export function computeInteractiveSlideFade(
   deltaX: number,
@@ -359,10 +384,11 @@ export function computeInteractiveSlideFade(
   const safeWidth = Math.max(140, stageWidth || 360);
   const direction: 'next' | 'prev' = deltaX <= 0 ? 'next' : 'prev';
   const progress = Math.min(1, Math.max(0, Math.abs(deltaX) / (safeWidth * 0.85)));
-  // Immediate fade-out feel while dragging ("lúc ấn giữ kéo sang là bắt đầu mờ dần")
-  const opacity = Number(Math.max(0.05, 1 - Math.pow(progress, 0.85) * 0.92).toFixed(3));
-  const underlayOpacity = Number(Math.min(1, 0.86 + progress * 0.14).toFixed(3));
-  const underlayScale = Number((0.985 + progress * 0.015).toFixed(4));
+  const opacity = Number(Math.max(0.06, 1 - Math.pow(progress, 0.85) * 0.9).toFixed(3));
+  const underlayOpacity = Number(Math.min(1, 0.84 + progress * 0.16).toFixed(3));
+  const underlayScale = Number((0.95 + progress * 0.05).toFixed(4));
+  const underlayBrightness = Number((0.86 + progress * 0.14).toFixed(3));
+  const edgeShadowOpacity = Number((Math.sin(progress * Math.PI) * 0.34 + (progress > 0.02 ? 0.08 : 0)).toFixed(3));
   const shouldCommitFlip = progress >= 0.16 || Math.abs(deltaX) >= 44;
 
   return {
@@ -372,6 +398,8 @@ export function computeInteractiveSlideFade(
     opacity,
     underlayOpacity,
     underlayScale,
+    underlayBrightness,
+    edgeShadowOpacity,
     shouldCommitFlip,
   };
 }

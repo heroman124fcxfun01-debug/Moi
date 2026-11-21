@@ -1,4 +1,5 @@
 import type {
+  Book,
   BookReadingStyle,
   ChapterAnalysis,
   CharacterInfo,
@@ -7,6 +8,10 @@ import type {
   ScriptSegment,
 } from '../types/book';
 import { DEFAULT_VOICE_TONE } from './audioFilterEngine';
+import {
+  splitNarrationDialogueAndThought,
+  detectSpatialEffect,
+} from './aiScriptDirector';
 
 export interface CharacterVoicePreset {
   voiceName: GeminiVoiceName;
@@ -488,15 +493,15 @@ export function analyzeChapterOnDevice(
   let narratorLines = 0;
 
   paragraphs.forEach((para, pIdx) => {
-    const pieces = splitParagraphDialogue(para);
-    if (pieces.length === 0) return;
+    // AI 2 Director: Strictly separate narration lead, direct spoken dialogue, and inner thought
+    const directed = splitNarrationDialogueAndThought(para, lastMentionedName || 'Nhân vật');
+    if (directed.length === 0) return;
 
-    // For non-novel styles (research / selfhelp), treat cleanly as single speaker unless clear quotes exist
     const allowRoleSplit = readingStyle === 'novel' || readingStyle === 'essay';
 
-    for (const piece of pieces) {
-      if (!piece.isDialogue || !allowRoleSplit) {
-        const mentioned = extractSpeakerFromContext(piece.text);
+    for (const chunk of directed) {
+      if (chunk.segmentType === 'narration' || !allowRoleSplit) {
+        const mentioned = extractSpeakerFromContext(chunk.text);
         if (mentioned) lastMentionedName = mentioned;
         narratorLines += 1;
         script.push({
@@ -509,14 +514,24 @@ export function analyzeChapterOnDevice(
               ? 'Tự tin, nhấn mạnh ý trọng tâm'
               : readingStyle === 'research'
               ? 'Rõ ràng, mạch lạc'
-              : 'Trầm tư kể chuyện, tự nhiên',
-          text: piece.text,
+              : chunk.emotionStyle || 'Trầm tư kể chuyện, tự nhiên',
+          text: chunk.text,
+          segmentType: 'narration',
+          spatialEffect: 'none',
         });
         continue;
       }
 
-      // Attribute dialogue speaker locally
-      let detectedName = extractSpeakerFromContext(piece.surrounding);
+      // Attribute spoken dialogue or inner thought strictly to character
+      const contextSpeaker = extractSpeakerFromContext(para);
+      const validHint =
+        chunk.speakerHint &&
+        chunk.speakerHint !== 'Nhân vật' &&
+        chunk.speakerHint !== 'Narrator' &&
+        chunk.speakerHint.split(/\s+/).length <= 4
+          ? chunk.speakerHint
+          : null;
+      let detectedName = contextSpeaker || validHint;
       if (!detectedName && lastMentionedName) {
         detectedName = lastMentionedName;
       }
@@ -525,25 +540,24 @@ export function analyzeChapterOnDevice(
       let speakerName: string;
 
       if (detectedName) {
-        const ch = ensureChar(detectedName, piece.text, piece.surrounding);
+        const ch = ensureChar(detectedName, chunk.text, para);
         speakerId = ch.id;
         speakerName = ch.name;
         lastMentionedName = ch.name;
       } else if (prevSpeakerId && prevSpeakerId !== lastSpeakerId) {
-        // Alternating two-person conversation heuristic
         const alt = charMap.get(prevSpeakerId);
         if (alt) {
           alt.lineCount += 1;
           speakerId = alt.id;
           speakerName = alt.name;
         } else {
-          const fallback = ensureChar('Nhân Vật 1', piece.text, piece.surrounding);
+          const fallback = ensureChar('Nhân Vật 1', chunk.text, para);
           speakerId = fallback.id;
           speakerName = fallback.name;
         }
       } else {
-        const fallbackLabel = `Nhân Vật ${Math.min(5, charMap.size + 1)}`;
-        const fallback = ensureChar(fallbackLabel, piece.text, piece.surrounding);
+        const fallbackLabel = `Nhân Vật ${Math.min(10, charMap.size + 1)}`;
+        const fallback = ensureChar(fallbackLabel, chunk.text, para);
         speakerId = fallback.id;
         speakerName = fallback.name;
       }
@@ -553,13 +567,23 @@ export function analyzeChapterOnDevice(
       }
       lastSpeakerId = speakerId;
 
+      const spatial =
+        chunk.spatialEffect !== 'none'
+          ? chunk.spatialEffect
+          : detectSpatialEffect(chunk.segmentType, para, chunk.text);
+
       script.push({
         id: `local-seg-${script.length}`,
         paragraphIndex: pIdx,
         speakerId,
         speakerName,
-        emotionStyle: detectEmotionFromLine(piece.text, piece.surrounding),
-        text: piece.text,
+        emotionStyle:
+          chunk.segmentType === 'inner_thought'
+            ? 'Nội tâm trầm lắng, suy tư'
+            : detectEmotionFromLine(chunk.text, para),
+        text: chunk.text,
+        segmentType: chunk.segmentType,
+        spatialEffect: spatial,
       });
     }
   });
@@ -735,3 +759,86 @@ export function applyNarratorVoiceToCharacters(
   }
   return next;
 }
+
+/**
+ * AI 5 Character Memory — Book-Wide Top 10 Scanner:
+ * Scans ALL chapters of the entire book (not just the current chapter), ranks characters
+ * by dialogue & inner-thought frequency across the whole book, and caps at Top 10
+ * characters plus the Narrator so voice memory stays consistent across every chapter.
+ */
+export function analyzeBookTopCharacters(
+  book: Book,
+  readingStyle: BookReadingStyle = 'novel',
+  maxCharacters = 10
+): {
+  topCharacters: CharacterInfo[];
+  totalChaptersScanned: number;
+  summary: string;
+} {
+  const aggregate = new Map<
+    string,
+    {
+      info: CharacterInfo;
+      totalLines: number;
+    }
+  >();
+
+  let narratorTotalLines = 0;
+
+  for (const ch of book.chapters || []) {
+    const chAnalysis = analyzeChapterOnDevice(ch.title, ch.paragraphs || [], readingStyle);
+    for (const c of chAnalysis.characters) {
+      if (c.id === 'narrator') {
+        narratorTotalLines += c.lineCount;
+        continue;
+      }
+      const existing = aggregate.get(c.id);
+      if (existing) {
+        existing.totalLines += c.lineCount;
+        existing.info.lineCount = existing.totalLines;
+      } else {
+        aggregate.set(c.id, {
+          info: { ...c },
+          totalLines: c.lineCount,
+        });
+      }
+    }
+  }
+
+  const ranked = Array.from(aggregate.values())
+    .sort((a, b) => b.totalLines - a.totalLines)
+    .slice(0, Math.max(1, maxCharacters))
+    .map((entry, idx) => {
+      const poolPreset = CHARACTER_VOICE_POOL[idx % CHARACTER_VOICE_POOL.length];
+      return {
+        ...entry.info,
+        role: idx === 0 && entry.info.role !== 'antagonist' ? ('protagonist' as const) : entry.info.role,
+        suggestedVoiceName: entry.info.suggestedVoiceName || poolPreset.voiceName,
+      };
+    });
+
+  const narratorInfo: CharacterInfo = {
+    id: 'narrator',
+    name: readingStyle === 'selfhelp' ? 'Diễn giả chính' : 'Người dẫn chuyện',
+    role: 'narrator',
+    gender: 'neutral',
+    ageGroup: 'Trưởng thành',
+    voiceDescription: 'Giọng dẫn mạch truyện chính xuyên suốt toàn bộ sách',
+    suggestedVoiceName: 'Kore',
+    lineCount: narratorTotalLines,
+    sampleQuote: book.chapters?.[0]?.paragraphs?.[0]?.slice(0, 90) || book.title,
+  };
+
+  const namesPreview = ranked.slice(0, 4).map((c) => c.name).join(', ');
+  const summary =
+    ranked.length > 0
+      ? `Đã quét toàn bộ ${book.chapters.length} chương — lọc ra ${ranked.length} nhân vật xuất hiện nhiều nhất (${namesPreview}${ranked.length > 4 ? '...' : ''}).`
+      : `Đã quét ${book.chapters.length} chương — không phát hiện hội thoại tách biệt.`;
+
+  return {
+    topCharacters: [narratorInfo, ...ranked],
+    totalChaptersScanned: book.chapters.length,
+    summary,
+  };
+}
+

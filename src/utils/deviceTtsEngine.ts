@@ -36,7 +36,11 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
   clarityDb: number;
   stylePrompt: string;
 } {
-  const baseVoice = ext.analyzedProfile?.recommendedBaseVoice || 'Kore';
+  const promptParams = ext.promptParams;
+  const baseVoice =
+    promptParams?.recommendedBaseVoice ||
+    ext.analyzedProfile?.recommendedBaseVoice ||
+    'Kore';
   const preset = ON_DEVICE_VOICE_TONES[baseVoice] || ON_DEVICE_VOICE_TONES.Kore;
   const tone = ext.toneSettings;
   const analyzed = ext.analyzedProfile;
@@ -46,21 +50,24 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
       ? analyzed.gender
       : preset.preferGender;
 
-  const rawPitch = tone?.pitch ?? analyzed?.pitchHint ?? preset.pitch;
-  const rawRate = tone?.rate ?? analyzed?.rateHint ?? preset.rate;
-  const warmthDb = tone?.warmthDb ?? analyzed?.warmthDb ?? (preferGender === 'male' ? 3 : 0);
-  const clarityDb = tone?.clarityDb ?? analyzed?.clarityDb ?? 1;
+  const rawPitch = promptParams?.pitch ?? tone?.pitch ?? analyzed?.pitchHint ?? preset.pitch;
+  const rawRate = promptParams?.speed ?? tone?.rate ?? analyzed?.rateHint ?? preset.rate;
+  const warmthDb =
+    promptParams?.warmthDb ?? tone?.warmthDb ?? analyzed?.warmthDb ?? (preferGender === 'male' ? 3 : 0);
+  const clarityDb =
+    promptParams?.clarityDb ?? tone?.clarityDb ?? analyzed?.clarityDb ?? 1;
 
-  // Reflect EQ warmth/clarity subtly in on-device pitch so EQ-tuned voices are audibly distinct even offline
+  // Reflect EQ warmth/clarity subtly in on-device pitch so EQ-tuned & prompt-tuned voices are audibly distinct even offline
   const warmthShift = -warmthDb * 0.014;
   const clarityShift = clarityDb * 0.01;
   const pitch = Math.min(1.68, Math.max(0.58, Math.round((rawPitch + warmthShift + clarityShift) * 100) / 100));
   const rate = Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, Math.round(rawRate * 100) / 100));
 
-  // Deterministic slot offset from voice id so distinct custom voices rotate through device voices
+  // Deterministic slot offset from unique voiceId / id so distinct custom voices rotate through device voices
+  const seedKey = ext.voiceId || ext.id;
   let hash = 0;
-  for (let i = 0; i < ext.id.length; i++) {
-    hash = (hash * 31 + ext.id.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < seedKey.length; i++) {
+    hash = (hash * 31 + seedKey.charCodeAt(i)) >>> 0;
   }
   const voiceSlotIndex = (preset.voiceSlotIndex + (hash % 4)) % 6;
 
@@ -73,7 +80,9 @@ export function computeExternalVoiceSpeechParams(ext: ExternalVoiceAsset): {
     warmthDb,
     clarityDb,
     stylePrompt:
+      promptParams?.geminiStylePrompt ||
       analyzed?.stylePrompt ||
+      tone?.styleDirection ||
       `Đọc theo âm sắc giọng ${ext.name}, giữ nhịp tự nhiên và truyền cảm`,
   };
 }
