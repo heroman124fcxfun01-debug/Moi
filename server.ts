@@ -1419,6 +1419,140 @@ Return JSON with:
     }
   });
 
+  // Job 1 AI: Proofread & classify suspicious paragraphs on book import / cleanup
+  app.post('/api/ai/proofread-book', async (req, res) => {
+    try {
+      const { bookTitle = '', candidates = [] } = req.body as {
+        bookTitle?: string;
+        candidates?: Array<{ chapterIndex: number; paragraphIndex: number; text: string }>;
+      };
+
+      if (!Array.isArray(candidates) || candidates.length === 0) {
+        res.json({ findings: [] });
+        return;
+      }
+
+      const ai = getAiClient();
+      const bounded = candidates.slice(0, 28);
+      const formatted = bounded
+        .map(
+          (c, i) =>
+            `[${i}] (ch=${c.chapterIndex}, p=${c.paragraphIndex}) ${String(c.text || '').slice(0, 500)}`
+        )
+        .join('\n');
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: `Bạn là AI biên tập và hiệu đính sách tiếng Việt cho ứng dụng BOOKHAD. Sách: "${bookTitle}".
+Hãy kiểm tra danh sách đoạn văn nghi ngờ lỗi dưới đây và CHỈ trả về các đoạn thực sự có lỗi cần xóa hoặc sửa, phân loại vào đúng 1 trong 3 mục:
+1. "addressesAndHeaders": Địa chỉ tải truyện/sách (vtbook, truyenfull, http://, www...), dòng bản quyền/chân trang web, tiêu đề lặp thừa, dòng toàn dấu gạch/ký hiệu thừa (---, ===, ***). Nếu cả đoạn là rác/địa chỉ -> action="remove". Nếu dính link trong câu chuyện -> action="replace" và xóa sạch link/ký hiệu thừa.
+2. "typosAndCensored": Từ bị che ký tự * (ví dụ "l*n đ*nh núi" -> "lên đỉnh núi", "gi*t" -> "giết", "ng*ời" -> "người"), lỗi chính tả/gõ tắt/OCR tiếng Việt (ví dụ "ci" -> "chị", "ko" -> "không", "đc" -> "được", lỗi dính số trong chữ), cú pháp sai. Giữ nguyên ý văn học, KHÔNG viết lại câu đúng.
+3. "repeatedNotes": Dòng chú thích dịch giả/converter, lời nhắn lặp lại, dòng kết chương thừa.
+
+Đoạn cần kiểm tra:
+${formatted}`,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              findings: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    chapterIndex: { type: Type.INTEGER },
+                    paragraphIndex: { type: Type.INTEGER },
+                    category: { type: Type.STRING },
+                    action: { type: Type.STRING },
+                    cleaned: { type: Type.STRING },
+                    reason: { type: Type.STRING },
+                  },
+                  required: ['chapterIndex', 'paragraphIndex', 'category', 'action', 'reason'],
+                },
+              },
+            },
+            required: ['findings'],
+          },
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}') as { findings?: unknown[] };
+      res.json({
+        findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Lỗi AI quét & hiệu đính sách.';
+      res.status(500).json({ error: msg, findings: [] });
+    }
+  });
+
+  // Job 2 AI: Live Pre-Read Lookahead Scanner running AHEAD of the AI Voice Reader
+  app.post('/api/ai/preread-scan', async (req, res) => {
+    try {
+      const { bookTitle = '', chapterTitle = '', items = [] } = req.body as {
+        bookTitle?: string;
+        chapterTitle?: string;
+        items?: Array<{ paragraphIndex: number; text: string }>;
+      };
+
+      if (!Array.isArray(items) || items.length === 0) {
+        res.json({ decisions: [] });
+        return;
+      }
+
+      const ai = getAiClient();
+      const bounded = items.slice(0, 12);
+      const formatted = bounded
+        .map((it) => `[P${it.paragraphIndex}] ${String(it.text || '').slice(0, 480)}`)
+        .join('\n');
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: `Bạn là AI tiền quét chạy TRƯỚC AI đọc sách nói (Sách: "${bookTitle}", Chương: "${chapterTitle}").
+Nhiệm vụ của bạn là đọc lướt trước từng đoạn sắp phát để báo cho AI đọc biết đoạn nào CẦN BỎ QUA không đọc và đoạn nào CẦN SỬA CHỮ cho chuẩn tiếng Việt:
+- action = "skip": Đoạn là địa chỉ tải truyện/web (vtbook, http, www, tên miền), lời nhắn quảng cáo cuối trang, ký hiệu phân cách thừa (---, ===, ***), số trang, tiêu đề lặp hoặc chú thích rác không thuộc nội dung câu chuyện. Ghi rõ reason ngắn gọn bằng tiếng Việt (ví dụ: "Địa chỉ tải web").
+- action = "fix": Đoạn thuộc nội dung sách nhưng dính link/watermark, từ bị che dấu * ("l*n đ*nh" -> "lên đỉnh"), sai chính tả/OCR ("ci" -> "chị", "ko" -> "không", "đc" -> "được"), ký hiệu thừa. Trả về cleanedText mượt mà, tự nhiên để AI đọc thành tiếng.
+- action = "keep": Nội dung văn học sạch, giữ nguyên không cần sửa.
+
+Các đoạn sắp đọc:
+${formatted}`,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              decisions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    paragraphIndex: { type: Type.INTEGER },
+                    action: { type: Type.STRING },
+                    cleanedText: { type: Type.STRING },
+                    reason: { type: Type.STRING },
+                  },
+                  required: ['paragraphIndex', 'action'],
+                },
+              },
+            },
+            required: ['decisions'],
+          },
+        },
+      });
+
+      const parsed = JSON.parse(response.text || '{}') as { decisions?: unknown[] };
+      res.json({
+        decisions: Array.isArray(parsed.decisions) ? parsed.decisions : [],
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Lỗi AI tiền quét trước khi đọc.';
+      res.status(500).json({ error: msg, decisions: [] });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     // Serve a clean WebSocket-free @vite/client stub because HMR/WS is disabled behind the reverse proxy
     app.get('/@vite/client', (_req, res) => {

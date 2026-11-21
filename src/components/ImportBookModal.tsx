@@ -30,6 +30,13 @@ import {
   assembleScannedPagesToBook,
   extractDistinctBookFramesFromVideo,
 } from '../utils/videoBookScanner';
+import {
+  applyBookCleanupSelection,
+  type BookCleanupReport,
+  type CleanupSelection,
+} from '../utils/aiContentCleaner';
+import { runImportBookAiScan } from '../utils/aiContentCleanerClient';
+import { BookCleanupReviewModal } from './BookCleanupReviewModal';
 import { GlassSelect } from './GlassSelect';
 
 interface ImportBookModalProps {
@@ -81,12 +88,49 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
   const [imageTargetLang, setImageTargetLang] = useState('vi');
   const [imageBookTitle, setImageBookTitle] = useState('');
 
+  // Job 1 AI Cleanup Review state before finalizing imported book
+  const [pendingCleanup, setPendingCleanup] = useState<{
+    book: Book;
+    report: BookCleanupReport;
+    exportEpubAfter?: boolean;
+  } | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
+
+  const finalizeBookImport = async (finalBook: Book, exportEpub?: boolean) => {
+    if (exportEpub) {
+      setIsBusy(true);
+      setStatusMessage('Đang tạo tệp .EPUB sạch...');
+      try {
+        const epubBlob = await buildEpubBlob(finalBook);
+        downloadBlob(epubBlob, `${slugifyFilename(finalBook.title)}.epub`);
+      } finally {
+        setIsBusy(false);
+        setStatusMessage('');
+      }
+    }
+    setPendingCleanup(null);
+    onImportBook(finalBook, true);
+    onClose();
+  };
+
+  const scanAndConfirmOrImport = async (draftBook: Book, exportEpubAfter = false) => {
+    const report = await runImportBookAiScan(draftBook, setStatusMessage);
+    if (report.totalIssues > 0) {
+      setPendingCleanup({
+        book: draftBook,
+        report,
+        exportEpubAfter,
+      });
+      return;
+    }
+    await finalizeBookImport(draftBook, exportEpubAfter);
+  };
 
   const handleEpubOrPdfFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -108,8 +152,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             addedAt: Date.now(),
             lastReadAt: Date.now(),
           };
-          onImportBook(newBook, true);
-          onClose();
+          await scanAndConfirmOrImport(newBook, false);
           return;
         }
 
@@ -129,13 +172,8 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             addedAt: Date.now(),
             lastReadAt: Date.now(),
           };
-          if (autoExportPdfToEpub) {
-            setStatusMessage(`Đã đọc ${pageCount} trang. Đang tạo file .EPUB...`);
-            const epubBlob = await buildEpubBlob(newBook);
-            downloadBlob(epubBlob, `${slugifyFilename(newBook.title)}.epub`);
-          }
-          onImportBook(newBook, true);
-          onClose();
+          setStatusMessage(`Đã đọc ${pageCount} trang. AI đang quét làm sạch nội dung...`);
+          await scanAndConfirmOrImport(newBook, autoExportPdfToEpub);
           return;
         }
 
@@ -173,8 +211,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
             addedAt: Date.now(),
             lastReadAt: Date.now(),
           };
-          onImportBook(newBook, true);
-          onClose();
+          await scanAndConfirmOrImport(newBook, false);
           return;
         }
 
@@ -185,6 +222,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
     } finally {
       setIsBusy(false);
       setStatusMessage('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -317,8 +355,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
         lastReadAt: Date.now(),
       };
 
-      onImportBook(newBook, true);
-      onClose();
+      await scanAndConfirmOrImport(newBook, false);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Lỗi xử lý ảnh.');
     } finally {
@@ -403,12 +440,7 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
         targetLang: imageTargetLang,
       });
 
-      setStatusMessage('Đang đóng gói thành sách .EPUB...');
-      const epubBlob = await buildEpubBlob(assembledBook);
-      downloadBlob(epubBlob, `${slugifyFilename(assembledBook.title)}.epub`);
-
-      onImportBook(assembledBook, true);
-      onClose();
+      await scanAndConfirmOrImport(assembledBook, true);
     } catch (err) {
       setErrorMessage(
         err instanceof Error ? err.message : 'Không thể quét video đọc sách.'
@@ -719,6 +751,27 @@ export const ImportBookModal: React.FC<ImportBookModalProps> = ({
           )}
         </div>
       </div>
+
+      {pendingCleanup && (
+        <BookCleanupReviewModal
+          isOpen
+          bookTitle={pendingCleanup.book.title}
+          report={pendingCleanup.report}
+          confirmLabel="Áp dụng & Lưu"
+          keepOriginalLabel="Giữ nguyên"
+          onKeepOriginal={() => {
+            void finalizeBookImport(pendingCleanup.book, pendingCleanup.exportEpubAfter);
+          }}
+          onConfirm={(selection: CleanupSelection) => {
+            const { cleanedBook } = applyBookCleanupSelection(
+              pendingCleanup.book,
+              pendingCleanup.report,
+              selection
+            );
+            void finalizeBookImport(cleanedBook, pendingCleanup.exportEpubAfter);
+          }}
+        />
+      )}
     </div>
   );
 };

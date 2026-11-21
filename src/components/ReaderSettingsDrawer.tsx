@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { ChevronLeft, X, Upload, RotateCcw, Check } from 'lucide-react';
 import type {
   CustomFontAsset,
@@ -15,6 +14,7 @@ import {
 import { buildUnifiedFontCatalog } from '../utils/studioCatalog';
 import { getVintagePaperTextureStyles } from '../utils/readerEffects';
 import { DEFAULT_READER_SETTINGS } from '../utils/storage';
+import { IosSheet } from './IosSheet';
 
 interface ReaderSettingsDrawerProps {
   isOpen: boolean;
@@ -31,9 +31,9 @@ const THREE_TURN_MODES: Array<{
   label: string;
   desc: string;
 }> = [
-  { id: 'slide', label: '3D Trượt tấm giấy', desc: 'Chạm hoặc lướt trang tức thì' },
+  { id: 'slide', label: 'Trượt ngang mờ dần', desc: 'Kéo trang sang ngang, mờ dần khi rời tay' },
   { id: 'scroll', label: 'Lướt dọc', desc: 'Cuộn liên tục mượt mà' },
-  { id: 'curl', label: 'Lật 3D theo tay', desc: 'Kéo ngón tay uốn góc trang' },
+  { id: 'curl', label: 'Lật cong góc 3D', desc: 'Uốn cong góc phải dưới lên như sách thật' },
 ];
 
 export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
@@ -67,8 +67,8 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   }, []);
 
   const unifiedFonts = useMemo(() => buildUnifiedFontCatalog(customFonts), [customFonts]);
-
-  if (!isOpen) return null;
+  const selectedFontItem =
+    unifiedFonts.find((f) => f.cssValue === draft.fontFamily) || unifiedFonts[0];
 
   const updateDraft = (patch: Partial<ReaderSettings>) => {
     setDraft((prev) => ({ ...prev, ...patch }));
@@ -106,11 +106,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
 
   const innerContent = (
     <>
-      {!isDesktop && (
-        <div className="flex justify-center pt-2 pb-1 shrink-0">
-          <span className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />
-        </div>
-      )}
       <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-2.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           {onBackToToolsMenu && (
@@ -295,9 +290,9 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           </div>
         </section>
 
-        {/* Scrollable Flat Font Family List */}
+        {/* Compact Half-Width Scrollable Font Family Picker */}
         <section className="space-y-2 pt-3 border-t border-stone-200 dark:border-stone-800 min-w-0">
-          <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center justify-between gap-2 min-w-0">
             <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200 shrink-0">
               Phông chữ ({unifiedFonts.length})
             </h3>
@@ -311,43 +306,67 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
             <button
               type="button"
               onClick={() => fontInputRef.current?.click()}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50/90 dark:bg-amber-950/40 border border-amber-700/25 text-[10.5px] font-medium text-amber-800 dark:text-amber-300"
+              className="ios-pressable inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50/90 dark:bg-amber-950/40 border border-amber-700/25 text-[10.5px] font-medium text-amber-800 dark:text-amber-300"
             >
               <Upload className="w-3 h-3 shrink-0" />
-              <span>Import phông</span>
+              <span>Thêm phông</span>
             </button>
           </div>
 
-          <div
-            role="listbox"
-            aria-label="Danh sách phông chữ đọc sách"
-            className="max-h-[168px] overflow-y-auto overscroll-contain rounded-xl border border-stone-200 dark:border-stone-800 divide-y divide-stone-100 dark:divide-stone-800/80 bg-white dark:bg-stone-900/70"
-          >
-            {unifiedFonts.map((f) => {
-              const active = draft.fontFamily === f.cssValue;
-              return (
-                <button
-                  key={f.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  onClick={() => updateDraft({ fontFamily: f.cssValue })}
-                  className={`w-full px-3 py-2 text-left flex items-center justify-between gap-2 transition-colors ${
-                    active
-                      ? 'bg-amber-50/90 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 font-semibold'
-                      : 'hover:bg-stone-50 dark:hover:bg-stone-800/60 text-stone-800 dark:text-stone-200'
-                  }`}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div style={{ fontFamily: f.cssValue }} className="text-[12px] truncate">
-                      {f.name}
+          <div className="flex items-stretch gap-2.5 min-w-0">
+            <div
+              role="listbox"
+              data-testid="reader-font-picker-box"
+              aria-label="Danh sách phông chữ đọc sách"
+              className="w-1/2 shrink-0 max-h-[164px] overflow-y-auto overscroll-contain rounded-xl border border-stone-200 dark:border-stone-800 divide-y divide-stone-100 dark:divide-stone-800/80 bg-white dark:bg-stone-900/70"
+            >
+              {unifiedFonts.map((f) => {
+                const active = draft.fontFamily === f.cssValue;
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onClick={() => updateDraft({ fontFamily: f.cssValue })}
+                    className={`ios-pressable w-full px-2.5 py-2 text-left flex items-center justify-between gap-1.5 transition-colors ${
+                      active
+                        ? 'bg-amber-50/90 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 font-semibold'
+                        : 'hover:bg-stone-50 dark:hover:bg-stone-800/60 text-stone-800 dark:text-stone-200'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div style={{ fontFamily: f.cssValue }} className="text-[11.5px] truncate">
+                        {f.name}
+                      </div>
+                      <div className="text-[9.5px] text-stone-500 truncate">{f.origin}</div>
                     </div>
-                    <div className="text-[10px] text-stone-500 truncate">{f.origin}</div>
-                  </div>
-                  {active && <Check className="w-3.5 h-3.5 text-amber-700 shrink-0" />}
-                </button>
-              );
-            })}
+                    {active && <Check className="w-3 h-3 text-amber-700 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex-1 min-w-0 rounded-xl border border-stone-200/80 dark:border-stone-800 bg-stone-50/90 dark:bg-stone-900/50 p-2.5 flex flex-col justify-between gap-1.5">
+              <div className="min-w-0">
+                <div className="text-[9.5px] text-stone-500 truncate">Đang chọn</div>
+                <div
+                  style={{ fontFamily: draft.fontFamily }}
+                  className="text-[13px] font-semibold text-stone-900 dark:text-stone-100 truncate mt-0.5"
+                >
+                  {selectedFontItem?.name || 'Mặc định'}
+                </div>
+              </div>
+              <div
+                style={{ fontFamily: draft.fontFamily }}
+                className="text-[15px] leading-snug text-stone-700 dark:text-stone-300 line-clamp-3"
+              >
+                Aa Bb Cc · Tiếng Việt rõ nét, dịu mắt.
+              </div>
+              <div className="text-[9.5px] text-stone-500 truncate">
+                {selectedFontItem?.origin || 'Phông hệ thống'}
+              </div>
+            </div>
           </div>
         </section>
 
@@ -607,31 +626,23 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
     </>
   );
 
-  if (!isDesktop && typeof document !== 'undefined') {
-    return createPortal(
-      <div className="fixed inset-0 z-[75] ios-frosted-backdrop flex items-end justify-center pointer-events-auto">
-        <div
-          className="fixed inset-0"
-          onClick={commitAndClose}
-          aria-hidden="true"
-        />
-        <aside
-          aria-label="Tùy chỉnh giao diện trang đọc"
-          className="ios-sheet-enter ios-frosted-surface relative z-10 w-full max-w-lg h-auto max-h-[85dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden"
-        >
-          {innerContent}
-        </aside>
-      </div>,
-      document.body
-    );
-  }
-
   return (
-    <aside
-      aria-label="Tùy chỉnh giao diện trang đọc"
-      className="ios-drawer-right ios-frosted-surface w-[370px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden"
+    <IosSheet
+      isOpen={isOpen}
+      onClose={commitAndClose}
+      ariaLabel="Tùy chỉnh giao diện trang đọc"
+      testId="reader-settings-drawer"
+      variant={isDesktop ? 'drawer-right' : 'bottom-sheet'}
+      inlineDesktop={isDesktop}
+      showGrabHandle={!isDesktop}
+      zIndexClass="z-[75]"
+      panelClassName={
+        isDesktop
+          ? 'w-[370px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden'
+          : 'w-full max-w-lg h-auto max-h-[85dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
+      }
     >
       {innerContent}
-    </aside>
+    </IosSheet>
   );
 };

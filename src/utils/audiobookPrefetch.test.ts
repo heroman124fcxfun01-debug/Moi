@@ -64,3 +64,44 @@ test('resolveActiveHighlightInBatch returns exact charOffsetInParagraph for mult
   assert.equal(mid.charOffsetInParagraph, 180);
   assert.ok(mid.paragraphRatio > 0.35 && mid.paragraphRatio < 0.65);
 });
+
+test('multi-segment paragraph preserves real paragraphCharStart across narration + dialogue batches', () => {
+  const fullPara =
+    'Lữ Khách dừng bước trước cánh cổng đá khổng lồ rồi khẽ gọi. "Xin hỏi bên trong có ai không?" Giọng nói vang vọng khắp hành lang tối mịt.';
+  const script: ScriptSegment[] = [
+    {
+      id: 's0',
+      paragraphIndex: 2,
+      speakerId: 'narrator',
+      speakerName: 'Người dẫn',
+      emotionStyle: '',
+      text: 'Lữ Khách dừng bước trước cánh cổng đá khổng lồ rồi khẽ gọi.',
+    },
+    {
+      id: 's1',
+      paragraphIndex: 2,
+      speakerId: 'hero',
+      speakerName: 'Lữ Khách',
+      emotionStyle: '',
+      text: '"Xin hỏi bên trong có ai không?"',
+    },
+    {
+      id: 's2',
+      paragraphIndex: 2,
+      speakerId: 'narrator',
+      speakerName: 'Người dẫn',
+      emotionStyle: '',
+      text: 'Giọng nói vang vọng khắp hành lang tối mịt.',
+    },
+  ];
+  const batches = buildBatchedPlaybackUnits(script, 260, ['', '', fullPara]);
+  assert.equal(batches.length, 3);
+  assert.equal(batches[0].spans[0].paragraphCharStart, 0);
+  assert.equal(batches[1].spans[0].paragraphCharStart, fullPara.indexOf('"Xin hỏi'));
+  assert.equal(batches[2].spans[0].paragraphCharStart, fullPara.indexOf('Giọng nói'));
+
+  const resolvedThird = resolveActiveHighlightInBatch(batches[2], 0, 0);
+  assert.equal(resolvedThird.paragraphIndex, 2);
+  assert.equal(resolvedThird.charOffsetInParagraph, fullPara.indexOf('Giọng nói'));
+});
+

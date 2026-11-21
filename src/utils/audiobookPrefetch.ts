@@ -3,6 +3,8 @@ import type { ScriptSegment } from '../types/book';
 export interface BatchedSegmentSpan {
   segmentIndex: number;
   paragraphIndex: number;
+  /** Character start index inside the source paragraph (crucial when a paragraph is split into narration + dialogue) */
+  paragraphCharStart: number;
   startChar: number;
   endChar: number;
   text: string;
@@ -24,25 +26,51 @@ export interface PlaybackBatchUnit {
  * Merges consecutive script segments from the SAME speaker up to `maxChars`
  * into a single continuous audio synthesis unit.
  *
- * Benefits:
- * 1. Loads multiple paragraphs / a full page in 1 single TTS request (5x-8x fewer API calls).
- * 2. Eliminates awkward loading gaps between adjacent paragraphs.
- * 3. Preserves exact per-paragraph character ranges so live word-by-word illumination
- *    tracks directly onto the right paragraph and word on the reading page.
+ * Preserves exact per-paragraph character offsets (`paragraphCharStart`) even when
+ * one paragraph is split into multiple narration + dialogue segments, so live
+ * word illumination and automatic page-flipping stay 100% locked across pages.
  */
 export function buildBatchedPlaybackUnits(
   script: ScriptSegment[],
-  maxChars = 260
+  maxChars = 260,
+  sourceParagraphs?: string[]
 ): PlaybackBatchUnit[] {
   if (!Array.isArray(script) || script.length === 0) return [];
 
   const units: PlaybackBatchUnit[] = [];
   let current: PlaybackBatchUnit | null = null;
+  const paraCursorMap = new Map<number, number>();
+
+  const resolveParagraphCharStart = (paraIdx: number, segText: string): number => {
+    const prevCursor = paraCursorMap.get(paraIdx) ?? 0;
+    const rawPara = sourceParagraphs?.[paraIdx];
+    if (rawPara) {
+      const normalizedPara = rawPara.replace(/\s+/g, ' ').trim();
+      const probe = segText.replace(/\s+/g, ' ').trim();
+      if (probe) {
+        const directIdx = normalizedPara.indexOf(probe, prevCursor);
+        if (directIdx >= 0) {
+          paraCursorMap.set(paraIdx, directIdx + probe.length);
+          return directIdx;
+        }
+        const shortProbe = probe.slice(0, Math.min(24, probe.length));
+        const shortIdx = normalizedPara.indexOf(shortProbe, prevCursor);
+        if (shortIdx >= 0) {
+          paraCursorMap.set(paraIdx, shortIdx + probe.length);
+          return shortIdx;
+        }
+      }
+    }
+    paraCursorMap.set(paraIdx, prevCursor + segText.length + 1);
+    return prevCursor;
+  };
 
   for (let idx = 0; idx < script.length; idx++) {
     const seg = script[idx];
     const cleanText = (seg.text || '').trim();
     if (!cleanText) continue;
+
+    const paragraphCharStart = resolveParagraphCharStart(seg.paragraphIndex, cleanText);
 
     const canAppend =
       current !== null &&
@@ -57,6 +85,7 @@ export function buildBatchedPlaybackUnits(
       current.spans.push({
         segmentIndex: idx,
         paragraphIndex: seg.paragraphIndex,
+        paragraphCharStart,
         startChar,
         endChar,
         text: cleanText,
@@ -73,6 +102,7 @@ export function buildBatchedPlaybackUnits(
           {
             segmentIndex: idx,
             paragraphIndex: seg.paragraphIndex,
+            paragraphCharStart,
             startChar: 0,
             endChar: cleanText.length,
             text: cleanText,
@@ -166,7 +196,7 @@ export function resolveActiveHighlightInBatch(
         paragraphIndex: span.paragraphIndex,
         paragraphRatio: localRatio,
         segmentIndex: span.segmentIndex,
-        charOffsetInParagraph: localChar,
+        charOffsetInParagraph: (span.paragraphCharStart || 0) + localChar,
       };
     }
   }
@@ -176,17 +206,29 @@ export function resolveActiveHighlightInBatch(
     paragraphIndex: first?.paragraphIndex ?? unit.firstParagraphIndex,
     paragraphRatio: clamped,
     segmentIndex: first?.segmentIndex ?? unit.firstSegmentIndex,
-    charOffsetInParagraph: 0,
+    charOffsetInParagraph: first?.paragraphCharStart ?? 0,
   };
 }
 
 /**
- * Finds which batch unit contains a given paragraph index (used for "Nghe từ đây").
+ * Finds which batch unit contains a given paragraph index (and optional charOffset inside that paragraph).
  */
 export function findBatchIndexForParagraph(
   units: PlaybackBatchUnit[],
-  paragraphIndex: number
+  paragraphIndex: number,
+  charOffset = 0
 ): number {
+  if (charOffset > 0) {
+    const exactOffsetIdx = units.findIndex((u) =>
+      u.spans.some(
+        (s) =>
+          s.paragraphIndex === paragraphIndex &&
+          charOffset >= s.paragraphCharStart &&
+          charOffset <= s.paragraphCharStart + s.text.length + 2
+      )
+    );
+    if (exactOffsetIdx >= 0) return exactOffsetIdx;
+  }
   const exact = units.findIndex((u) =>
     u.spans.some((s) => s.paragraphIndex >= paragraphIndex)
   );

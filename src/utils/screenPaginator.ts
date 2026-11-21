@@ -57,8 +57,8 @@ function createTextWidthMeasurer(
         return (text: string) => {
           if (!text) return 0;
           const base = ctx.measureText(text).width;
-          // Apply realistic 1.08 safety factor for Vietnamese diacritics, justified spacing & WebView webfonts
-          return base * 1.08 + Math.max(0, text.length - 1) * extraPerChar;
+          // Apply realistic 1.12 safety factor for Vietnamese diacritics, justified spacing & WebView webfonts
+          return base * 1.12 + Math.max(0, text.length - 1) * extraPerChar;
         };
       }
     } catch {
@@ -171,11 +171,11 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
   // Inner column text width (subtracting horizontal paragraph padding px-1.5 + safety margin)
   const effectiveColumnWidth = Math.max(
     160,
-    (Math.max(200, viewportWidth) - colGap) / columns - 22
+    (Math.max(200, viewportWidth) - colGap) / columns - 26
   );
 
-  // Available vertical text height per column (leave ~1.25 lines safety buffer so large fonts NEVER clip)
-  const safetyBuffer = Math.max(26, lineHeightPx * 1.25);
+  // Available vertical text height per column (generous bottom clearance so text ALWAYS sits visibly above the 3 footer buttons)
+  const safetyBuffer = Math.max(36, lineHeightPx * 1.4);
   const singleColumnBudget = Math.max(lineHeightPx * 2, viewportHeight - safetyBuffer);
   const fullPageBudget = singleColumnBudget * columns;
 
@@ -186,11 +186,11 @@ export function paginateChapterForViewport(input: ViewportPaginationInput): Scre
     settings.letterSpacing || 0
   );
 
-  // Estimate chapter header height on Page 1 (accounting for book title eyebrow + wrapped h1 + border/margin)
-  const titleFontSize = viewportWidth >= 640 ? 24 : 20;
-  const titleCharsPerLine = Math.max(12, Math.floor(Math.max(200, viewportWidth) / (titleFontSize * 0.6)));
-  const titleLines = Math.max(1, Math.ceil((chapterTitle || '').length / titleCharsPerLine));
-  const chapterHeaderHeight = 32 + titleLines * (titleFontSize * 1.4) + 28;
+  // Compact half-size chapter header on Page 1 (9px eyebrow + 11–13px title + compact mb-2 pb-1.5)
+  const titleFontSize = viewportWidth >= 640 ? 13 : 11;
+  const titleCharsPerLine = Math.max(16, Math.floor(Math.max(200, viewportWidth) / (titleFontSize * 0.62)));
+  const titleLines = Math.max(1, Math.min(2, Math.ceil((chapterTitle || '').length / titleCharsPerLine)));
+  const chapterHeaderHeight = 18 + titleLines * (titleFontSize * 1.35) + 18;
 
   const pages: ScreenPage[] = [];
   let currentChunks: ScreenPageChunk[] = [];
@@ -413,3 +413,97 @@ export function findScreenPageForPosition(
   // 3. Fallback to paragraph lookup
   return findScreenPageForParagraph(pages, targetPara);
 }
+
+export interface BookPaginationChapterInput {
+  title: string;
+  paragraphs: BilingualParagraphPair[];
+}
+
+export interface BookScreenPaginationSummary {
+  chapterPageCounts: number[];
+  chapterStartPageOffsets: number[];
+  totalBookPages: number;
+}
+
+/**
+ * Dynamically recalculates total screen-fitted display pages across ALL chapters in the book
+ * whenever fontSize, lineHeight, fontFamily, or viewport dimensions change.
+ * Example: Original EPUB content A..Z automatically splits into screen pages A..C, C..E, E..G...
+ * and every page turn advances cleanly across those recalculated display pages.
+ */
+export function computeBookScreenPaginationSummary(input: {
+  chapters: BookPaginationChapterInput[];
+  currentChapterIndex: number;
+  currentChapterPageCount: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  settings: ViewportPaginationInput['settings'];
+}): BookScreenPaginationSummary {
+  const {
+    chapters,
+    currentChapterIndex,
+    currentChapterPageCount,
+    viewportWidth,
+    viewportHeight,
+    settings,
+  } = input;
+
+  const chapterPageCounts: number[] = [];
+  const chapterStartPageOffsets: number[] = [];
+  let runningOffset = 0;
+
+  for (let i = 0; i < chapters.length; i++) {
+    chapterStartPageOffsets.push(runningOffset);
+    let count: number;
+    if (i === currentChapterIndex && currentChapterPageCount > 0) {
+      count = currentChapterPageCount;
+    } else {
+      const ch = chapters[i];
+      count = Math.max(
+        1,
+        paginateChapterForViewport({
+          paragraphs: ch.paragraphs,
+          chapterTitle: ch.title,
+          viewportWidth,
+          viewportHeight,
+          settings,
+        }).length
+      );
+    }
+    chapterPageCounts.push(count);
+    runningOffset += count;
+  }
+
+  return {
+    chapterPageCounts,
+    chapterStartPageOffsets,
+    totalBookPages: Math.max(1, runningOffset),
+  };
+}
+
+/**
+ * Maps a 1-based global display page number (1 .. totalBookPages) back to its exact
+ * (chapterIndex, pageIndex) inside the book so tapping the page indicator jumps cleanly.
+ */
+export function resolveLocationForGlobalPage(
+  summary: BookScreenPaginationSummary,
+  globalPage1Based: number
+): { chapterIndex: number; pageIndex: number } {
+  const clampedGlobal = Math.max(
+    1,
+    Math.min(Math.max(1, summary.totalBookPages), Math.round(globalPage1Based))
+  );
+  const zeroBased = clampedGlobal - 1;
+  for (let chIdx = summary.chapterStartPageOffsets.length - 1; chIdx >= 0; chIdx--) {
+    const start = summary.chapterStartPageOffsets[chIdx];
+    if (zeroBased >= start) {
+      const maxPageInCh = Math.max(0, (summary.chapterPageCounts[chIdx] || 1) - 1);
+      return {
+        chapterIndex: chIdx,
+        pageIndex: Math.min(maxPageInCh, zeroBased - start),
+      };
+    }
+  }
+  return { chapterIndex: 0, pageIndex: 0 };
+}
+

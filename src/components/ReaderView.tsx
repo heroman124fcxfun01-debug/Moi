@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Settings,
   SlidersHorizontal,
+  Sparkles,
   X,
 } from 'lucide-react';
 import type {
@@ -48,17 +49,27 @@ import {
   togglePageBookmark,
 } from '../utils/textProcessing';
 import {
+  computeBookScreenPaginationSummary,
   findScreenPageForParagraph,
   findScreenPageForPosition,
   paginateChapterForViewport,
+  resolveLocationForGlobalPage,
+  type BookScreenPaginationSummary,
+  type ScreenPage,
   type ScreenPageChunk,
 } from '../utils/screenPaginator';
 import {
   PAGE_TURN_STYLES,
-  computeInteractiveCurlTransform,
+  computeCornerCurlGeometry,
+  computeInteractiveCornerCurlDrag,
+  computeInteractiveSlideFade,
   getPageTurnAnimationClass,
   getVintagePaperTextureStyles,
 } from '../utils/readerEffects';
+import {
+  bookPaginationRamCache,
+  chapterPaginationRamCache,
+} from '../utils/ramCache';
 import { buildEpubBlob } from '../utils/epubBuilder';
 import { ambientSoundManager } from '../utils/ambientSoundEngine';
 import { getLanguagePackDefinition } from '../utils/languagePacks';
@@ -78,7 +89,15 @@ import {
 import { ReaderSettingsDrawer } from './ReaderSettingsDrawer';
 import { AudiobookStudioDrawer } from './AudiobookStudioDrawer';
 import { AmbientSoundDrawer } from './AmbientSoundDrawer';
+import { BookCleanupReviewModal } from './BookCleanupReviewModal';
+import {
+  applyBookCleanupSelection,
+  type BookCleanupReport,
+  type CleanupSelection,
+} from '../utils/aiContentCleaner';
+import { runImportBookAiScan } from '../utils/aiContentCleanerClient';
 import { GlassSelect, type GlassSelectOption } from './GlassSelect';
+import { IosSheet } from './IosSheet';
 
 interface ReaderViewProps {
   book: Book;
@@ -252,6 +271,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const [isTranslating, setIsTranslating] = useState(false);
   const [translateError, setTranslateError] = useState('');
   const [translateStatusMsg, setTranslateStatusMsg] = useState('');
+  const [isScanningCleanup, setIsScanningCleanup] = useState(false);
+  const [cleanupReviewReport, setCleanupReviewReport] = useState<BookCleanupReport | null>(null);
   const [isTranslatingFullEpub, setIsTranslatingFullEpub] = useState(false);
   const [fullEpubProgress, setFullEpubProgress] = useState<{
     percent: number;
@@ -272,7 +293,25 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   );
   const [turnDirection, setTurnDirection] = useState<'next' | 'prev'>('next');
   const [turnTick, setTurnTick] = useState(0);
-  const [dragCurlDeltaX, setDragCurlDeltaX] = useState<number | null>(null);
+  const [liveTurn, setLiveTurn] = useState<
+    | null
+    | {
+        mode: 'curl';
+        direction: 'next' | 'prev';
+        peel: number;
+        isAnimating: boolean;
+      }
+    | {
+        mode: 'slide';
+        direction: 'next' | 'prev';
+        translateXPx: number;
+        opacity: number;
+        progress: number;
+        isAnimating: boolean;
+      }
+  >(null);
+  const turnAnimRafRef = useRef<number | null>(null);
+  const skipCssTurnAnimRef = useRef(false);
   const [spokenParaIndex, setSpokenParaIndex] = useState<number | null>(null);
   const [spokenCharOffset, setSpokenCharOffset] = useState(0);
   const [activeParaAction, setActiveParaAction] = useState<{
@@ -281,8 +320,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   } | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [fontsLoadedTick, setFontsLoadedTick] = useState(0);
+  const [domHeightPenaltyPx, setDomHeightPenaltyPx] = useState(0);
+  const [showPageJump, setShowPageJump] = useState(false);
+  const [pageJumpInput, setPageJumpInput] = useState('1');
   const [stageSize, setStageSize] = useState<{ width: number; height: number }>(() => {
-    if (typeof window === 'undefined') return { width: 360, height: 600 };
+    if (typeof window === 'undefined') return { width: 360, height: 560 };
     const widthLimitMap: Record<ReaderSettings['pageWidth'], number> = {
       narrow: 576,
       medium: 672,
@@ -290,17 +332,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       full: 1152,
     };
     const rawW = window.innerWidth;
-    const rawH = Math.max(320, window.innerHeight - 108);
+    const rawH = Math.max(300, window.innerHeight - 132);
     const horizPad = rawW >= 640 ? 64 : 32;
     const maxArticleW = widthLimitMap[settings.pageWidth] || 672;
     return {
       width: Math.max(220, Math.min(rawW - horizPad, maxArticleW)),
-      height: Math.max(240, rawH - 18),
+      height: Math.max(220, rawH - 36),
     };
   });
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pageMeasureBoxRef = useRef<HTMLDivElement>(null);
+  const articleRef = useRef<HTMLElement>(null);
+  const overflowGuardPassesRef = useRef(0);
   const paraRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const dragStartXRef = useRef<number | null>(null);
   const dragStartYRef = useRef<number | null>(null);
@@ -314,6 +358,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const pendingLastPageOnPrevChapterRef = useRef(false);
   const pendingTargetPageRef = useRef<number | null>(null);
   const hasUserTurnedRef = useRef(false);
+  const isFollowingAudioRef = useRef(true);
+  const lastSpokenPageIdxRef = useRef<number | null>(null);
   const anchorParagraphRef = useRef<number>(initialResolvedPos.paragraphIndex);
   const anchorCharOffsetRef = useRef<number>(initialResolvedPos.charOffset);
   const anchorPageIndexRef = useRef<number | null>(initialResolvedPos.pageIndex ?? null);
@@ -469,11 +515,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       const box = pageMeasureBoxRef.current || scrollContainerRef.current;
       if (box && (box.clientWidth < 80 || box.clientHeight < 80)) return;
       const rawW = box ? box.clientWidth : window.innerWidth;
-      const rawH = box ? box.clientHeight : Math.max(320, window.innerHeight - 108);
-      const horizPad = window.innerWidth >= 640 ? 64 : 32;
+      const rawH = box ? box.clientHeight : Math.max(300, window.innerHeight - 132);
+      const computed = box ? window.getComputedStyle(box) : null;
+      const padLeft = computed ? parseFloat(computed.paddingLeft || '0') || 0 : 0;
+      const padRight = computed ? parseFloat(computed.paddingRight || '0') || 0 : 0;
+      const padTop = computed ? parseFloat(computed.paddingTop || '0') || 0 : 10;
+      const padBottom = computed ? parseFloat(computed.paddingBottom || '0') || 0 : 20;
+      const horizPad = padLeft + padRight > 0 ? padLeft + padRight : window.innerWidth >= 640 ? 64 : 32;
       const maxArticleW = widthLimitMap[settings.pageWidth] || 672;
-      const contentW = Math.max(220, Math.min(rawW - horizPad, maxArticleW));
-      const contentH = Math.max(240, rawH - 18);
+      const contentW = Math.max(210, Math.min(rawW - horizPad, maxArticleW));
+      // Subtract real box vertical padding + generous 20px clearance so text NEVER touches or hides behind bottom buttons
+      const contentH = Math.max(200, Math.floor(rawH - padTop - padBottom - 20));
       setStageSize((prev) =>
         Math.abs(prev.width - contentW) > 3 || Math.abs(prev.height - contentH) > 3
           ? { width: contentW, height: contentH }
@@ -494,6 +546,28 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [settings.pageWidth, settings.readingMode, showAudio, showSettings, showAmbient, isReaderActive]);
 
+  // Reset post-render DOM height penalty whenever typography or viewport geometry changes
+  useEffect(() => {
+    overflowGuardPassesRef.current = 0;
+    setDomHeightPenaltyPx(0);
+  }, [
+    book.id,
+    stageSize.width,
+    stageSize.height,
+    settings.fontFamily,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.paragraphSpacing,
+    settings.letterSpacing,
+    settings.fontWeight,
+    settings.firstLineIndent,
+    settings.dropCap,
+    settings.columnsInPaginated,
+    settings.translationMode,
+    settings.targetLang,
+    fontsLoadedTick,
+  ]);
+
   // Re-run screen pagination once webfonts finish loading so exact glyph widths are measured
   useEffect(() => {
     if (typeof document === 'undefined' || !('fonts' in document)) return;
@@ -506,21 +580,39 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     };
   }, [settings.fontFamily]);
 
-  // True screen-fitted pagination: recalculates total pages automatically when fontSize/lineHeight/viewport changes
-  const screenPages = useMemo(() => {
-    return paginateChapterForViewport({
+  const effectiveViewportHeight = Math.max(180, stageSize.height - domHeightPenaltyPx);
+
+  // True screen-fitted pagination with invisible RAM cache for instant chapter/book resumption
+  const screenPages = useMemo<ScreenPage[]>(() => {
+    const cacheKey = `${book.id}:${currentChapter?.id || chapterIndex}:${
+      renderedParagraphs.length
+    }:${renderedParagraphs[0]?.original.length || 0}:${stageSize.width}x${effectiveViewportHeight}:${
+      settings.fontFamily
+    }:${settings.fontSize}:${settings.lineHeight}:${settings.paragraphSpacing}:${
+      settings.letterSpacing
+    }:${settings.fontWeight}:${settings.firstLineIndent ? 1 : 0}:${settings.dropCap ? 1 : 0}:${
+      settings.columnsInPaginated
+    }:${settings.translationMode}:${settings.targetLang}:${fontsLoadedTick}`;
+    const cached = chapterPaginationRamCache.get(cacheKey) as ScreenPage[] | undefined;
+    if (cached) return cached;
+    const computed = paginateChapterForViewport({
       paragraphs: renderedParagraphs,
       chapterTitle: currentChapter?.title || book.title,
       viewportWidth: stageSize.width,
-      viewportHeight: stageSize.height,
+      viewportHeight: effectiveViewportHeight,
       settings,
     });
+    chapterPaginationRamCache.set(cacheKey, computed);
+    return computed;
   }, [
+    book.id,
+    currentChapter?.id,
+    chapterIndex,
     renderedParagraphs,
     currentChapter?.title,
     book.title,
     stageSize.width,
-    stageSize.height,
+    effectiveViewportHeight,
     settings.fontFamily,
     settings.fontSize,
     settings.lineHeight,
@@ -530,7 +622,97 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     settings.firstLineIndent,
     settings.dropCap,
     settings.columnsInPaginated,
+    settings.translationMode,
+    settings.targetLang,
     fontsLoadedTick,
+  ]);
+
+  // Book-wide dynamic display pagination (RAM-cached across chapters for zero-lag flipping)
+  const bookPaginationChapters = useMemo(
+    () =>
+      book.chapters.map((ch) => ({
+        title: ch.title,
+        paragraphs: buildRenderedParagraphs(ch, settings.translationMode, settings.targetLang),
+      })),
+    [book.chapters, settings.translationMode, settings.targetLang]
+  );
+
+  const bookPaginationSummary = useMemo<BookScreenPaginationSummary>(() => {
+    const summaryKey = `${book.id}:${book.chapters.length}:${chapterIndex}:${screenPages.length}:${
+      stageSize.width
+    }x${effectiveViewportHeight}:${settings.fontFamily}:${settings.fontSize}:${
+      settings.lineHeight
+    }:${settings.paragraphSpacing}:${settings.letterSpacing}:${settings.fontWeight}:${
+      settings.firstLineIndent ? 1 : 0
+    }:${settings.dropCap ? 1 : 0}:${settings.columnsInPaginated}:${settings.translationMode}:${
+      settings.targetLang
+    }:${fontsLoadedTick}`;
+    const cached = bookPaginationRamCache.get(summaryKey) as
+      | BookScreenPaginationSummary
+      | undefined;
+    if (cached) return cached;
+    const computed = computeBookScreenPaginationSummary({
+      chapters: bookPaginationChapters,
+      currentChapterIndex: chapterIndex,
+      currentChapterPageCount: screenPages.length,
+      viewportWidth: stageSize.width,
+      viewportHeight: effectiveViewportHeight,
+      settings,
+    });
+    bookPaginationRamCache.set(summaryKey, computed);
+    return computed;
+  }, [
+    book.id,
+    book.chapters.length,
+    bookPaginationChapters,
+    chapterIndex,
+    screenPages.length,
+    stageSize.width,
+    effectiveViewportHeight,
+    settings.fontFamily,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.paragraphSpacing,
+    settings.letterSpacing,
+    settings.fontWeight,
+    settings.firstLineIndent,
+    settings.dropCap,
+    settings.columnsInPaginated,
+    settings.translationMode,
+    settings.targetLang,
+    fontsLoadedTick,
+  ]);
+
+  // Post-render DOM overflow guard: guarantees text NEVER clips behind the bottom 3 buttons on any font or device
+  useEffect(() => {
+    if (settings.readingMode !== 'paginated' || !isReaderActive) return;
+    if (overflowGuardPassesRef.current >= 3) return;
+    const rafId = window.requestAnimationFrame(() => {
+      const box = pageMeasureBoxRef.current;
+      const art = articleRef.current;
+      if (!box || !art) return;
+      const cs = window.getComputedStyle(box);
+      const padTop = parseFloat(cs.paddingTop || '0') || 0;
+      const padBottom = parseFloat(cs.paddingBottom || '0') || 0;
+      const availH = box.clientHeight - padTop - padBottom - 8;
+      if (availH < 120) return;
+      const overflowPx = Math.ceil(art.scrollHeight - availH);
+      if (overflowPx > 2) {
+        overflowGuardPassesRef.current += 1;
+        setDomHeightPenaltyPx((prev) =>
+          Math.min(Math.floor(stageSize.height * 0.45), prev + overflowPx + 14)
+        );
+      }
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    currentPageIndex,
+    chapterIndex,
+    screenPages,
+    stageSize.height,
+    domHeightPenaltyPx,
+    settings.readingMode,
+    isReaderActive,
   ]);
 
   // Keep user anchored on their exact reading page & character offset whenever fontSize or viewport re-paginates
@@ -581,32 +763,52 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     setCurrentPageIndex((prev) => (prev === clamped ? prev : clamped));
   }, [screenPages, settings.readingMode]);
 
-  // Keep exact spoken word visible (auto-flip smoothly to the exact screen page containing spokenCharOffset)
+  // Keep exact spoken word visible: auto-flip smoothly when audio crosses a screen page boundary,
+  // while NEVER yanking the user back if they manually turn to another page while listening.
   useEffect(() => {
-    if (spokenParaIndex === null) return;
-    anchorParagraphRef.current = spokenParaIndex;
-    anchorCharOffsetRef.current = spokenCharOffset;
+    if (spokenParaIndex === null) {
+      lastSpokenPageIdxRef.current = null;
+      return;
+    }
     if (settings.readingMode === 'paginated') {
       const targetPageIdx = findScreenPageForPosition(screenPages, {
         paragraphIndex: spokenParaIndex,
         charOffset: spokenCharOffset,
       });
-      if (targetPageIdx >= 0) {
+      if (targetPageIdx < 0) return;
+
+      if (targetPageIdx === currentPageIndexRef.current) {
+        // User is viewing the spoken page — keep auto-follow engaged
+        isFollowingAudioRef.current = true;
+        lastSpokenPageIdxRef.current = targetPageIdx;
+        anchorParagraphRef.current = spokenParaIndex;
+        anchorCharOffsetRef.current = spokenCharOffset;
         anchorPageIndexRef.current = targetPageIdx;
-        if (targetPageIdx !== currentPageIndexRef.current) {
-          hasUserTurnedRef.current = true;
-          setTurnDirection(targetPageIdx > currentPageIndexRef.current ? 'next' : 'prev');
-          setTurnTick((t) => t + 1);
-          currentPageIndexRef.current = targetPageIdx;
-          setCurrentPageIndex(targetPageIdx);
-          syncReadingPosition({
-            paragraphIndex: spokenParaIndex,
-            pageIndex: targetPageIdx,
-            charOffset: spokenCharOffset,
-          });
-        }
+        return;
       }
+
+      lastSpokenPageIdxRef.current = targetPageIdx;
+
+      if (isFollowingAudioRef.current && targetPageIdx > currentPageIndexRef.current) {
+        // Audio crossed forward onto a new screen page — auto-flip immediately
+        hasUserTurnedRef.current = true;
+        setTurnDirection('next');
+        setTurnTick((t) => t + 1);
+        currentPageIndexRef.current = targetPageIdx;
+        anchorPageIndexRef.current = targetPageIdx;
+        anchorParagraphRef.current = spokenParaIndex;
+        anchorCharOffsetRef.current = spokenCharOffset;
+        setCurrentPageIndex(targetPageIdx);
+        syncReadingPosition({
+          paragraphIndex: spokenParaIndex,
+          pageIndex: targetPageIdx,
+          charOffset: spokenCharOffset,
+        });
+      }
+      return;
     }
+    anchorParagraphRef.current = spokenParaIndex;
+    anchorCharOffsetRef.current = spokenCharOffset;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spokenParaIndex, spokenCharOffset, settings.readingMode, screenPages]);
 
@@ -750,9 +952,33 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     return () => window.clearInterval(timer);
   }, [settings.readingMode, settings.autoScrollSpeed]);
 
-  const commitPageChange = (nextPageIdx: number, direction: 'next' | 'prev') => {
+  const cancelLiveTurnAnim = () => {
+    if (turnAnimRafRef.current !== null) {
+      window.cancelAnimationFrame(turnAnimRafRef.current);
+      turnAnimRafRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => cancelLiveTurnAnim();
+  }, []);
+
+  const commitPageChange = (
+    nextPageIdx: number,
+    direction: 'next' | 'prev',
+    opts?: { skipCssAnim?: boolean }
+  ) => {
     setActiveParaAction(null);
+    setShowPageJump(false);
     hasUserTurnedRef.current = true;
+    skipCssTurnAnimRef.current = Boolean(opts?.skipCssAnim);
+    // Allow free manual page browsing during audio startup or playback without highlight ticks snapping back
+    if (isAudioPlayingLocal || isAudioSessionActive || spokenParaIndex !== null) {
+      isFollowingAudioRef.current =
+        lastSpokenPageIdxRef.current !== null && nextPageIdx === lastSpokenPageIdxRef.current;
+    } else {
+      isFollowingAudioRef.current = false;
+    }
     setTurnDirection(direction);
     setTurnTick((t) => t + 1);
     setCurrentPageIndex(nextPageIdx);
@@ -771,12 +997,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
   };
 
-  const goNextPage = () => {
-    if (currentPageIndex < screenPages.length - 1) {
-      commitPageChange(currentPageIndex + 1, 'next');
+  const goNextPageImmediate = (skipCssAnim = false) => {
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    if (liveIdx < screenPages.length - 1) {
+      commitPageChange(liveIdx + 1, 'next', { skipCssAnim });
     } else if (chapterIndex < book.chapters.length - 1) {
       pendingLastPageOnPrevChapterRef.current = false;
       hasUserTurnedRef.current = true;
+      skipCssTurnAnimRef.current = skipCssAnim;
       setTurnDirection('next');
       setTurnTick((t) => t + 1);
       goToChapter(chapterIndex + 1);
@@ -784,17 +1012,145 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
-  const goPrevPage = () => {
-    if (currentPageIndex > 0) {
-      commitPageChange(currentPageIndex - 1, 'prev');
+  const goPrevPageImmediate = (skipCssAnim = false) => {
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    if (liveIdx > 0) {
+      commitPageChange(liveIdx - 1, 'prev', { skipCssAnim });
     } else if (chapterIndex > 0) {
       pendingLastPageOnPrevChapterRef.current = true;
       hasUserTurnedRef.current = true;
+      skipCssTurnAnimRef.current = skipCssAnim;
       setTurnDirection('prev');
       setTurnTick((t) => t + 1);
       goToChapter(chapterIndex - 1);
       triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
     }
+  };
+
+  const animateCornerCurl = (
+    direction: 'next' | 'prev',
+    fromPeel: number,
+    toPeel: number,
+    durationMs: number,
+    onDone?: () => void
+  ) => {
+    cancelLiveTurnAnim();
+    const startTime = performance.now();
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const t = Math.min(1, elapsed / Math.max(80, durationMs));
+      const eased = 1 - Math.pow(1 - t, 3);
+      const currentPeel = fromPeel + (toPeel - fromPeel) * eased;
+      setLiveTurn({
+        mode: 'curl',
+        direction,
+        peel: currentPeel,
+        isAnimating: true,
+      });
+      if (t < 1) {
+        turnAnimRafRef.current = window.requestAnimationFrame(step);
+      } else {
+        turnAnimRafRef.current = null;
+        setLiveTurn(null);
+        onDone?.();
+      }
+    };
+    turnAnimRafRef.current = window.requestAnimationFrame(step);
+  };
+
+  const animateSlideFade = (
+    direction: 'next' | 'prev',
+    fromX: number,
+    toX: number,
+    fromOpacity: number,
+    toOpacity: number,
+    durationMs: number,
+    onDone?: () => void
+  ) => {
+    cancelLiveTurnAnim();
+    const startTime = performance.now();
+    const safeW = Math.max(180, stageSize.width);
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const t = Math.min(1, elapsed / Math.max(80, durationMs));
+      const eased = 1 - Math.pow(1 - t, 3);
+      const curX = fromX + (toX - fromX) * eased;
+      const curOp = fromOpacity + (toOpacity - fromOpacity) * eased;
+      setLiveTurn({
+        mode: 'slide',
+        direction,
+        translateXPx: curX,
+        opacity: Math.max(0, Math.min(1, curOp)),
+        progress: Math.min(1, Math.abs(curX) / (safeW * 0.85)),
+        isAnimating: true,
+      });
+      if (t < 1) {
+        turnAnimRafRef.current = window.requestAnimationFrame(step);
+      } else {
+        turnAnimRafRef.current = null;
+        setLiveTurn(null);
+        onDone?.();
+      }
+    };
+    turnAnimRafRef.current = window.requestAnimationFrame(step);
+  };
+
+  const goNextPage = () => {
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    const canGoNext = liveIdx < screenPages.length - 1 || chapterIndex < book.chapters.length - 1;
+    if (!canGoNext) return;
+    if (settings.readingMode === 'paginated' && settings.pageTurnStyle === 'curl') {
+      if (turnAnimRafRef.current !== null) {
+        cancelLiveTurnAnim();
+        setLiveTurn(null);
+        goNextPageImmediate(true);
+        return;
+      }
+      animateCornerCurl('next', 0.04, 1, 290, () => goNextPageImmediate(true));
+      return;
+    }
+    if (settings.readingMode === 'paginated' && settings.pageTurnStyle === 'slide') {
+      if (turnAnimRafRef.current !== null) {
+        cancelLiveTurnAnim();
+        setLiveTurn(null);
+        goNextPageImmediate(true);
+        return;
+      }
+      animateSlideFade('next', 0, -(stageSize.width * 0.88), 1, 0, 210, () =>
+        goNextPageImmediate(true)
+      );
+      return;
+    }
+    goNextPageImmediate(false);
+  };
+
+  const goPrevPage = () => {
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    const canGoPrev = liveIdx > 0 || chapterIndex > 0;
+    if (!canGoPrev) return;
+    if (settings.readingMode === 'paginated' && settings.pageTurnStyle === 'curl') {
+      if (turnAnimRafRef.current !== null) {
+        cancelLiveTurnAnim();
+        setLiveTurn(null);
+        goPrevPageImmediate(true);
+        return;
+      }
+      animateCornerCurl('prev', 0.94, 0, 290, () => goPrevPageImmediate(true));
+      return;
+    }
+    if (settings.readingMode === 'paginated' && settings.pageTurnStyle === 'slide') {
+      if (turnAnimRafRef.current !== null) {
+        cancelLiveTurnAnim();
+        setLiveTurn(null);
+        goPrevPageImmediate(true);
+        return;
+      }
+      animateSlideFade('prev', 0, stageSize.width * 0.88, 1, 0, 210, () =>
+        goPrevPageImmediate(true)
+      );
+      return;
+    }
+    goPrevPageImmediate(false);
   };
 
   // Keyboard & Phone Hardware Volume/PageUp-Down navigation
@@ -897,18 +1253,24 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     });
   };
 
-  const syncParagraphPosition = (paraIdx: number) => {
+  const syncParagraphPosition = (paraIdx: number, charOffset = 0, forceManual = false) => {
+    if (!forceManual && !isFollowingAudioRef.current && settings.readingMode === 'paginated') {
+      return;
+    }
     const targetPage =
       settings.readingMode === 'paginated'
-        ? findScreenPageForParagraph(screenPages, paraIdx)
+        ? findScreenPageForPosition(screenPages, {
+            paragraphIndex: paraIdx,
+            charOffset,
+          })
         : currentPageIndexRef.current;
     anchorParagraphRef.current = paraIdx;
-    anchorCharOffsetRef.current = 0;
+    anchorCharOffsetRef.current = Math.max(0, charOffset);
     anchorPageIndexRef.current = targetPage;
     syncReadingPosition({
       paragraphIndex: paraIdx,
       pageIndex: targetPage,
-      charOffset: 0,
+      charOffset: Math.max(0, charOffset),
     });
   };
 
@@ -993,6 +1355,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         Math.max(0, screenPages.length - 1)
       );
       pendingTargetPageRef.current = null;
+      if (isAudioPlayingLocal || spokenParaIndex !== null) {
+        isFollowingAudioRef.current =
+          lastSpokenPageIdxRef.current !== null && clampedPage === lastSpokenPageIdxRef.current;
+      }
       setCurrentPageIndex(clampedPage);
       currentPageIndexRef.current = clampedPage;
       anchorPageIndexRef.current = clampedPage;
@@ -1008,6 +1374,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         });
       }
       setShowToc(false);
+      setShowPageJump(false);
       return;
     }
 
@@ -1120,6 +1487,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
   const handleContinueListenFromHere = () => {
     unlockAudioPlaybackSync();
+    isFollowingAudioRef.current = true;
+    lastSpokenPageIdxRef.current = null;
     setShowSettings(false);
     setShowAmbient(false);
     setShowToolsMenu(false);
@@ -1151,7 +1520,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
       longPressTimerRef.current = null;
-      syncParagraphPosition(paraIndex);
+      syncParagraphPosition(paraIndex, 0, true);
       setActiveParaAction({ paragraphIndex: paraIndex });
       triggerDeviceHaptic('tap', basicSettings.hapticFeedback !== false);
     }, 450);
@@ -1189,9 +1558,23 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     }
   };
 
+  const isBottomRightCurlTouchZone = (clientX: number, clientY: number) => {
+    if (typeof window === 'undefined') return false;
+    return (
+      settings.readingMode === 'paginated' &&
+      settings.pageTurnStyle === 'curl' &&
+      clientY >= window.innerHeight * 0.56 &&
+      clientX >= window.innerWidth * 0.45
+    );
+  };
+
   const handleReaderRootPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (typeof window === 'undefined') return;
+    suppressNextClickRef.current = false;
+    // Never let right-edge back-swipe interfere with bottom bar buttons, controls, or bottom-right paper curl corner
+    if ((e.target as HTMLElement).closest('button, select, input, footer')) return;
+    if (isBottomRightCurlTouchZone(e.clientX, e.clientY)) return;
     if (isInRightEdgeBackZone(e.clientX, window.innerWidth)) {
       readerEdgeSwipeRef.current = {
         startX: e.clientX,
@@ -1228,11 +1611,18 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const handleStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (settings.readingMode !== 'paginated') return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if ((e.target as HTMLElement).closest('button, select, input')) return;
-    // Right-edge inward swipe is reserved for global Back-to-Main-Screen gesture
-    if (typeof window !== 'undefined' && isInRightEdgeBackZone(e.clientX, window.innerWidth)) {
+    suppressNextClickRef.current = false;
+    if ((e.target as HTMLElement).closest('button, select, input, footer')) return;
+    // Upper right-edge inward swipe is reserved for global Back-to-Main-Screen gesture,
+    // while bottom-right corner belongs to 3D Paper Corner Curl!
+    if (
+      typeof window !== 'undefined' &&
+      !isBottomRightCurlTouchZone(e.clientX, e.clientY) &&
+      isInRightEdgeBackZone(e.clientX, window.innerWidth)
+    ) {
       return;
     }
+    cancelLiveTurnAnim();
     dragStartXRef.current = e.clientX;
     dragStartYRef.current = e.clientY;
     isHorizontalDragRef.current = false;
@@ -1243,42 +1633,158 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     if (e.pointerType === 'mouse' && e.buttons !== 1) return;
     const dx = e.clientX - dragStartXRef.current;
     const dy = e.clientY - (dragStartYRef.current ?? e.clientY);
+    const isCurlMode = settings.pageTurnStyle === 'curl';
+    const isSlideMode = settings.pageTurnStyle === 'slide';
+
     if (!isHorizontalDragRef.current) {
-      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+      // In curl mode allow diagonal bottom-right upward-left drag as well as horizontal drag
+      const startedDiagonalCurl =
+        isCurlMode && (Math.hypot(dx, dy) > 10 && (dx < -6 || dy < -10 || dx > 10));
+      const startedHoriz = Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 0.95;
+      if (startedDiagonalCurl || startedHoriz) {
         isHorizontalDragRef.current = true;
         clearLongPressTimer();
       } else {
         return;
       }
     }
-    if (settings.pageTurnStyle === 'curl') {
-      setDragCurlDeltaX(dx);
+
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    const canGoNext = liveIdx < screenPages.length - 1 || chapterIndex < book.chapters.length - 1;
+    const canGoPrev = liveIdx > 0 || chapterIndex > 0;
+
+    if (isCurlMode) {
+      const dragEval = computeInteractiveCornerCurlDrag(
+        dx,
+        dy,
+        stageSize.width,
+        stageSize.height
+      );
+      if (dragEval.direction === 'next' && !canGoNext) {
+        setLiveTurn({
+          mode: 'curl',
+          direction: 'next',
+          peel: Math.min(0.08, dragEval.progress * 0.2),
+          isAnimating: false,
+        });
+        return;
+      }
+      if (dragEval.direction === 'prev' && !canGoPrev) {
+        setLiveTurn(null);
+        return;
+      }
+      const peel =
+        dragEval.direction === 'next'
+          ? Math.min(0.98, Math.max(0.02, dragEval.progress))
+          : Math.max(0.02, Math.min(0.98, 1 - dragEval.progress));
+      setLiveTurn({
+        mode: 'curl',
+        direction: dragEval.direction,
+        peel,
+        isAnimating: false,
+      });
+    } else if (isSlideMode) {
+      const slideEval = computeInteractiveSlideFade(dx, stageSize.width);
+      if ((slideEval.direction === 'next' && !canGoNext) || (slideEval.direction === 'prev' && !canGoPrev)) {
+        // Gentle rubber-band resistance at book boundaries
+        setLiveTurn({
+          mode: 'slide',
+          direction: slideEval.direction,
+          translateXPx: dx * 0.22,
+          opacity: 0.95,
+          progress: 0.05,
+          isAnimating: false,
+        });
+        return;
+      }
+      setLiveTurn({
+        mode: 'slide',
+        direction: slideEval.direction,
+        translateXPx: slideEval.translateXPx,
+        opacity: slideEval.opacity,
+        progress: slideEval.progress,
+        isAnimating: false,
+      });
     }
   };
 
-  const finishStageDrag = (clientX?: number) => {
+  const finishStageDrag = (clientX?: number, clientY?: number) => {
     clearLongPressTimer();
     const startX = dragStartXRef.current;
+    const startY = dragStartYRef.current;
     const wasHorizontal = isHorizontalDragRef.current;
     dragStartXRef.current = null;
     dragStartYRef.current = null;
     isHorizontalDragRef.current = false;
 
     if (!wasHorizontal || startX === null || typeof clientX !== 'number') {
-      setDragCurlDeltaX(null);
+      if (liveTurn && !liveTurn.isAnimating) {
+        setLiveTurn(null);
+      }
       return;
     }
 
     suppressNextClickRef.current = true;
     const dx = clientX - startX;
-    const curlEval = computeInteractiveCurlTransform(dx, stageSize.width);
-    const shouldFlip =
-      settings.pageTurnStyle === 'curl'
-        ? curlEval.shouldCommitFlip
-        : Math.abs(dx) > 40;
+    const dy = typeof clientY === 'number' && startY !== null ? clientY - startY : 0;
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    const canGoNext = liveIdx < screenPages.length - 1 || chapterIndex < book.chapters.length - 1;
+    const canGoPrev = liveIdx > 0 || chapterIndex > 0;
 
-    setDragCurlDeltaX(null);
-    if (shouldFlip) {
+    if (settings.pageTurnStyle === 'curl') {
+      const dragEval = computeInteractiveCornerCurlDrag(
+        dx,
+        dy,
+        stageSize.width,
+        stageSize.height
+      );
+      if (dragEval.direction === 'next') {
+        const curPeel = Math.min(0.98, Math.max(0.02, dragEval.progress));
+        if (dragEval.shouldCommitFlip && canGoNext) {
+          animateCornerCurl('next', curPeel, 1, 240, () => goNextPageImmediate(true));
+        } else {
+          animateCornerCurl('next', curPeel, 0, 180);
+        }
+      } else {
+        const curPeel = Math.max(0.02, Math.min(0.98, 1 - dragEval.progress));
+        if (dragEval.shouldCommitFlip && canGoPrev) {
+          animateCornerCurl('prev', curPeel, 0, 240, () => goPrevPageImmediate(true));
+        } else {
+          animateCornerCurl('prev', curPeel, 1, 180);
+        }
+      }
+      return;
+    }
+
+    if (settings.pageTurnStyle === 'slide') {
+      const slideEval = computeInteractiveSlideFade(dx, stageSize.width);
+      const canFlipDir = slideEval.direction === 'next' ? canGoNext : canGoPrev;
+      if (slideEval.shouldCommitFlip && canFlipDir) {
+        const targetX =
+          slideEval.direction === 'next' ? -(stageSize.width * 0.96) : stageSize.width * 0.96;
+        animateSlideFade(
+          slideEval.direction,
+          slideEval.translateXPx,
+          targetX,
+          slideEval.opacity,
+          0,
+          200,
+          () => {
+            if (slideEval.direction === 'next') {
+              goNextPageImmediate(true);
+            } else {
+              goPrevPageImmediate(true);
+            }
+          }
+        );
+      } else {
+        animateSlideFade(slideEval.direction, slideEval.translateXPx, 0, slideEval.opacity, 1, 180);
+      }
+      return;
+    }
+
+    setLiveTurn(null);
+    if (Math.abs(dx) > 40) {
       if (dx < 0) {
         goNextPage();
       } else {
@@ -1338,6 +1844,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const safePageIndex = Math.min(currentPageIndex, Math.max(0, screenPages.length - 1));
+  const globalCurrentPage =
+    (bookPaginationSummary.chapterStartPageOffsets[chapterIndex] || 0) + safePageIndex + 1;
+  const globalTotalPages = Math.max(1, bookPaginationSummary.totalBookPages);
   const activeScreenPage = screenPages[safePageIndex] || {
     pageIndex: 0,
     chunks: [],
@@ -1355,6 +1864,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         }));
 
   const isPaginatedMode = settings.readingMode === 'paginated';
+  const handleJumpToGlobalPage = (targetGlobalPage: number) => {
+    const clamped = Math.max(1, Math.min(globalTotalPages, Math.round(targetGlobalPage)));
+    const loc = resolveLocationForGlobalPage(bookPaginationSummary, clamped);
+    setShowPageJump(false);
+    if (isAudioPlayingLocal || spokenParaIndex !== null) {
+      isFollowingAudioRef.current = false;
+    }
+    if (loc.chapterIndex === chapterIndex) {
+      commitPageChange(loc.pageIndex, loc.pageIndex >= safePageIndex ? 'next' : 'prev');
+    } else {
+      goToChapter(loc.chapterIndex, { targetPageIndex: loc.pageIndex });
+    }
+  };
   const activePageAnchorParagraph =
     activeScreenPage.chunks[0]?.paragraphIndex ?? book.currentParagraphIndex ?? 0;
   const isCurrentPageBookmarked = isPageBookmarked(
@@ -1403,17 +1925,203 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   }));
 
   const vintageTexture = getVintagePaperTextureStyles(activeTheme.id);
-  const liveCurlTransform =
-    isPaginatedMode && settings.pageTurnStyle === 'curl' && dragCurlDeltaX !== null
-      ? computeInteractiveCurlTransform(dragCurlDeltaX, stageSize.width)
+  const liveCurlGeom =
+    isPaginatedMode && liveTurn?.mode === 'curl'
+      ? computeCornerCurlGeometry(liveTurn.peel)
       : null;
+  const liveSlideState =
+    isPaginatedMode && liveTurn?.mode === 'slide' ? liveTurn : null;
+
+  // Resolve adjacent Next / Prev page content for true two-layer curl & slide-fade reveal
+  const adjacentNextPage = useMemo<{
+    page: ScreenPage;
+    chapterTitle: string;
+    chapterNum: number;
+  } | null>(() => {
+    if (!isPaginatedMode) return null;
+    if (safePageIndex < screenPages.length - 1) {
+      return {
+        page: screenPages[safePageIndex + 1],
+        chapterTitle: currentChapter?.title || book.title,
+        chapterNum: chapterIndex + 1,
+      };
+    }
+    const nextCh = book.chapters[chapterIndex + 1];
+    if (!nextCh) return null;
+    const nextRendered = buildRenderedParagraphs(
+      nextCh,
+      settings.translationMode,
+      settings.targetLang
+    );
+    const nextPages = paginateChapterForViewport({
+      paragraphs: nextRendered,
+      chapterTitle: nextCh.title,
+      viewportWidth: stageSize.width,
+      viewportHeight: effectiveViewportHeight,
+      settings,
+    });
+    return nextPages[0]
+      ? { page: nextPages[0], chapterTitle: nextCh.title, chapterNum: chapterIndex + 2 }
+      : null;
+  }, [
+    isPaginatedMode,
+    safePageIndex,
+    screenPages,
+    currentChapter?.title,
+    book.title,
+    book.chapters,
+    chapterIndex,
+    settings,
+    stageSize.width,
+    effectiveViewportHeight,
+  ]);
+
+  const adjacentPrevPage = useMemo<{
+    page: ScreenPage;
+    chapterTitle: string;
+    chapterNum: number;
+  } | null>(() => {
+    if (!isPaginatedMode) return null;
+    if (safePageIndex > 0) {
+      return {
+        page: screenPages[safePageIndex - 1],
+        chapterTitle: currentChapter?.title || book.title,
+        chapterNum: chapterIndex + 1,
+      };
+    }
+    const prevCh = book.chapters[chapterIndex - 1];
+    if (!prevCh) return null;
+    const prevRendered = buildRenderedParagraphs(
+      prevCh,
+      settings.translationMode,
+      settings.targetLang
+    );
+    const prevPages = paginateChapterForViewport({
+      paragraphs: prevRendered,
+      chapterTitle: prevCh.title,
+      viewportWidth: stageSize.width,
+      viewportHeight: effectiveViewportHeight,
+      settings,
+    });
+    const last = prevPages[prevPages.length - 1];
+    return last
+      ? { page: last, chapterTitle: prevCh.title, chapterNum: chapterIndex }
+      : null;
+  }, [
+    isPaginatedMode,
+    safePageIndex,
+    screenPages,
+    currentChapter?.title,
+    book.title,
+    book.chapters,
+    chapterIndex,
+    settings,
+    stageSize.width,
+    effectiveViewportHeight,
+  ]);
+
+  // Decide which page is underneath vs on top during live curl / slide-fade
+  const underlayTarget =
+    liveTurn?.mode === 'curl'
+      ? liveTurn.direction === 'next'
+        ? adjacentNextPage
+        : {
+            page: activeScreenPage,
+            chapterTitle: currentChapter?.title || book.title,
+            chapterNum: chapterIndex + 1,
+          }
+      : liveTurn?.mode === 'slide'
+      ? liveTurn.direction === 'next'
+        ? adjacentNextPage
+        : adjacentPrevPage
+      : null;
+
+  const isCurlPrevPeelingBack = liveTurn?.mode === 'curl' && liveTurn.direction === 'prev' && Boolean(adjacentPrevPage);
+  const topLayerPage = isCurlPrevPeelingBack && adjacentPrevPage ? adjacentPrevPage.page : activeScreenPage;
+  const topLayerChapterTitle =
+    isCurlPrevPeelingBack && adjacentPrevPage
+      ? adjacentPrevPage.chapterTitle
+      : currentChapter?.title || '';
+  const topLayerChapterNum =
+    isCurlPrevPeelingBack && adjacentPrevPage ? adjacentPrevPage.chapterNum : chapterIndex + 1;
+  const topLayerChunks: ScreenPageChunk[] = isPaginatedMode
+    ? topLayerPage.chunks
+    : visibleChunks;
+
   const pageTurnClass =
-    isPaginatedMode && !liveCurlTransform && hasUserTurnedRef.current && turnTick > 0
+    isPaginatedMode &&
+    !liveTurn &&
+    !skipCssTurnAnimRef.current &&
+    hasUserTurnedRef.current &&
+    turnTick > 0
       ? getPageTurnAnimationClass(settings.pageTurnStyle, turnDirection)
       : '';
   const activeTurnLabel =
     PAGE_TURN_STYLES.find((s) => s.id === (settings.pageTurnStyle || 'curl'))?.label ||
-    'Cong mép sách';
+    'Lật cong góc 3D';
+
+  const renderStaticPageContent = (target: {
+    page: ScreenPage;
+    chapterTitle: string;
+    chapterNum: number;
+  }) => (
+    <div
+      className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]}`}
+      style={{
+        fontFamily: settings.fontFamily,
+        fontSize: `${settings.fontSize}px`,
+        lineHeight: settings.lineHeight,
+        letterSpacing: `${settings.letterSpacing}em`,
+        fontWeight: settings.fontWeight,
+        textAlign: settings.textAlign,
+      }}
+    >
+      {target.page.hasChapterHeader && (
+        <header
+          className="mb-2 pb-1.5 border-b"
+          style={{ borderColor: activeTheme.border }}
+        >
+          <p className="text-[8.5px] sm:text-[9.5px] uppercase tracking-wider opacity-60 font-sans mb-0.5 tabular-nums truncate">
+            {book.title} · Ch.{target.chapterNum}/{book.chapters.length}
+          </p>
+          <h1 className="text-[11px] sm:text-[13px] font-display font-semibold leading-tight text-left truncate">
+            {target.chapterTitle}
+          </h1>
+        </header>
+      )}
+      <div className={settings.columnsInPaginated === 2 ? 'md:columns-2 md:gap-10' : ''}>
+        {target.page.chunks.map((chunk, idx) => {
+          const useDropCap =
+            settings.dropCap &&
+            chunk.paragraphIndex === 0 &&
+            chunk.isFirstOfParagraph &&
+            idx === 0;
+          return (
+            <div
+              key={`u-${chunk.paragraphIndex}-${idx}`}
+              style={{ marginBottom: `${settings.paragraphSpacing}px` }}
+              className="relative rounded-lg px-1.5 py-0.5 select-none"
+            >
+              <p
+                className={`${useDropCap ? 'editorial-dropcap' : ''} ${
+                  settings.firstLineIndent && chunk.isFirstOfParagraph && !useDropCap
+                    ? 'indent-7'
+                    : ''
+                }`}
+              >
+                {chunk.original}
+              </p>
+              {chunk.translated && (
+                <p className="mt-2 pl-4 opacity-75 italic text-[0.92em]">
+                  {chunk.translated}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div
@@ -1514,6 +2222,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             type="button"
             onClick={() => {
               unlockAudioPlaybackSync();
+              if (!isAudioPlayingLocal) {
+                isFollowingAudioRef.current = true;
+                lastSpokenPageIdxRef.current = null;
+              }
               setTogglePlaySignal((s) => s + 1);
             }}
             aria-label={isAudioPlayingLocal ? 'Tạm dừng đọc sách' : 'Phát đọc sách'}
@@ -1737,6 +2449,34 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     </span>
                     <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
+
+                  <button
+                    type="button"
+                    data-testid="reader-ai-cleanup-btn"
+                    disabled={isScanningCleanup}
+                    onClick={async () => {
+                      setShowToolsMenu(false);
+                      setIsScanningCleanup(true);
+                      setTranslateStatusMsg('');
+                      try {
+                        const report = await runImportBookAiScan(book);
+                        if (report.totalIssues > 0) {
+                          setCleanupReviewReport(report);
+                        } else {
+                          setTranslateStatusMsg('AI đã quét toàn bộ sách — nội dung sạch, không có địa chỉ hay lỗi chữ thừa.');
+                        }
+                      } finally {
+                        setIsScanningCleanup(false);
+                      }
+                    }}
+                    className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50"
+                  >
+                    <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
+                      <Sparkles className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
+                      <span>{isScanningCleanup ? 'Đang quét...' : 'AI Quét sạch'}</span>
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
+                  </button>
                 </div>
 
                 {/* Compact Inline Dịch nhanh Controls with GlassSelect */}
@@ -1828,16 +2568,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               : 'overflow-x-hidden px-4 sm:px-8 pt-6 sm:pt-9 pb-12'
           }`}
         >
-          {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page) */}
+          {/* Reading viewport box (measured by ResizeObserver in paginated mode so 1 screen = 1 exact page strictly above bottom 3 buttons) */}
           <div
             ref={pageMeasureBoxRef}
+            data-testid="reader-page-box"
             className={
               isPaginatedMode
-                ? 'flex-1 min-h-0 w-full px-4 sm:px-8 pt-3.5 pb-1 overflow-hidden'
+                ? 'flex-1 min-h-0 w-full px-4 sm:px-8 pt-2.5 pb-5 overflow-hidden'
                 : 'w-full'
             }
           >
             <article
+              ref={articleRef}
+              data-testid="reader-article"
               key={
                 isPaginatedMode
                   ? `${chapterIndex}-${safePageIndex}-${turnTick}`
@@ -1919,16 +2662,20 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 </div>
               )}
 
-              {/* Chapter Header (shown on Page 1 in paginated mode, or top of scroll mode) */}
+              {/* Compact 1/2-size Chapter Header (shown on Page 1 in paginated mode, or top of scroll mode) */}
               {(!isPaginatedMode || activeScreenPage.hasChapterHeader) && (
                 <header
-                  className={isPaginatedMode ? 'mb-4 pb-3 border-b' : 'mb-8 pb-6 border-b'}
+                  data-testid="reader-chapter-header"
+                  className={isPaginatedMode ? 'mb-2 pb-1.5 border-b' : 'mb-4 pb-3 border-b'}
                   style={{ borderColor: activeTheme.border }}
                 >
-                  <p className="text-[11px] uppercase tracking-wider opacity-60 font-sans mb-1.5 tabular-nums truncate">
-                    {book.title} · Chương {chapterIndex + 1}/{book.chapters.length}
+                  <p className="text-[8.5px] sm:text-[9.5px] uppercase tracking-wider opacity-60 font-sans mb-0.5 tabular-nums truncate">
+                    {book.title} · Ch.{chapterIndex + 1}/{book.chapters.length}
                   </p>
-                  <h1 className="text-xl sm:text-2xl font-display font-semibold leading-snug text-left">
+                  <h1
+                    data-testid="reader-chapter-title"
+                    className="text-[11px] sm:text-[13px] font-display font-semibold leading-tight text-left truncate"
+                  >
                     {currentChapter?.title}
                   </h1>
                 </header>
@@ -1981,7 +2728,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       onPointerCancel={clearLongPressTimer}
                       onContextMenu={(e) => {
                         e.preventDefault();
-                        syncParagraphPosition(chunk.paragraphIndex);
+                        syncParagraphPosition(chunk.paragraphIndex, chunk.charOffset ?? 0, true);
                         setActiveParaAction({ paragraphIndex: chunk.paragraphIndex });
                       }}
                       className={`relative rounded-lg px-1.5 py-0.5 transition-colors select-none ${
@@ -2040,56 +2787,155 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             </article>
           </div>
 
-          {/* Slim Fixed Bottom Page Bar in Paginated Screen-Fitted Mode */}
+          {/* Dedicated Opaque 3-Button Bottom Navigation Bar (Trước | Trang/Tổng | Tiếp) */}
           {isPaginatedMode && (
             <footer
-              style={{ borderColor: activeTheme.border }}
-              className="shrink-0 h-[44px] px-3 sm:px-6 border-t flex items-center justify-between gap-2 font-sans text-[11px] pb-safe"
+              data-testid="reader-bottom-bar"
+              style={{
+                borderColor: activeTheme.border,
+                backgroundColor: activeTheme.bg,
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="shrink-0 relative z-20 px-3 sm:px-6 pt-2 pb-[max(0.55rem,env(safe-area-inset-bottom))] border-t grid grid-cols-3 gap-2 font-sans text-[11px]"
             >
               <button
                 type="button"
+                data-testid="reader-prev-page-btn"
                 disabled={safePageIndex === 0 && chapterIndex === 0}
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   goPrevPage();
                 }}
                 aria-label="Trang trước"
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-35"
+                style={{ borderColor: activeTheme.border }}
+                className="h-9 px-2.5 rounded-xl border bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] active:scale-[0.98] transition-all inline-flex items-center justify-center gap-1 font-semibold disabled:opacity-35"
               >
-                <ChevronLeft className="w-3.5 h-3.5" />
+                <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
                 <span>Trước</span>
               </button>
 
-              <div className="min-w-0 text-center tabular-nums opacity-75 truncate">
-                <span className="font-semibold">
-                  Trang {safePageIndex + 1}/{Math.max(1, screenPages.length)}
-                </span>
-                <span className="mx-1.5 opacity-50">·</span>
+              <button
+                type="button"
+                data-testid="reader-page-counter-btn"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPageJumpInput(String(globalCurrentPage));
+                  setShowPageJump((v) => !v);
+                }}
+                aria-label={`Trang ${globalCurrentPage} trên ${globalTotalPages}, nhấn để chọn trang`}
+                title={`Ch.${chapterIndex + 1}/${book.chapters.length} · ${activeTurnLabel}`}
+                style={{ borderColor: activeTheme.border }}
+                className="h-9 px-2 rounded-xl border bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] active:scale-[0.98] transition-all inline-flex items-center justify-center font-semibold tabular-nums truncate"
+              >
                 <span>
-                  Ch.{chapterIndex + 1}/{book.chapters.length}
+                  {globalCurrentPage} / {globalTotalPages}
                 </span>
-                <span className="hidden sm:inline opacity-60"> · {activeTurnLabel}</span>
-              </div>
+              </button>
 
               <button
                 type="button"
+                data-testid="reader-next-page-btn"
                 disabled={
                   safePageIndex >= screenPages.length - 1 &&
                   chapterIndex >= book.chapters.length - 1
                 }
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   goNextPage();
                 }}
                 aria-label="Trang tiếp"
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-35"
+                style={{ borderColor: activeTheme.border }}
+                className="h-9 px-2.5 rounded-xl border bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] active:scale-[0.98] transition-all inline-flex items-center justify-center gap-1 font-semibold disabled:opacity-35"
               >
                 <span>Tiếp</span>
-                <ChevronRight className="w-3.5 h-3.5" />
+                <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               </button>
             </footer>
           )}
         </div>
+
+        {/* Quick Page Jump Popover triggered by Center Page Counter Button */}
+        {showPageJump &&
+          isPaginatedMode &&
+          typeof document !== 'undefined' &&
+          createPortal(
+            <div
+              className="fixed inset-0 z-[82] ios-frosted-backdrop flex items-end sm:items-center justify-center p-3 pb-16"
+              onClick={() => setShowPageJump(false)}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="Chọn trang hiển thị"
+                data-testid="reader-page-jump-modal"
+                onClick={(e) => e.stopPropagation()}
+                className="ios-sheet-enter ios-frosted-surface w-full max-w-xs rounded-[22px] text-stone-900 dark:text-stone-100 p-4 space-y-3 font-sans text-xs shadow-2xl"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-[13px] font-semibold">Đi tới trang</h2>
+                    <p className="text-[10.5px] text-stone-500 dark:text-stone-400 tabular-nums">
+                      Trang {globalCurrentPage} / {globalTotalPages} · Ch.{chapterIndex + 1}/
+                      {book.chapters.length}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPageJump(false)}
+                    aria-label="Đóng bảng chọn trang"
+                    className="w-7 h-7 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center text-stone-500"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <input
+                  type="range"
+                  min={1}
+                  max={globalTotalPages}
+                  value={Math.max(
+                    1,
+                    Math.min(globalTotalPages, Number(pageJumpInput) || globalCurrentPage)
+                  )}
+                  onChange={(e) => setPageJumpInput(e.target.value)}
+                  className="w-full accent-amber-700"
+                />
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const parsed = parseInt(pageJumpInput, 10);
+                    if (!Number.isNaN(parsed)) {
+                      handleJumpToGlobalPage(parsed);
+                    }
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <input
+                    type="number"
+                    data-testid="reader-page-jump-input"
+                    min={1}
+                    max={globalTotalPages}
+                    value={pageJumpInput}
+                    onChange={(e) => setPageJumpInput(e.target.value)}
+                    className="flex-1 h-9 px-3 rounded-xl border border-stone-300 dark:border-white/15 bg-white dark:bg-stone-900 text-xs font-semibold tabular-nums text-center focus:outline-none focus:ring-2 focus:ring-amber-600/40"
+                  />
+                  <button
+                    type="submit"
+                    data-testid="reader-page-jump-submit"
+                    className="h-9 px-4 rounded-xl bg-amber-800 hover:bg-amber-900 text-white font-semibold shrink-0"
+                  >
+                    Đi tới
+                  </button>
+                </form>
+              </div>
+            </div>,
+            document.body
+          )}
 
         {/* Long-Press Floating Paragraph Action Menu (Nghe từ đây & Đánh dấu — hidden until long-press) */}
         {activeParaAction !== null &&
@@ -2128,7 +2974,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     onClick={() => {
                       unlockAudioPlaybackSync();
                       const pIdx = activeParaAction.paragraphIndex;
-                      syncParagraphPosition(pIdx);
+                      syncParagraphPosition(pIdx, 0, true);
                       setActiveParaAction(null);
                       handleContinueListenFromHere();
                     }}
@@ -2343,8 +3189,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               setSpokenParaIndex(paraIdx);
               setSpokenCharOffset(charOffset);
             }}
-            onSyncReadingParagraph={(paraIdx) => {
-              syncParagraphPosition(paraIdx);
+            onSyncReadingParagraph={(paraIdx, charOffset = 0) => {
+              syncParagraphPosition(paraIdx, charOffset, false);
             }}
             onPlaybackStateChange={(playing) => {
               setIsAudioPlayingLocal(playing);
@@ -2353,6 +3199,8 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             defaultVoice={basicSettings.defaultVoice}
             standaloneDeviceMode={basicSettings.standaloneDeviceMode !== false}
             onNextChapter={() => {
+              isFollowingAudioRef.current = true;
+              lastSpokenPageIdxRef.current = null;
               if (chapterIndex < book.chapters.length - 1) goToChapter(chapterIndex + 1);
             }}
           />
@@ -2376,7 +3224,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               }}
               aria-label="Mở cài đặt giọng đọc và nhạc nền"
               className={`fixed right-3 z-[55] w-11 h-11 rounded-full bg-stone-900 dark:bg-stone-800 border-2 border-amber-500/80 shadow-xl flex items-center justify-center text-amber-400 hover:scale-105 active:scale-95 transition-transform ${
-                isPaginatedMode ? 'bottom-[56px]' : 'bottom-5'
+                isPaginatedMode ? 'bottom-[68px]' : 'bottom-5'
               }`}
             >
               <Disc3
@@ -2397,6 +3245,32 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onAddCustomTrack={onAddCustomAmbientTrack}
           onDeleteCustomTrack={onDeleteCustomAmbientTrack}
         />
+
+        {/* On-Demand 3-Category AI Book Cleanup Confirmation Modal */}
+        {cleanupReviewReport && (
+          <BookCleanupReviewModal
+            isOpen
+            bookTitle={book.title}
+            report={cleanupReviewReport}
+            confirmLabel="Áp dụng"
+            keepOriginalLabel="Hủy"
+            onKeepOriginal={() => setCleanupReviewReport(null)}
+            onConfirm={(selection: CleanupSelection) => {
+              const { cleanedBook, removedCount, fixedCount } = applyBookCleanupSelection(
+                book,
+                cleanupReviewReport,
+                selection
+              );
+              setCleanupReviewReport(null);
+              if (removedCount > 0 || fixedCount > 0) {
+                onUpdateBook(cleanedBook);
+                setTranslateStatusMsg(
+                  `AI đã xóa ${removedCount} mục thừa và sửa ${fixedCount} lỗi chữ trong sách.`
+                );
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   );

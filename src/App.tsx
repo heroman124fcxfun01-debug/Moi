@@ -70,6 +70,10 @@ import {
   normalizeBookMatchKey,
 } from './utils/syncAndStats';
 import { LibraryView } from './components/LibraryView';
+import { ReaderView } from './components/ReaderView';
+import { WebScraperView } from './components/WebScraperView';
+import { VoiceStudioView } from './components/VoiceStudioView';
+import { SettingsSyncView } from './components/SettingsSyncView';
 import { OfflineIndicator } from './components/PWAInstallUI';
 import { FloatingBookDisc } from './components/FloatingBookDisc';
 import { LiquidDropThumb, useLiquidDropIndicator } from './components/LiquidGlassBar';
@@ -81,32 +85,22 @@ import {
   type EdgeSwipeStart,
 } from './utils/edgeSwipeBack';
 import { triggerDeviceHaptic } from './utils/deviceHardware';
+import { ensureRamCacheLifecycle, scheduleIdleWarmup } from './utils/ramCache';
 
-// Lazy-load secondary views & heavy modals so initial boot RAM stays minimal on budget & flagship Android phones
-const ReaderView = lazy(() =>
-  import('./components/ReaderView').then((m) => ({ default: m.ReaderView }))
-);
-const WebScraperView = lazy(() =>
-  import('./components/WebScraperView').then((m) => ({ default: m.WebScraperView }))
-);
-const VoiceStudioView = lazy(() =>
-  import('./components/VoiceStudioView').then((m) => ({ default: m.VoiceStudioView }))
-);
-const SettingsSyncView = lazy(() =>
-  import('./components/SettingsSyncView').then((m) => ({ default: m.SettingsSyncView }))
-);
-const ImportBookModal = lazy(() =>
-  import('./components/ImportBookModal').then((m) => ({ default: m.ImportBookModal }))
-);
-const GlobalSearchModal = lazy(() =>
-  import('./components/GlobalSearchModal').then((m) => ({ default: m.GlobalSearchModal }))
-);
-const AppInfoModal = lazy(() =>
-  import('./components/AppInfoModal').then((m) => ({ default: m.AppInfoModal }))
-);
-const CongDongSachModal = lazy(() =>
-  import('./components/CongDongSachModal').then((m) => ({ default: m.CongDongSachModal }))
-);
+// Secondary modals stay code-split for fast startup and are silently pre-warmed into RAM during idle
+const loadImportBookModal = () =>
+  import('./components/ImportBookModal').then((m) => ({ default: m.ImportBookModal }));
+const loadGlobalSearchModal = () =>
+  import('./components/GlobalSearchModal').then((m) => ({ default: m.GlobalSearchModal }));
+const loadAppInfoModal = () =>
+  import('./components/AppInfoModal').then((m) => ({ default: m.AppInfoModal }));
+const loadCongDongSachModal = () =>
+  import('./components/CongDongSachModal').then((m) => ({ default: m.CongDongSachModal }));
+
+const ImportBookModal = lazy(loadImportBookModal);
+const GlobalSearchModal = lazy(loadGlobalSearchModal);
+const AppInfoModal = lazy(loadAppInfoModal);
+const CongDongSachModal = lazy(loadCongDongSachModal);
 import {
   getDriveAccessToken,
   getDriveAuthSnapshot,
@@ -149,8 +143,36 @@ export default function App() {
     tick: number;
   } | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  // Invisible RAM keep-alive cache for primary tabs so switching tabs has 0ms lag and zero spinner
+  const [warmTabs, setWarmTabs] = useState<Record<'library' | 'web' | 'studio' | 'settings', boolean>>({
+    library: true,
+    web: false,
+    studio: false,
+    settings: false,
+  });
+
+  useEffect(() => {
+    ensureRamCacheLifecycle();
+    if (!isLoaded) return;
+    const cancelTabs = scheduleIdleWarmup(() => {
+      setWarmTabs({ library: true, web: true, studio: true, settings: true });
+    }, 600);
+    const cancelModals = scheduleIdleWarmup(() => {
+      void loadImportBookModal();
+      void loadGlobalSearchModal();
+      void loadAppInfoModal();
+      void loadCongDongSachModal();
+    }, 1500);
+    return () => {
+      cancelTabs();
+      cancelModals();
+    };
+  }, [isLoaded]);
 
   const setActiveTab = useCallback((nextTab: AppTab) => {
+    if (nextTab !== 'reader') {
+      setWarmTabs((prev) => (prev[nextTab] ? prev : { ...prev, [nextTab]: true }));
+    }
     setActiveTabState((prevTab) => {
       if (prevTab === nextTab) return prevTab;
       const prevIdx = PRIMARY_TAB_ORDER.indexOf(prevTab);
@@ -998,14 +1020,7 @@ export default function App() {
           Đang tải tủ sách BOOKHAD...
         </div>
       ) : (
-        <Suspense
-          fallback={
-            <div className="max-w-7xl mx-auto px-6 py-16 flex items-center gap-2 text-xs text-stone-500">
-              <Loader2 className="w-4 h-4 animate-spin text-amber-800" />
-              <span>Đang mở...</span>
-            </div>
-          }
-        >
+        <>
           {activeBook && (activeTab === 'reader' || isReaderAudioPlaying || isReaderAudioSessionActive) && (
             <div className={activeTab === 'reader' ? 'ios-reader-enter' : 'hidden'}>
               <ReaderView
@@ -1034,18 +1049,20 @@ export default function App() {
             </div>
           )}
 
-          {activeTab !== 'reader' && (
-            <div
-              key={activeTab}
-              className={`relative z-10 ${
-                tabDirection === 'forward'
-                  ? 'ios-tab-forward'
-                  : tabDirection === 'backward'
-                  ? 'ios-tab-backward'
-                  : 'ios-view-enter'
-              }`}
-            >
-              {activeTab === 'library' && (
+          <div className={activeTab !== 'reader' ? 'relative z-10' : 'hidden'}>
+            {warmTabs.library && (
+              <div
+                aria-hidden={activeTab !== 'library'}
+                className={
+                  activeTab === 'library'
+                    ? tabDirection === 'forward'
+                      ? 'ios-tab-forward'
+                      : tabDirection === 'backward'
+                      ? 'ios-tab-backward'
+                      : 'ios-view-enter'
+                    : 'hidden'
+                }
+              >
                 <LibraryView
                   books={books}
                   collections={userCollections}
@@ -1062,11 +1079,39 @@ export default function App() {
                   }
                   focusCollectionSignal={focusCollectionSignal}
                 />
-              )}
+              </div>
+            )}
 
-              {activeTab === 'web' && <WebScraperView crawler={crawler} />}
+            {warmTabs.web && (
+              <div
+                aria-hidden={activeTab !== 'web'}
+                className={
+                  activeTab === 'web'
+                    ? tabDirection === 'forward'
+                      ? 'ios-tab-forward'
+                      : tabDirection === 'backward'
+                      ? 'ios-tab-backward'
+                      : 'ios-view-enter'
+                    : 'hidden'
+                }
+              >
+                <WebScraperView crawler={crawler} />
+              </div>
+            )}
 
-              {activeTab === 'studio' && (
+            {warmTabs.studio && (
+              <div
+                aria-hidden={activeTab !== 'studio'}
+                className={
+                  activeTab === 'studio'
+                    ? tabDirection === 'forward'
+                      ? 'ios-tab-forward'
+                      : tabDirection === 'backward'
+                      ? 'ios-tab-backward'
+                      : 'ios-view-enter'
+                    : 'hidden'
+                }
+              >
                 <VoiceStudioView
                   customFonts={customFonts}
                   onAddCustomFont={handleAddCustomFont}
@@ -1083,9 +1128,22 @@ export default function App() {
                   onDeleteCustomAmbientTrack={handleDeleteCustomAmbientTrack}
                   standaloneDeviceMode={isStandaloneDeviceMode}
                 />
-              )}
+              </div>
+            )}
 
-              {activeTab === 'settings' && (
+            {warmTabs.settings && (
+              <div
+                aria-hidden={activeTab !== 'settings'}
+                className={
+                  activeTab === 'settings'
+                    ? tabDirection === 'forward'
+                      ? 'ios-tab-forward'
+                      : tabDirection === 'backward'
+                      ? 'ios-tab-backward'
+                      : 'ios-view-enter'
+                    : 'hidden'
+                }
+              >
                 <SettingsSyncView
                   books={books}
                   collections={userCollections}
@@ -1098,10 +1156,10 @@ export default function App() {
                   onUpdateBasicSettings={handleUpdateBasicSettings}
                   onApplySyncedLibrary={handleApplySyncedLibrary}
                 />
-              )}
-            </div>
-          )}
-        </Suspense>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* Compact Opaque Solid Bottom Dock (4/5 height, half-size label text, zero see-through) */}

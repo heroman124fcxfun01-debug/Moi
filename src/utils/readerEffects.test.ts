@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PAGE_TURN_STYLES,
+  computeCornerCurlGeometry,
+  computeInteractiveCornerCurlDrag,
   computeInteractiveCurlTransform,
+  computeInteractiveSlideFade,
   getPageTurnAnimationClass,
   getVintagePaperTextureStyles,
   isVintagePaperTheme,
@@ -49,4 +52,47 @@ test('computeInteractiveCurlTransform tracks drag ratio and flips when drag exce
   assert.ok(commitPrev.rotateYDeg > 0);
   assert.equal(commitPrev.shouldCommitFlip, true);
 });
+
+test('computeCornerCurlGeometry peels diagonally upward from bottom-right corner with curved flap', () => {
+  const flat = computeCornerCurlGeometry(0);
+  assert.equal(flat.peel, 0);
+  assert.equal(flat.flapPath, '');
+
+  const mid = computeCornerCurlGeometry(0.35);
+  assert.ok(mid.frontClipPath.startsWith('polygon('));
+  assert.ok(mid.flapPath.includes(' Q '), 'flap should use quadratic Bezier curves for rolled paper');
+  assert.ok(mid.tipX < 100 && mid.tipY < 100, 'lifted corner tip moves up-and-left from bottom-right');
+  assert.ok(mid.shadowOpacity > 0.2, 'mid-peel casts visible shadow onto underlying page');
+
+  const full = computeCornerCurlGeometry(1);
+  assert.equal(full.flapPath, '');
+  assert.equal(full.shadowOpacity, 0);
+});
+
+test('computeInteractiveCornerCurlDrag combines horizontal and upward corner drag smoothly', () => {
+  const small = computeInteractiveCornerCurlDrag(-25, -10, 390, 700);
+  assert.equal(small.direction, 'next');
+  assert.equal(small.shouldCommitFlip, false);
+  assert.ok(small.progress > 0 && small.progress < 0.18);
+
+  const diagonal = computeInteractiveCornerCurlDrag(-80, -90, 390, 700);
+  assert.equal(diagonal.direction, 'next');
+  assert.equal(diagonal.shouldCommitFlip, true);
+  assert.ok(diagonal.progress >= 0.25);
+});
+
+test('computeInteractiveSlideFade glides page horizontally and progressively fades opacity on hold-drag', () => {
+  const startDrag = computeInteractiveSlideFade(-24, 390);
+  assert.equal(startDrag.direction, 'next');
+  assert.equal(startDrag.translateXPx, -24);
+  assert.ok(startDrag.opacity < 0.95 && startDrag.opacity > 0.7, 'begins fading immediately as user drags');
+  assert.equal(startDrag.shouldCommitFlip, false);
+
+  const deepDrag = computeInteractiveSlideFade(-180, 390);
+  assert.equal(deepDrag.direction, 'next');
+  assert.equal(deepDrag.translateXPx, -180);
+  assert.ok(deepDrag.opacity < 0.55, 'fades strongly as page moves left');
+  assert.equal(deepDrag.shouldCommitFlip, true);
+});
+
 

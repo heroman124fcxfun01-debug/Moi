@@ -10,6 +10,7 @@ import type {
 } from '../types/book';
 import { createSeedBooks } from '../data/seedBooks';
 import { computeBookFingerprint, createSeedReadingLogs } from './syncAndStats';
+import { ensureRamCacheLifecycle, storageRamCache } from './ramCache';
 
 const DB_NAME = 'laziread_studio_db';
 const DB_VERSION = 2;
@@ -61,9 +62,14 @@ export const DEFAULT_APP_BASIC_SETTINGS: AppBasicSettings = {
   volumeKeyPageTurn: true,
 };
 
+let cachedDbPromise: Promise<IDBDatabase> | null = null;
+
 function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDbPromise) return cachedDbPromise;
+  ensureRamCacheLifecycle();
+  cachedDbPromise = new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
+      cachedDbPromise = null;
       reject(new Error('IndexedDB unavailable'));
       return;
     }
@@ -86,9 +92,19 @@ function openDb(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onclose = () => {
+        cachedDbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      cachedDbPromise = null;
+      reject(req.error);
+    };
   });
+  return cachedDbPromise;
 }
 
 async function getAllFromStore<T>(storeName: string): Promise<T[]> {
@@ -132,10 +148,14 @@ function normalizeBook(book: Book): Book {
 }
 
 export async function loadBooks(): Promise<Book[]> {
+  const cached = storageRamCache.get('books') as Book[] | undefined;
+  if (cached) return cached;
   try {
     const existing = await getAllFromStore<Book>(STORE_BOOKS);
     if (existing.length > 0) {
-      return existing.map(normalizeBook).sort((a, b) => b.lastReadAt - a.lastReadAt);
+      const sorted = existing.map(normalizeBook).sort((a, b) => b.lastReadAt - a.lastReadAt);
+      storageRamCache.set('books', sorted);
+      return sorted;
     }
     const metaSeed = await getMetaValue<boolean>('seeded');
     if (!metaSeed) {
@@ -144,8 +164,10 @@ export async function loadBooks(): Promise<Book[]> {
         await putToStore(STORE_BOOKS, b);
       }
       await setMetaValue('seeded', true);
+      storageRamCache.set('books', seeds);
       return seeds;
     }
+    storageRamCache.set('books', []);
     return [];
   } catch {
     return createSeedBooks();
@@ -153,16 +175,36 @@ export async function loadBooks(): Promise<Book[]> {
 }
 
 export async function saveBook(book: Book): Promise<void> {
-  await putToStore(STORE_BOOKS, normalizeBook(book));
+  const normalized = normalizeBook(book);
+  const cached = storageRamCache.get('books') as Book[] | undefined;
+  if (cached) {
+    const next = [normalized, ...cached.filter((b) => b.id !== normalized.id)].sort(
+      (a, b) => b.lastReadAt - a.lastReadAt
+    );
+    storageRamCache.set('books', next);
+  }
+  await putToStore(STORE_BOOKS, normalized);
 }
 
 export async function saveAllBooks(books: Book[]): Promise<void> {
-  for (const b of books) {
-    await putToStore(STORE_BOOKS, normalizeBook(b));
+  const normalized = books.map(normalizeBook);
+  storageRamCache.set(
+    'books',
+    [...normalized].sort((a, b) => b.lastReadAt - a.lastReadAt)
+  );
+  for (const b of normalized) {
+    await putToStore(STORE_BOOKS, b);
   }
 }
 
 export async function removeBook(bookId: string): Promise<void> {
+  const cached = storageRamCache.get('books') as Book[] | undefined;
+  if (cached) {
+    storageRamCache.set(
+      'books',
+      cached.filter((b) => b.id !== bookId)
+    );
+  }
   await deleteFromStore(STORE_BOOKS, bookId);
 }
 
@@ -172,16 +214,21 @@ export async function restoreSampleBooks(): Promise<Book[]> {
     await putToStore(STORE_BOOKS, b);
   }
   await setMetaValue('seeded', true);
+  storageRamCache.delete('books');
   return loadBooks();
 }
 
 export async function loadCustomFonts(): Promise<CustomFontAsset[]> {
+  const cached = storageRamCache.get('custom_fonts') as CustomFontAsset[] | undefined;
+  if (cached) return cached;
   try {
     const fonts = await getAllFromStore<CustomFontAsset>(STORE_FONTS);
     for (const font of fonts) {
       await registerFontFaceInBrowser(font);
     }
-    return fonts.sort((a, b) => b.addedAt - a.addedAt);
+    const sorted = fonts.sort((a, b) => b.addedAt - a.addedAt);
+    storageRamCache.set('custom_fonts', sorted);
+    return sorted;
   } catch {
     return [];
   }
@@ -189,10 +236,12 @@ export async function loadCustomFonts(): Promise<CustomFontAsset[]> {
 
 export async function saveCustomFont(font: CustomFontAsset): Promise<void> {
   await registerFontFaceInBrowser(font);
+  storageRamCache.delete('custom_fonts');
   await putToStore(STORE_FONTS, font);
 }
 
 export async function removeCustomFont(fontId: string): Promise<void> {
+  storageRamCache.delete('custom_fonts');
   await deleteFromStore(STORE_FONTS, fontId);
 }
 
@@ -212,47 +261,65 @@ export async function registerFontFaceInBrowser(font: CustomFontAsset): Promise<
 }
 
 export async function loadExternalVoices(): Promise<ExternalVoiceAsset[]> {
+  const cached = storageRamCache.get('external_voices') as ExternalVoiceAsset[] | undefined;
+  if (cached) return cached;
   try {
     const voices = await getAllFromStore<ExternalVoiceAsset>(STORE_VOICES);
-    return voices.sort((a, b) => b.addedAt - a.addedAt);
+    const sorted = voices.sort((a, b) => b.addedAt - a.addedAt);
+    storageRamCache.set('external_voices', sorted);
+    return sorted;
   } catch {
     return [];
   }
 }
 
 export async function saveExternalVoice(voice: ExternalVoiceAsset): Promise<void> {
+  storageRamCache.delete('external_voices');
   await putToStore(STORE_VOICES, voice);
 }
 
 export async function removeExternalVoice(voiceId: string): Promise<void> {
+  storageRamCache.delete('external_voices');
   await deleteFromStore(STORE_VOICES, voiceId);
 }
 
 export async function loadCustomAmbientTracks(): Promise<CustomAmbientTrack[]> {
+  const cached = storageRamCache.get('custom_ambient_tracks') as
+    | CustomAmbientTrack[]
+    | undefined;
+  if (cached) return cached;
   try {
     const tracks = await getAllFromStore<CustomAmbientTrack>(STORE_AMBIENT_TRACKS);
-    return tracks.sort((a, b) => b.addedAt - a.addedAt);
+    const sorted = tracks.sort((a, b) => b.addedAt - a.addedAt);
+    storageRamCache.set('custom_ambient_tracks', sorted);
+    return sorted;
   } catch {
     return [];
   }
 }
 
 export async function saveCustomAmbientTrack(track: CustomAmbientTrack): Promise<void> {
+  storageRamCache.delete('custom_ambient_tracks');
   await putToStore(STORE_AMBIENT_TRACKS, track);
 }
 
 export async function removeCustomAmbientTrack(trackId: string): Promise<void> {
+  storageRamCache.delete('custom_ambient_tracks');
   await deleteFromStore(STORE_AMBIENT_TRACKS, trackId);
 }
 
 export async function loadReadingLogs(): Promise<ReadingLogEntry[]> {
+  const cached = storageRamCache.get('reading_logs') as ReadingLogEntry[] | undefined;
+  if (cached) return cached;
   try {
     const logs = await getMetaValue<ReadingLogEntry[]>('reading_logs');
     if (Array.isArray(logs) && logs.length > 0) {
+      storageRamCache.set('reading_logs', logs);
       return logs;
     }
     const seedLogs = createSeedReadingLogs();
     await setMetaValue('reading_logs', seedLogs);
+    storageRamCache.set('reading_logs', seedLogs);
     return seedLogs;
   } catch {
     return createSeedReadingLogs();
@@ -260,6 +327,7 @@ export async function loadReadingLogs(): Promise<ReadingLogEntry[]> {
 }
 
 export async function saveReadingLogs(logs: ReadingLogEntry[]): Promise<void> {
+  storageRamCache.set('reading_logs', logs);
   try {
     await setMetaValue('reading_logs', logs);
   } catch {

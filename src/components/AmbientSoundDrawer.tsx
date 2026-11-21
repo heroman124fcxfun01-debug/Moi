@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { ChevronLeft, Music, X } from 'lucide-react';
 import type { CustomAmbientTrack } from '../types/book';
 import { AmbientSoundPanel } from './AmbientSoundPanel';
+import { IosSheet } from './IosSheet';
 
 interface AmbientSoundDrawerProps {
   isOpen: boolean;
@@ -32,15 +32,8 @@ export const AmbientSoundDrawer: React.FC<AmbientSoundDrawerProps> = ({
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  if (!isOpen) return null;
-
   const content = (
     <>
-      {!isDesktop && (
-        <div className="flex justify-center pt-2 pb-1 shrink-0">
-          <span className="w-10 h-1 rounded-full bg-stone-300 dark:bg-stone-700" />
-        </div>
-      )}
       <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-3 border-b border-stone-300/40 dark:border-white/10 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {onBackToToolsMenu && (
@@ -88,31 +81,23 @@ export const AmbientSoundDrawer: React.FC<AmbientSoundDrawerProps> = ({
     </>
   );
 
-  if (!isDesktop && typeof document !== 'undefined') {
-    return createPortal(
-      <div className="fixed inset-0 z-[75] ios-frosted-backdrop flex items-end justify-center">
-        <div
-          className="fixed inset-0"
-          onClick={onClose}
-          aria-hidden="true"
-        />
-        <aside
-          aria-label="Âm thanh và nhạc nền khi đọc hoặc nghe sách"
-          className="ios-sheet-enter ios-frosted-surface relative z-10 w-full max-w-lg h-auto max-h-[84dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden"
-        >
-          {content}
-        </aside>
-      </div>,
-      document.body
-    );
-  }
-
   return (
-    <aside
-      aria-label="Âm thanh và nhạc nền khi đọc hoặc nghe sách"
-      className="ios-drawer-right ios-frosted-surface w-[400px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden"
+    <IosSheet
+      isOpen={isOpen}
+      onClose={onClose}
+      ariaLabel="Âm thanh và nhạc nền khi đọc hoặc nghe sách"
+      testId="reader-ambient-drawer"
+      variant={isDesktop ? 'drawer-right' : 'bottom-sheet'}
+      inlineDesktop={isDesktop}
+      showGrabHandle={!isDesktop}
+      zIndexClass="z-[75]"
+      panelClassName={
+        isDesktop
+          ? 'w-[400px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden'
+          : 'w-full max-w-lg h-auto max-h-[84dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
+      }
     >
       {content}
-    </aside>
+    </IosSheet>
   );
 };

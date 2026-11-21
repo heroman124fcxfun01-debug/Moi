@@ -105,7 +105,7 @@ export interface InteractiveCurlTransform {
 
 /**
  * Maps live touch/mouse horizontal drag distance (deltaX) across a book stage width
- * to a continuous 3D page-peel angle, horizontal shift, curl shadow opacity, and commit threshold.
+ * to a continuous curl progress and commit threshold.
  */
 export function computeInteractiveCurlTransform(
   deltaX: number,
@@ -124,4 +124,256 @@ export function computeInteractiveCurlTransform(
     shouldCommitFlip: progress >= 0.2,
   };
 }
+
+export interface CornerCurlDragResult {
+  progress: number;
+  direction: 'next' | 'prev';
+  shouldCommitFlip: boolean;
+}
+
+/**
+ * Maps diagonal finger drag (bottom-right pulling up-and-left for Next,
+ * or left-to-right for Prev) into a smooth [0..1] paper corner peel ratio.
+ */
+export function computeInteractiveCornerCurlDrag(
+  deltaX: number,
+  deltaY: number,
+  stageWidth: number,
+  stageHeight = 640
+): CornerCurlDragResult {
+  const safeW = Math.max(140, stageWidth || 360);
+  const safeH = Math.max(200, stageHeight || 640);
+  const direction: 'next' | 'prev' = deltaX <= 0 ? 'next' : 'prev';
+  if (direction === 'next') {
+    const pullLeft = Math.max(0, -deltaX) / (safeW * 0.82);
+    const pullUp = Math.max(0, -deltaY) / (safeH * 1.15);
+    const progress = Math.min(1, Math.max(0, pullLeft + pullUp * 0.35));
+    return {
+      progress: Number(progress.toFixed(4)),
+      direction,
+      shouldCommitFlip: progress >= 0.18,
+    };
+  }
+  const pullRight = Math.max(0, deltaX) / (safeW * 0.82);
+  const pullDown = Math.max(0, deltaY) / (safeH * 1.15);
+  const progress = Math.min(1, Math.max(0, pullRight + pullDown * 0.25));
+  return {
+    progress: Number(progress.toFixed(4)),
+    direction,
+    shouldCommitFlip: progress >= 0.18,
+  };
+}
+
+export interface CornerCurlGeometry {
+  /** Normalized peel factor in [0..1], where 0 = flat page, 1 = completely turned off top-left */
+  peel: number;
+  /** CSS clip-path polygon hiding the peeled-back bottom-right corner on the top page */
+  frontClipPath: string;
+  /** SVG path (0..100 coordinate space) for the curved underside paper flap */
+  flapPath: string;
+  /** SVG path (0..100 coordinate space) for the cast shadow falling onto the revealed page underneath */
+  castShadowPath: string;
+  /** SVG path (0..100 coordinate space) for the soft crease highlight along the curved fold */
+  creasePath: string;
+  /** Bottom-edge fold point X (0..100) */
+  foldBottomX: number;
+  /** Right-edge fold point Y (0..100) */
+  foldRightY: number;
+  /** Reflected lifted paper corner tip coordinates (0..100) */
+  tipX: number;
+  tipY: number;
+  /** Opacity for cast shadow & flap depth */
+  shadowOpacity: number;
+}
+
+/**
+ * Computes realistic bottom-right book corner peel geometry in normalized 0..100 coordinates.
+ * Unlike rigid rotateY card tilting, the page stays flat in the book spine while its
+ * bottom-right corner lifts diagonally upward and curls smoothly across the page.
+ */
+export function computeCornerCurlGeometry(peelInput: number): CornerCurlGeometry {
+  const peel = Math.min(1, Math.max(0, peelInput));
+  if (peel <= 0.001) {
+    return {
+      peel: 0,
+      frontClipPath: 'polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%)',
+      flapPath: '',
+      castShadowPath: '',
+      creasePath: '',
+      foldBottomX: 100,
+      foldRightY: 100,
+      tipX: 100,
+      tipY: 100,
+      shadowOpacity: 0,
+    };
+  }
+
+  // Diagonal fold line: x / a + y / b = 1 measured inward from bottom-right corner (100, 100)
+  // Using slight steeper diagonal (a slightly narrower than b) gives authentic thumb-corner lift
+  const d = peel * 2.08; // reaches 2.08 so the entire 100x100 page clears cleanly by peel = 1
+  const rawBottomX = 100 - d * 98; // moves from 100 -> -103.8
+  const rawRightY = 100 - d * 106; // moves from 100 -> -120.5
+
+  // Compute exact intersection of the fold line with the 0..100 viewport box
+  // Line passes through P1 = (rawBottomX, 100) and P2 = (100, rawRightY)
+  const dx = 100 - rawBottomX;
+  const dy = rawRightY - 100; // negative
+
+  // Entry point on bottom edge (y = 100) or left edge (x = 0)
+  let pAx: number;
+  let pAy: number;
+  if (rawBottomX >= 0) {
+    pAx = rawBottomX;
+    pAy = 100;
+  } else {
+    // Intersect with x = 0: t = (0 - rawBottomX) / dx
+    const t = -rawBottomX / dx;
+    pAx = 0;
+    pAy = Math.max(0, Math.min(100, 100 + t * dy));
+  }
+
+  // Exit point on right edge (x = 100) or top edge (y = 0)
+  let pBx: number;
+  let pBy: number;
+  if (rawRightY >= 0) {
+    pBx = 100;
+    pBy = rawRightY;
+  } else {
+    // Intersect with y = 0: t = (0 - 100) / dy
+    const t = -100 / dy;
+    pBx = Math.max(0, Math.min(100, rawBottomX + t * dx));
+    pBy = 0;
+  }
+
+  // Build clean polygon for remaining visible front page (top-left side of diagonal fold)
+  const polyPts: string[] = [];
+  if (pAx === 0 && pAy <= 0.2 && pBx <= 0.2 && pBy === 0) {
+    polyPts.push('0% 0%', '0% 0%', '0% 0%');
+  } else {
+    polyPts.push('0% 0%');
+    if (pBy === 0) {
+      polyPts.push(`${pBx.toFixed(2)}% 0%`);
+    } else {
+      polyPts.push('100% 0%');
+      polyPts.push(`100% ${pBy.toFixed(2)}%`);
+    }
+    if (pAy === 100) {
+      polyPts.push(`${pAx.toFixed(2)}% 100%`);
+      polyPts.push('0% 100%');
+    } else {
+      polyPts.push(`0% ${pAy.toFixed(2)}%`);
+    }
+  }
+  const frontClipPath = `polygon(${polyPts.join(', ')})`;
+
+  // Reflect bottom-right corner (100, 100) across the diagonal fold line to find the lifted paper tip
+  const lineLenSq = dx * dx + dy * dy || 1;
+  // Vector from P1(rawBottomX, 100) to Corner(100, 100) is (dx, 0)
+  const proj = ((100 - rawBottomX) * dx + 0 * dy) / lineLenSq;
+  const footX = rawBottomX + proj * dx;
+  const footY = 100 + proj * dy;
+  // Slight curl foreshortening (0.86) simulates cylindrical roll lifting toward viewer
+  const tipX = footX + (footX - 100) * 0.86;
+  const tipY = footY + (footY - 100) * 0.86;
+
+  // Quadratic curve control points bow outward gently so the paper edge looks rolled, not sharp origami
+  const midAX = (pAx + tipX) * 0.5;
+  const midAY = (pAy + tipY) * 0.5;
+  const midBX = (pBx + tipX) * 0.5;
+  const midBY = (pBy + tipY) * 0.5;
+  // Normal pointing toward top-left (away from bottom-right corner)
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = dy / len; // negative
+  const ny = -dx / len; // negative
+  const bow = Math.min(8.5, peel * 14);
+
+  const ctrlAX = midAX + nx * bow * 0.55;
+  const ctrlAY = midAY + ny * bow * 0.55;
+  const ctrlBX = midBX + nx * bow * 0.55;
+  const ctrlBY = midBY + ny * bow * 0.55;
+
+  const flapPath =
+    peel >= 0.995
+      ? ''
+      : `M ${pAx.toFixed(2)} ${pAy.toFixed(2)} Q ${ctrlAX.toFixed(2)} ${ctrlAY.toFixed(
+          2
+        )} ${tipX.toFixed(2)} ${tipY.toFixed(2)} Q ${ctrlBX.toFixed(2)} ${ctrlBY.toFixed(
+          2
+        )} ${pBx.toFixed(2)} ${pBy.toFixed(2)} Z`;
+
+  // Soft cast shadow band extending slightly toward bottom-right (+nx*-1, +ny*-1) onto underlying next page
+  const shadowSpread = 4 + Math.sin(peel * Math.PI) * 9.5;
+  const sAx = pAx - nx * shadowSpread;
+  const sAy = pAy - ny * shadowSpread;
+  const sBx = pBx - nx * shadowSpread;
+  const sBy = pBy - ny * shadowSpread;
+
+  const castShadowPath =
+    peel >= 0.995
+      ? ''
+      : `M ${pAx.toFixed(2)} ${pAy.toFixed(2)} L ${pBx.toFixed(2)} ${pBy.toFixed(
+          2
+        )} L ${sBx.toFixed(2)} ${sBy.toFixed(2)} L ${sAx.toFixed(2)} ${sAy.toFixed(2)} Z`;
+
+  const creasePath =
+    peel >= 0.995
+      ? ''
+      : `M ${pAx.toFixed(2)} ${pAy.toFixed(2)} L ${pBx.toFixed(2)} ${pBy.toFixed(2)}`;
+
+  const shadowOpacity = Number((Math.sin(peel * Math.PI) * 0.42).toFixed(3));
+
+  return {
+    peel,
+    frontClipPath,
+    flapPath,
+    castShadowPath,
+    creasePath,
+    foldBottomX: Number(pAx.toFixed(2)),
+    foldRightY: Number(pAy.toFixed(2)),
+    tipX: Number(tipX.toFixed(2)),
+    tipY: Number(tipY.toFixed(2)),
+    shadowOpacity,
+  };
+}
+
+export interface InteractiveSlideFadeTransform {
+  progress: number;
+  direction: 'next' | 'prev';
+  translateXPx: number;
+  opacity: number;
+  underlayOpacity: number;
+  underlayScale: number;
+  shouldCommitFlip: boolean;
+}
+
+/**
+ * Maps horizontal finger drag in Slide mode:
+ * - Dragging horizontally immediately shifts the entire current page 1:1 with the finger
+ * - Simultaneously fades the dragged page smoothly from opacity 1 -> 0.08 as you hold & pull
+ * - Releasing past threshold lets the page finish gliding away and disappearing (opacity -> 0).
+ */
+export function computeInteractiveSlideFade(
+  deltaX: number,
+  stageWidth: number
+): InteractiveSlideFadeTransform {
+  const safeWidth = Math.max(140, stageWidth || 360);
+  const direction: 'next' | 'prev' = deltaX <= 0 ? 'next' : 'prev';
+  const progress = Math.min(1, Math.max(0, Math.abs(deltaX) / (safeWidth * 0.85)));
+  // Immediate fade-out feel while dragging ("lúc ấn giữ kéo sang là bắt đầu mờ dần")
+  const opacity = Number(Math.max(0.05, 1 - Math.pow(progress, 0.85) * 0.92).toFixed(3));
+  const underlayOpacity = Number(Math.min(1, 0.86 + progress * 0.14).toFixed(3));
+  const underlayScale = Number((0.985 + progress * 0.015).toFixed(4));
+  const shouldCommitFlip = progress >= 0.16 || Math.abs(deltaX) >= 44;
+
+  return {
+    progress: Number(progress.toFixed(4)),
+    direction,
+    translateXPx: Number(deltaX.toFixed(2)),
+    opacity,
+    underlayOpacity,
+    underlayScale,
+    shouldCommitFlip,
+  };
+}
+
 

@@ -168,58 +168,50 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 
 /* Tactile E-Reader Page Turn Animations */
 .page-turn-stage {
-  perspective: 1600px;
+  perspective: 1800px;
 }
 
 @keyframes pageCurlNext {
   0% {
-    opacity: 0.45;
-    transform: translateX(6%) rotateY(-14deg) skewY(1.5deg) scale(0.985);
-    transform-origin: left center;
-    box-shadow: -24px 0 42px rgba(40, 26, 10, 0.22);
+    opacity: 0.72;
+    transform: translate3d(14px, 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translateX(0) rotateY(0deg) skewY(0deg) scale(1);
-    transform-origin: left center;
-    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 @keyframes pageCurlPrev {
   0% {
-    opacity: 0.45;
-    transform: translateX(-6%) rotateY(14deg) skewY(-1.5deg) scale(0.985);
-    transform-origin: right center;
-    box-shadow: 24px 0 42px rgba(40, 26, 10, 0.22);
+    opacity: 0.72;
+    transform: translate3d(-14px, 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translateX(0) rotateY(0deg) skewY(0deg) scale(1);
-    transform-origin: right center;
-    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 @keyframes pageSlideNext {
   0% {
-    opacity: 0.2;
-    transform: translateX(48px);
+    opacity: 0.72;
+    transform: translate3d(20px, 0, 0) scale(0.992);
   }
   100% {
     opacity: 1;
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
 @keyframes pageSlidePrev {
   0% {
-    opacity: 0.2;
-    transform: translateX(-48px);
+    opacity: 0.72;
+    transform: translate3d(-20px, 0, 0) scale(0.992);
   }
   100% {
     opacity: 1;
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
@@ -289,16 +281,16 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 }
 
 .page-turn-curl-next {
-  animation: pageCurlNext 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pageCurlNext 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .page-turn-curl-prev {
-  animation: pageCurlPrev 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pageCurlPrev 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .page-turn-slide-next {
-  animation: pageSlideNext 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pageSlideNext 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .page-turn-slide-prev {
-  animation: pageSlidePrev 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: pageSlidePrev 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .page-turn-flip3d-next {
   animation: pageFlip3dNext 420ms cubic-bezier(0.2, 0.85, 0.3, 1) both;
@@ -320,7 +312,7 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 @keyframes iosViewEnter {
   0% {
     opacity: 0;
-    transform: translate3d(0, 10px, 0) scale(0.988);
+    transform: translate3d(0, 8px, 0) scale(0.99);
   }
   100% {
     opacity: 1;
@@ -330,30 +322,30 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 
 @keyframes iosTabSlideLeft {
   0% {
-    opacity: 0.35;
-    transform: translate3d(24px, 0, 0) scale(0.992);
+    opacity: 0.5;
+    transform: translate3d(18px, 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 @keyframes iosTabSlideRight {
   0% {
-    opacity: 0.35;
-    transform: translate3d(-24px, 0, 0) scale(0.992);
+    opacity: 0.5;
+    transform: translate3d(-18px, 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 @keyframes iosReaderPush {
   0% {
-    opacity: 0.55;
-    transform: translate3d(26px, 0, 0) scale(0.985);
+    opacity: 0.6;
+    transform: translate3d(24px, 0, 0) scale(0.988);
   }
   100% {
     opacity: 1;
@@ -370,10 +362,41 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
   }
 }
 
+@keyframes iosBackdropOut {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 @keyframes iosSheetUp {
   0% {
-    opacity: 0.88;
-    transform: translate3d(0, 22px, 0) scale(0.985);
+    opacity: 0.72;
+    transform: translate3d(0, 100%, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes iosSheetDown {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    opacity: 0.4;
+    transform: translate3d(0, 104%, 0);
+  }
+}
+
+@keyframes iosPopoverIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 26px, 0) scale(0.94);
   }
   100% {
     opacity: 1;
@@ -381,10 +404,43 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
   }
 }
 
+@keyframes iosPopoverOut {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0) scale(0.95);
+  }
+}
+
+@keyframes iosDialogIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.93);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes iosDialogOut {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.94);
+  }
+}
+
 @keyframes iosDrawerSlideRight {
   0% {
-    opacity: 0.92;
-    transform: translate3d(22px, 0, 0);
+    opacity: 0.84;
+    transform: translate3d(100%, 0, 0);
   }
   100% {
     opacity: 1;
@@ -392,14 +448,36 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
   }
 }
 
+@keyframes iosDrawerSlideRightOut {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    opacity: 0.5;
+    transform: translate3d(104%, 0, 0);
+  }
+}
+
 @keyframes iosDrawerSlideLeft {
   0% {
-    opacity: 0.92;
-    transform: translate3d(-22px, 0, 0);
+    opacity: 0.84;
+    transform: translate3d(-100%, 0, 0);
   }
   100% {
     opacity: 1;
     transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes iosDrawerSlideLeftOut {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    opacity: 0.5;
+    transform: translate3d(-104%, 0, 0);
   }
 }
 
@@ -413,35 +491,94 @@ html[data-app-accent-custom='true'] .ios-dock-pill-active {
 }
 
 .ios-view-enter {
-  animation: iosViewEnter 240ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosViewEnter 220ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 .ios-tab-forward {
-  animation: iosTabSlideLeft 260ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosTabSlideLeft 230ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 .ios-tab-backward {
-  animation: iosTabSlideRight 260ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosTabSlideRight 230ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 .ios-reader-enter {
-  animation: iosReaderPush 280ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+  animation: iosReaderPush 280ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
-.ios-backdrop-fade {
-  animation: iosBackdropFade 180ms cubic-bezier(0.32, 0.72, 0, 1) backwards;
+.ios-backdrop-fade,
+.ios-backdrop-in {
+  animation: iosBackdropFade 220ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
-.ios-sheet-enter {
-  animation: iosSheetUp 240ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+.ios-backdrop-out {
+  animation: iosBackdropOut 210ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
 }
 
-.ios-drawer-right {
-  animation: iosDrawerSlideRight 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+.ios-sheet-enter,
+.ios-sheet-in {
+  animation: iosSheetUp 330ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
 }
 
-.ios-drawer-left {
-  animation: iosDrawerSlideLeft 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+.ios-sheet-out {
+  animation: iosSheetDown 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-popover-in {
+  animation: iosPopoverIn 280ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-popover-out {
+  animation: iosPopoverOut 200ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-dialog-in {
+  animation: iosDialogIn 280ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-dialog-out {
+  animation: iosDialogOut 200ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-drawer-right,
+.ios-drawer-right-in {
+  animation: iosDrawerSlideRight 300ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-drawer-right-out {
+  animation: iosDrawerSlideRightOut 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-drawer-left,
+.ios-drawer-left-in {
+  animation: iosDrawerSlideLeft 300ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.ios-drawer-left-out {
+  animation: iosDrawerSlideLeftOut 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  will-change: transform, opacity;
+}
+
+/* Tactile iPhone button / row press physics */
+.ios-pressable {
+  transition:
+    transform 170ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 150ms ease,
+    opacity 140ms ease;
+}
+
+.ios-pressable:active {
+  transform: scale(0.96);
+  opacity: 0.86;
 }
 
 /* Pause all decorative/disc animations immediately when app is backgrounded (zero heat/battery drain) */
@@ -468,9 +605,21 @@ html[data-app-hidden='true'] *::after {
   .ios-tab-backward,
   .ios-reader-enter,
   .ios-backdrop-fade,
+  .ios-backdrop-in,
+  .ios-backdrop-out,
   .ios-sheet-enter,
+  .ios-sheet-in,
+  .ios-sheet-out,
+  .ios-popover-in,
+  .ios-popover-out,
+  .ios-dialog-in,
+  .ios-dialog-out,
   .ios-drawer-right,
-  .ios-drawer-left {
+  .ios-drawer-right-in,
+  .ios-drawer-right-out,
+  .ios-drawer-left,
+  .ios-drawer-left-in,
+  .ios-drawer-left-out {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
@@ -479,13 +628,13 @@ html[data-app-hidden='true'] *::after {
 
 .ios-tap-card {
   transition:
-    transform 240ms cubic-bezier(0.32, 0.72, 0, 1),
-    box-shadow 240ms cubic-bezier(0.32, 0.72, 0, 1),
-    border-color 200ms ease;
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 180ms ease;
 }
 
 .ios-tap-card:active {
-  transform: scale(0.97);
+  transform: scale(0.965);
 }
 
 /* Solid Opaque Bottom Dock (Zero Transparency / No See-Through) */

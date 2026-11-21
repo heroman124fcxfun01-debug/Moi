@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import {
   X,
   Play,
@@ -68,9 +67,17 @@ import {
   loadHiddenSystemVoiceKeys,
   resolveNarratorAssignmentFromDefault,
 } from '../utils/studioCatalog';
+import {
+  collectRepeatedLineSignatures,
+  evaluateParagraphForPreRead,
+  resolveBatchSpeechWithPreRead,
+  type PreReadDecision,
+} from '../utils/aiContentCleaner';
+import { runPreReadLookaheadAiScan } from '../utils/aiContentCleanerClient';
 import { resolveApiUrl } from '../utils/apiClient';
 import { AmbientSoundPanel } from './AmbientSoundPanel';
 import { GlassSelect, type GlassSelectOption } from './GlassSelect';
+import { IosSheet } from './IosSheet';
 
 interface AudiobookStudioDrawerProps {
   isOpen: boolean;
@@ -115,7 +122,7 @@ interface AudiobookStudioDrawerProps {
     progressRatio?: number,
     charOffsetInParagraph?: number
   ) => void;
-  onSyncReadingParagraph?: (paragraphIndex: number) => void;
+  onSyncReadingParagraph?: (paragraphIndex: number, charOffset?: number) => void;
   onPlaybackStateChange?: (isPlaying: boolean) => void;
   onNextChapter: () => void;
   defaultVoice?: DefaultVoiceSelection;
@@ -130,6 +137,7 @@ const ROLE_LABELS: Record<string, string> = {
 };
 
 const PLAYBACK_SPEED_STORAGE_KEY = 'laziread_playback_speed';
+const PREREAD_AI_STORAGE_KEY = 'bookhad_preread_ai_enabled';
 
 const VALID_PRESET_VOICES: GeminiVoiceName[] = [
   'Kore',
@@ -224,6 +232,27 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     Record<string, CharacterVoiceAssignment>
   >({});
   const [hasPendingCharEdits, setHasPendingCharEdits] = useState(false);
+
+  // Job 2: Live Pre-Read Lookahead AI (runs AHEAD of AI Voice Reader to skip links/junk & repair errors)
+  const [preReadAiEnabled, setPreReadAiEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(PREREAD_AI_STORAGE_KEY);
+      if (saved === '0' || saved === 'false') return false;
+    } catch {
+      // ignore storage errors
+    }
+    return true;
+  });
+  const [preReadStats, setPreReadStats] = useState<{
+    skipped: number;
+    fixed: number;
+    lastReason: string;
+  }>({ skipped: 0, fixed: 0, lastReason: '' });
+  const preReadAiEnabledRef = useRef(preReadAiEnabled);
+  preReadAiEnabledRef.current = preReadAiEnabled;
+  const preReadDecisionsRef = useRef<Map<number, PreReadDecision>>(new Map());
+  const preReadAiRequestedRef = useRef<Set<number>>(new Set());
+  const preReadAbortRef = useRef<AbortController | null>(null);
 
   const characterVoicesEnabled = book.characterVoicesEnabled !== false;
   const characterVoicesEnabledRef = useRef(characterVoicesEnabled);
@@ -333,6 +362,78 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   );
   const activeParagraphs =
     isTranslatedView && displayedParagraphs ? displayedParagraphs : chapter.paragraphs;
+  const activeParagraphsRef = useRef<string[]>(activeParagraphs);
+  activeParagraphsRef.current = activeParagraphs;
+
+  const repeatedLineSignatures = useMemo(
+    () => collectRepeatedLineSignatures(book.chapters),
+    [book.chapters]
+  );
+  const repeatedLineSignaturesRef = useRef<Set<string>>(repeatedLineSignatures);
+  repeatedLineSignaturesRef.current = repeatedLineSignatures;
+
+  // Reset Pre-Read AI lookahead cache whenever chapter or book changes
+  useEffect(() => {
+    preReadAbortRef.current?.abort();
+    preReadAbortRef.current = null;
+    preReadDecisionsRef.current = new Map();
+    preReadAiRequestedRef.current = new Set();
+    setPreReadStats({ skipped: 0, fixed: 0, lastReason: '' });
+  }, [book.id, chapter.id]);
+
+  // Runs Pre-Read Scanner AI ahead of the AI Voice Reader on upcoming paragraphs
+  const schedulePreReadLookahead = (startParagraphIndex: number) => {
+    if (!preReadAiEnabledRef.current) return;
+    const paras = activeParagraphsRef.current;
+    const bookTitle = bookRef.current.title;
+    const repeated = repeatedLineSignaturesRef.current;
+    const decisions = preReadDecisionsRef.current;
+    const requested = preReadAiRequestedRef.current;
+
+    const toSendToAi: Array<{ paragraphIndex: number; text: string }> = [];
+    const maxWindow = Math.min(paras.length, startParagraphIndex + 12);
+
+    for (let pIdx = Math.max(0, startParagraphIndex); pIdx < maxWindow; pIdx++) {
+      const text = (paras[pIdx] || '').trim();
+      if (!decisions.has(pIdx)) {
+        decisions.set(
+          pIdx,
+          evaluateParagraphForPreRead(text, pIdx, bookTitle, repeated)
+        );
+      }
+      const existing = decisions.get(pIdx);
+      // Queue non-skipped paragraphs (up to 8 per lookahead wave) for background Gemini AI lookahead check
+      if (!requested.has(pIdx) && text.length > 0 && existing?.action !== 'skip' && toSendToAi.length < 8) {
+        requested.add(pIdx);
+        toSendToAi.push({ paragraphIndex: pIdx, text });
+      }
+    }
+
+    if (toSendToAi.length === 0) return;
+
+    const controller = new AbortController();
+    preReadAbortRef.current = controller;
+    const targetChapterId = chapterRef.current.id;
+
+    void runPreReadLookaheadAiScan(
+      {
+        bookTitle,
+        chapterTitle: chapterRef.current.title,
+        items: toSendToAi,
+      },
+      controller.signal
+    ).then((aiDecisions) => {
+      if (chapterRef.current.id !== targetChapterId || aiDecisions.length === 0) return;
+      for (const dec of aiDecisions) {
+        const local = decisions.get(dec.paragraphIndex);
+        // Never downgrade a definite local skip (e.g. vtbook/http) back to keep
+        if (local?.action === 'skip' && dec.action !== 'skip') continue;
+        if (dec.action === 'skip' || dec.action === 'fix') {
+          decisions.set(dec.paragraphIndex, dec);
+        }
+      }
+    });
+  };
 
   const getPlayer = () => {
     if (!filteredPlayerRef.current) {
@@ -346,6 +447,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       playbackRunIdRef.current += 1;
       activeAiTtsAbortRef.current?.abort();
       previewAbortRef.current?.abort();
+      preReadAbortRef.current?.abort();
       filteredPlayerRef.current?.dispose();
       clearMediaSession();
       stopOnDeviceSpeech();
@@ -377,8 +479,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   }, [analysis?.script, isTranslatedView, activeParagraphs, readingStyle, characterVoicesEnabled]);
 
   const batchedUnits = useMemo(
-    () => buildBatchedPlaybackUnits(effectiveScript, 260),
-    [effectiveScript]
+    () => buildBatchedPlaybackUnits(effectiveScript, 260, activeParagraphs),
+    [effectiveScript, activeParagraphs]
   );
 
   const batchedUnitsRef = useRef<PlaybackBatchUnit[]>(batchedUnits);
@@ -465,7 +567,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     const unitsToUse = batchedUnitsRef.current;
     const startBatchIdx = findBatchIndexForParagraph(
       unitsToUse,
-      book.currentParagraphIndex || 0
+      book.currentParagraphIndex || 0,
+      book.currentPageCharOffset || 0
     );
     setErrorMsg('');
     setShowMiniBar(true);
@@ -485,7 +588,11 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       const startBatchIdx =
         showMiniBar && currentBatchIndex > 0
           ? currentBatchIndex
-          : findBatchIndexForParagraph(unitsToUse, book.currentParagraphIndex || 0);
+          : findBatchIndexForParagraph(
+              unitsToUse,
+              book.currentParagraphIndex || 0,
+              book.currentPageCharOffset || 0
+            );
       setErrorMsg('');
       setShowMiniBar(true);
       setCurrentBatchIndex(startBatchIdx);
@@ -901,9 +1008,11 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     runId: number,
     preferGender?: 'female' | 'male' | 'neutral',
     voiceSlotIndex = 0,
-    speedOverride?: number
+    speedOverride?: number,
+    spokenTextOverride?: string
   ): Promise<boolean> => {
-    const text = unit.combinedText;
+    const text = (spokenTextOverride ?? unit.combinedText).trim();
+    if (!text) return true;
     const activeSpeed = speedOverride ?? speedRef.current;
     const finalRate = Math.min(
       MAX_READING_SPEED,
@@ -924,7 +1033,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       );
       if (resolved.paragraphIndex !== lastSyncedPara) {
         lastSyncedPara = resolved.paragraphIndex;
-        onSyncReadingParagraphRef.current?.(resolved.paragraphIndex);
+        onSyncReadingParagraphRef.current?.(resolved.paragraphIndex, resolved.charOffsetInParagraph);
       }
     };
 
@@ -949,7 +1058,11 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     if (ok && playbackRunIdRef.current === runId && isPlayingRef.current) {
       const lastSpan = unit.spans[unit.spans.length - 1];
       if (lastSpan) {
-        onHighlightParagraphRef.current(lastSpan.paragraphIndex, 1, lastSpan.text.length);
+        onHighlightParagraphRef.current(
+          lastSpan.paragraphIndex,
+          1,
+          (lastSpan.paragraphCharStart || 0) + lastSpan.text.length
+        );
       }
     }
     return ok;
@@ -1071,10 +1184,42 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     const unit = units[index];
     setCurrentBatchIndex(index);
     currentBatchIndexRef.current = index;
+
+    // Job 2: Pre-Read Lookahead AI inspects upcoming paragraphs AHEAD of the AI Voice Reader
+    let effectiveSpokenText = unit.combinedText;
+    if (preReadAiEnabledRef.current) {
+      schedulePreReadLookahead(unit.firstParagraphIndex);
+      const preReadEval = resolveBatchSpeechWithPreRead(
+        unit.spans,
+        preReadDecisionsRef.current,
+        bookRef.current.title,
+        repeatedLineSignaturesRef.current
+      );
+      if (preReadEval.shouldSkipBatch) {
+        setPreReadStats((prev) => ({
+          skipped: prev.skipped + Math.max(1, preReadEval.skippedCount),
+          fixed: prev.fixed,
+          lastReason: preReadEval.skipReason || 'Nội dung địa chỉ / thừa',
+        }));
+        // Tell AI Reader to skip this junk/address batch cleanly and flow straight to the next batch
+        await playBatchAt(index + 1, runId, batchedUnitsRef.current, opts);
+        return;
+      }
+      effectiveSpokenText = preReadEval.spokenText;
+      if (preReadEval.skippedCount > 0 || preReadEval.fixedCount > 0) {
+        setPreReadStats((prev) => ({
+          skipped: prev.skipped + preReadEval.skippedCount,
+          fixed: prev.fixed + preReadEval.fixedCount,
+          lastReason: preReadEval.skipReason || prev.lastReason,
+        }));
+      }
+    }
+
     syncMediaSessionForUnit(unit, 'playing');
 
-    onHighlightParagraphRef.current(unit.firstParagraphIndex, 0, 0);
-    onSyncReadingParagraphRef.current?.(unit.firstParagraphIndex);
+    const firstSpanStart = unit.spans[0]?.paragraphCharStart ?? 0;
+    onHighlightParagraphRef.current(unit.firstParagraphIndex, 0, firstSpanStart);
+    onSyncReadingParagraphRef.current?.(unit.firstParagraphIndex, firstSpanStart);
 
     const params = resolveTtsParamsForSpeaker(
       unit.speakerId,
@@ -1084,18 +1229,28 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       opts?.styleOverride
     );
 
-    // Background prefetch next batch so transitions between AI TTS batches are instant
+    // Background prefetch next batch (also pre-cleaned by Pre-Read AI!) so transitions are instant
     const nextUnit = units[index + 1];
     if (nextUnit && params.useAiTts) {
-      const nextParams = resolveTtsParamsForSpeaker(
-        nextUnit.speakerId,
-        nextUnit.emotionStyle,
-        undefined,
-        opts?.voiceOverrides,
-        opts?.styleOverride
-      );
-      if (nextParams.useAiTts) {
-        void fetchAiTtsAudio(nextUnit.combinedText, nextParams, opts?.styleOverride);
+      const nextSpoken = preReadAiEnabledRef.current
+        ? resolveBatchSpeechWithPreRead(
+            nextUnit.spans,
+            preReadDecisionsRef.current,
+            bookRef.current.title,
+            repeatedLineSignaturesRef.current
+          )
+        : { shouldSkipBatch: false, spokenText: nextUnit.combinedText };
+      if (!nextSpoken.shouldSkipBatch && nextSpoken.spokenText) {
+        const nextParams = resolveTtsParamsForSpeaker(
+          nextUnit.speakerId,
+          nextUnit.emotionStyle,
+          undefined,
+          opts?.voiceOverrides,
+          opts?.styleOverride
+        );
+        if (nextParams.useAiTts) {
+          void fetchAiTtsAudio(nextSpoken.spokenText, nextParams, opts?.styleOverride);
+        }
       }
     }
 
@@ -1103,7 +1258,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
     // Engine 1: Real Gemini AI TTS / Voice Design + Web Audio EQ (when online)
     if (params.useAiTts) {
-      const aiAudioUrl = await fetchAiTtsAudio(unit.combinedText, params, opts?.styleOverride, {
+      const aiAudioUrl = await fetchAiTtsAudio(effectiveSpokenText, params, opts?.styleOverride, {
         timeoutMs: 4200,
         abortSlot: 'playback',
       });
@@ -1122,7 +1277,10 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             );
             if (resolved.paragraphIndex !== lastSyncedPara) {
               lastSyncedPara = resolved.paragraphIndex;
-              onSyncReadingParagraphRef.current?.(resolved.paragraphIndex);
+              onSyncReadingParagraphRef.current?.(
+                resolved.paragraphIndex,
+                resolved.charOffsetInParagraph
+              );
             }
           });
           spokeOk = playbackRunIdRef.current === runId && isPlayingRef.current;
@@ -1142,7 +1300,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         runId,
         params.preferGender,
         params.voiceSlotIndex,
-        opts?.speedOverride
+        opts?.speedOverride,
+        effectiveSpokenText
       );
     }
 
@@ -1244,9 +1403,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     (c) => c.id !== 'narrator'
   );
 
-  if (!isOpen || !isReaderActive) {
-    return null;
-  }
+  const shouldShowDrawer = isOpen && isReaderActive;
 
   const panelBody = (
     <div className="flex flex-col max-h-full overflow-hidden">
@@ -1406,6 +1563,40 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
               checked={highlightSpokenText}
               onChange={(e) => onToggleHighlightSpoken?.(e.target.checked)}
               className="accent-amber-800 w-4 h-4 shrink-0"
+            />
+          </label>
+
+          <label className="flex items-start justify-between gap-2 cursor-pointer pt-2 border-t border-stone-100 dark:border-stone-800">
+            <div className="min-w-0">
+              <div className="text-[11px] font-medium text-stone-700 dark:text-stone-300">
+                AI quét trước đọc
+              </div>
+              <div
+                data-testid="preread-ai-status"
+                className="text-[10px] text-stone-500 dark:text-stone-400 leading-snug"
+              >
+                {preReadAiEnabled
+                  ? preReadStats.skipped > 0 || preReadStats.fixed > 0
+                    ? `Đã bỏ qua ${preReadStats.skipped} đoạn thừa · Sửa ${preReadStats.fixed} lỗi`
+                    : 'Tự bỏ link/địa chỉ tải & sửa lỗi chữ trước khi đọc'
+                  : 'Đang tắt — đọc nguyên văn từng dòng'}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              data-testid="toggle-preread-ai-checkbox"
+              checked={preReadAiEnabled}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setPreReadAiEnabled(next);
+                preReadAiEnabledRef.current = next;
+                try {
+                  localStorage.setItem(PREREAD_AI_STORAGE_KEY, next ? '1' : '0');
+                } catch {
+                  // ignore storage errors
+                }
+              }}
+              className="accent-amber-800 w-4 h-4 shrink-0 mt-0.5"
             />
           </label>
         </div>
@@ -1765,33 +1956,23 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     </div>
   );
 
-  // Mobile (<1024px): iPhone frosted-glass half-height bottom sheet
-  if (!isDesktop && typeof document !== 'undefined') {
-    return createPortal(
-      <div className="fixed inset-0 z-[70] flex items-end justify-center">
-        <div
-          className="fixed inset-0 ios-frosted-backdrop"
-          onClick={onClose}
-          aria-hidden="true"
-        />
-        <aside
-          aria-label="Cài đặt nghe sách nói và giọng đọc"
-          className="ios-sheet-enter ios-frosted-surface relative z-10 w-full max-w-lg h-auto max-h-[72dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden"
-        >
-          <div className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70 mx-auto mt-2 shrink-0" />
-          {panelBody}
-        </aside>
-      </div>,
-      document.body
-    );
-  }
-
   return (
-    <aside
-      aria-label="Cài đặt nghe sách nói và giọng đọc"
-      className="ios-frosted-surface w-[390px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden"
+    <IosSheet
+      isOpen={shouldShowDrawer}
+      onClose={onClose}
+      ariaLabel="Cài đặt nghe sách nói và giọng đọc"
+      testId="reader-audio-drawer"
+      variant={isDesktop ? 'drawer-right' : 'bottom-sheet'}
+      inlineDesktop={isDesktop}
+      showGrabHandle={!isDesktop}
+      zIndexClass="z-[72]"
+      panelClassName={
+        isDesktop
+          ? 'w-[390px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden'
+          : 'w-full max-w-lg h-auto max-h-[76dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
+      }
     >
       {panelBody}
-    </aside>
+    </IosSheet>
   );
 };

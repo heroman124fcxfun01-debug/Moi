@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  computeBookScreenPaginationSummary,
   findScreenPageForPosition,
   paginateChapterForViewport,
+  resolveLocationForGlobalPage,
 } from './screenPaginator';
 import type { BilingualParagraphPair } from './textProcessing';
 
@@ -148,5 +150,54 @@ describe('screenPaginator exact page resume', () => {
       .split(/\s+/);
     assert.deepEqual(actualWords, expectedWords);
   });
+
+  it('recalculates book-wide total display pages across all chapters when fontSize changes and resolves global page jumps', () => {
+    const mkParas = (prefix: string) =>
+      Array.from({ length: 10 }, (_, i) => ({
+        index: i,
+        original: `${prefix} đoạn ${i + 1}: Bầu trời đêm sáng rực những vì sao lấp lánh trải dài bất tận trên mặt biển yên bình.`,
+        translated: null,
+      }));
+
+    const chapters = [
+      { title: 'Chương 1', paragraphs: mkParas('Ch1') },
+      { title: 'Chương 2', paragraphs: mkParas('Ch2') },
+      { title: 'Chương 3', paragraphs: mkParas('Ch3') },
+    ];
+
+    const smallSummary = computeBookScreenPaginationSummary({
+      chapters,
+      currentChapterIndex: 0,
+      currentChapterPageCount: 0,
+      viewportWidth: 350,
+      viewportHeight: 580,
+      settings: { ...BASE_SETTINGS, fontSize: 16 },
+    });
+
+    const largeSummary = computeBookScreenPaginationSummary({
+      chapters,
+      currentChapterIndex: 0,
+      currentChapterPageCount: 0,
+      viewportWidth: 350,
+      viewportHeight: 580,
+      settings: { ...BASE_SETTINGS, fontSize: 28 },
+    });
+
+    assert.ok(
+      largeSummary.totalBookPages > smallSummary.totalBookPages * 1.5,
+      `Expected book total pages to expand dynamically (${smallSummary.totalBookPages} -> ${largeSummary.totalBookPages})`
+    );
+
+    // Jump to first page of chapter 2 using global page number
+    const ch2FirstGlobalPage = largeSummary.chapterStartPageOffsets[1] + 1;
+    const loc = resolveLocationForGlobalPage(largeSummary, ch2FirstGlobalPage);
+    assert.deepEqual(loc, { chapterIndex: 1, pageIndex: 0 });
+
+    // Jump to last global page of the entire book
+    const lastLoc = resolveLocationForGlobalPage(largeSummary, largeSummary.totalBookPages);
+    assert.equal(lastLoc.chapterIndex, 2);
+    assert.equal(lastLoc.pageIndex, largeSummary.chapterPageCounts[2] - 1);
+  });
 });
+
 
