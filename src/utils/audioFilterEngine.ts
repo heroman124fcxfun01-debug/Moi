@@ -1,4 +1,5 @@
-import type { VoiceToneSettings } from '../types/book';
+import type { SpeakerEmbeddingVector, VoiceToneSettings } from '../types/book';
+import { computeToneColorEqFromEmbedding } from './ttsRouter';
 
 export const MIN_READING_SPEED = 0.5;
 export const MAX_READING_SPEED = 3.0;
@@ -312,23 +313,29 @@ export class FilteredAudioPlayer {
 
   private applySpatialParams(
     tone: VoiceToneSettings,
-    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none'
+    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none',
+    speakerEmbedding?: SpeakerEmbeddingVector
   ) {
     const now = this.ctx?.currentTime ?? 0;
+    const embEq = speakerEmbedding ? computeToneColorEqFromEmbedding(speakerEmbedding) : null;
     if (this.lowShelf) {
       const warmBoost = spatialEffect === 'inner_thought' ? 2.0 : spatialEffect === 'whisper' ? -1.5 : 0;
-      this.lowShelf.gain.setTargetAtTime(tone.warmthDb + warmBoost, now, 0.03);
+      const embLow = embEq ? embEq.lowShelfDb : 0;
+      this.lowShelf.gain.setTargetAtTime(tone.warmthDb + warmBoost + embLow, now, 0.03);
     }
     if (this.highShelf) {
       const clearBoost = spatialEffect === 'shout' ? 2.5 : spatialEffect === 'whisper' ? -2.0 : 0;
-      this.highShelf.gain.setTargetAtTime(tone.clarityDb + clearBoost, now, 0.03);
+      const embHigh = embEq ? embEq.highShelfDb : 0;
+      this.highShelf.gain.setTargetAtTime(tone.clarityDb + clearBoost + embHigh, now, 0.03);
     }
     if (this.lowPass) {
       const cutoff = spatialEffect === 'whisper' ? 3800 : spatialEffect === 'inner_thought' ? 5400 : 18000;
       this.lowPass.frequency.setTargetAtTime(cutoff, now, 0.03);
     }
     if (this.presencePeak) {
-      const peakGain = spatialEffect === 'shout' ? 4.2 : 0;
+      const peakFreq = embEq ? embEq.midPeakFreqHz : 2200;
+      const peakGain = (spatialEffect === 'shout' ? 4.2 : 0) + (embEq ? embEq.midPeakDb : 0);
+      this.presencePeak.frequency.setTargetAtTime(peakFreq, now, 0.03);
       this.presencePeak.gain.setTargetAtTime(peakGain, now, 0.03);
     }
     if (this.reverbWetGain) {
@@ -352,9 +359,11 @@ export class FilteredAudioPlayer {
   private ensureEqGraph(
     audio: HTMLAudioElement,
     tone: VoiceToneSettings,
-    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none'
+    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none',
+    speakerEmbedding?: SpeakerEmbeddingVector
   ) {
     const needsEq =
+      Boolean(speakerEmbedding) ||
       Math.abs(tone.warmthDb) > 0.1 ||
       Math.abs(tone.clarityDb) > 0.1 ||
       spatialEffect !== 'none';
@@ -363,7 +372,7 @@ export class FilteredAudioPlayer {
       if (this.ctx.state === 'suspended') {
         this.ctx.resume().catch(() => {});
       }
-      this.applySpatialParams(tone, spatialEffect);
+      this.applySpatialParams(tone, spatialEffect, speakerEmbedding);
       return;
     }
 
@@ -431,7 +440,7 @@ export class FilteredAudioPlayer {
       this.reverbWetGain = reverbWetGain;
       this.mediaSourceConnected = true;
 
-      this.applySpatialParams(tone, spatialEffect);
+      this.applySpatialParams(tone, spatialEffect, speakerEmbedding);
     } catch {
       // Fallback cleanly to native <audio> playback without EQ
     }
@@ -442,7 +451,8 @@ export class FilteredAudioPlayer {
     tone: VoiceToneSettings = DEFAULT_VOICE_TONE,
     speedMultiplier = 1.0,
     onProgress?: (ratio: number) => void,
-    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none'
+    spatialEffect: 'none' | 'inner_thought' | 'whisper' | 'shout' = 'none',
+    speakerEmbedding?: SpeakerEmbeddingVector
   ): Promise<void> {
     this.clearActiveListeners();
     const audio = this.ensureAudioElement();
@@ -457,7 +467,7 @@ export class FilteredAudioPlayer {
       MAX_READING_SPEED,
       Math.max(MIN_READING_SPEED, tone.rate * speedMultiplier * spatialRateMod)
     );
-    this.ensureEqGraph(audio, tone, spatialEffect);
+    this.ensureEqGraph(audio, tone, spatialEffect, speakerEmbedding);
 
     return new Promise((resolve, reject) => {
       this.activeResolve = resolve;

@@ -87,6 +87,7 @@ import {
 import { triggerDeviceHaptic } from './utils/deviceHardware';
 import { ensureRamCacheLifecycle, scheduleIdleWarmup } from './utils/ramCache';
 import { getAppStrings } from './utils/i18n';
+import { LanguageProvider } from './contexts/LanguageContext';
 import { warmCommunityRamCache } from './utils/communityDriveStore';
 
 // Secondary modals stay code-split for fast startup and are silently pre-warmed into RAM during idle
@@ -854,6 +855,10 @@ export default function App() {
   };
 
   return (
+    <LanguageProvider
+      language={basicSettings.appLanguage || 'vi'}
+      onChangeLanguage={(lang) => handleUpdateBasicSettings({ appLanguage: lang })}
+    >
     <div
       onPointerDown={handleAppEdgePointerDown}
       onPointerMove={handleAppEdgePointerMove}
@@ -978,7 +983,7 @@ export default function App() {
               disabled={!activeBook}
               className="relative z-10 ios-liquid-pill px-3 py-1 rounded-full whitespace-nowrap shrink-0 disabled:opacity-40 text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white"
             >
-              Trình đọc
+              {appStrings.navReader}
             </button>
             <button
               type="button"
@@ -1028,7 +1033,7 @@ export default function App() {
               className="ios-liquid-pill inline-flex items-center justify-center gap-1 w-8 h-8 sm:w-auto sm:h-8 sm:px-3 rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:text-amber-800 dark:hover:text-amber-300 shrink-0"
             >
               <Search className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline">Tìm kiếm</span>
+              <span className="hidden sm:inline">{appStrings.searchAll}</span>
             </button>
             <button
               type="button"
@@ -1048,7 +1053,7 @@ export default function App() {
 
       {!isLoaded ? (
         <div className="max-w-7xl mx-auto px-6 py-16 text-xs text-stone-500">
-          Đang tải tủ sách BOOKHAD...
+          {appStrings.loadingLibrary}
         </div>
       ) : (
         <>
@@ -1483,5 +1488,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </LanguageProvider>
   );
 }

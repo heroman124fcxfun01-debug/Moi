@@ -55,7 +55,8 @@ export function hashVoiceSeed(seed: string): number {
 }
 
 export function generateVoiceProfileId(name: string, sampleSignature?: string): string {
-  const clean = name
+  const safeName = typeof name === 'string' && name.trim() ? name : 'voice';
+  const clean = safeName
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()

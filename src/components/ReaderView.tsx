@@ -18,6 +18,7 @@ import {
   Loader2,
   Menu,
   MoveHorizontal,
+  MoveVertical,
   Music,
   Pause,
   Pilcrow,
@@ -101,6 +102,7 @@ import {
 import { runImportBookAiScan } from '../utils/aiContentCleanerClient';
 import { GlassSelect, type GlassSelectOption } from './GlassSelect';
 import { IosSheet } from './IosSheet';
+import { useI18n } from '../contexts/LanguageContext';
 
 interface ReaderViewProps {
   book: Book;
@@ -235,6 +237,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   audioDrawerToggleSignal = 0,
   isReaderActive = true,
 }) => {
+  const { strings } = useI18n();
   const [showToc, setShowToc] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAudio, setShowAudio] = useState(initialOpenAudio);
@@ -1014,6 +1017,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       charOffset: nextCharOffset,
     });
     triggerDeviceHaptic('page', basicSettings.hapticFeedback !== false);
+  };
+
+  // Flicker-free smooth reflow: lock exact reading character anchor before typography/margin updates
+  const applySmoothReaderSetting = (patch: Partial<ReaderSettings>) => {
+    const liveIdx = Math.min(currentPageIndexRef.current, Math.max(0, screenPages.length - 1));
+    const firstChunk = screenPages[liveIdx]?.chunks[0];
+    if (firstChunk) {
+      anchorParagraphRef.current = firstChunk.paragraphIndex;
+      anchorCharOffsetRef.current = firstChunk.charOffset ?? 0;
+    }
+    anchorPageIndexRef.current = null;
+    skipCssTurnAnimRef.current = true;
+    onUpdateSettings(patch);
   };
 
   const goNextPageImmediate = (skipCssAnim = false) => {
@@ -2197,7 +2213,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full ios-liquid-bar border border-white/60 dark:border-white/15 text-xs font-medium text-stone-800 dark:text-stone-100 whitespace-nowrap shrink-0"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Tủ sách</span>
+            <span>{strings.backToLibrary}</span>
           </button>
         </div>
 
@@ -2333,7 +2349,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               {/* 1. Cỡ chữ: A- / A+ */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  Cỡ chữ
+                  {strings.fontSize}
                 </span>
                 <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
                   <button
@@ -2341,7 +2357,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-font-dec-btn"
                     disabled={settings.fontSize <= 12}
                     onClick={() =>
-                      onUpdateSettings({ fontSize: Math.max(12, settings.fontSize - 1) })
+                      applySmoothReaderSetting({ fontSize: Math.max(12, settings.fontSize - 1) })
                     }
                     aria-label="Giảm cỡ chữ"
                     className="w-9 h-7 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center"
@@ -2353,7 +2369,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-font-inc-btn"
                     disabled={settings.fontSize >= 36}
                     onClick={() =>
-                      onUpdateSettings({ fontSize: Math.min(36, settings.fontSize + 1) })
+                      applySmoothReaderSetting({ fontSize: Math.min(36, settings.fontSize + 1) })
                     }
                     aria-label="Tăng cỡ chữ"
                     className="w-9 h-7 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center"
@@ -2366,7 +2382,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               {/* 2. Độ giãn dòng: icon- / icon+ */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  Giãn dòng
+                  {strings.lineHeight}
                 </span>
                 <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
                   <button
@@ -2374,7 +2390,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-lineheight-dec-btn"
                     disabled={settings.lineHeight <= 1.3}
                     onClick={() =>
-                      onUpdateSettings({
+                      applySmoothReaderSetting({
                         lineHeight: Math.max(1.3, Math.round((settings.lineHeight - 0.1) * 100) / 100),
                       })
                     }
@@ -2389,7 +2405,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-lineheight-inc-btn"
                     disabled={settings.lineHeight >= 2.3}
                     onClick={() =>
-                      onUpdateSettings({
+                      applySmoothReaderSetting({
                         lineHeight: Math.min(2.3, Math.round((settings.lineHeight + 0.1) * 100) / 100),
                       })
                     }
@@ -2402,10 +2418,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 </div>
               </div>
 
-              {/* 3. Khoảng cách lề: icon- / icon+ */}
+              {/* 3. Lề trái / phải: icon- / icon+ */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  Lề trang
+                  {strings.marginHorizontal}
                 </span>
                 <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
                   <button
@@ -2413,11 +2429,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-margin-dec-btn"
                     disabled={(settings.marginHorizontalPx ?? 16) <= 4}
                     onClick={() =>
-                      onUpdateSettings({
+                      applySmoothReaderSetting({
                         marginHorizontalPx: Math.max(4, (settings.marginHorizontalPx ?? 16) - 4),
                       })
                     }
-                    aria-label="Giảm khoảng cách lề"
+                    aria-label="Giảm khoảng cách lề ngang"
                     className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
                   >
                     <MoveHorizontal className="w-3 h-3" />
@@ -2428,11 +2444,11 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-margin-inc-btn"
                     disabled={(settings.marginHorizontalPx ?? 16) >= 56}
                     onClick={() =>
-                      onUpdateSettings({
+                      applySmoothReaderSetting({
                         marginHorizontalPx: Math.min(56, (settings.marginHorizontalPx ?? 16) + 4),
                       })
                     }
-                    aria-label="Tăng khoảng cách lề"
+                    aria-label="Tăng khoảng cách lề ngang"
                     className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
                   >
                     <MoveHorizontal className="w-3 h-3" />
@@ -2441,10 +2457,51 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 </div>
               </div>
 
-              {/* 4. Khoảng cách đoạn: icon- / icon+ */}
+              {/* 4. Lề trên / dưới: icon- / icon+ (Top/Bottom Page Margin) */}
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  Khoảng đoạn
+                  {strings.marginVertical}
+                </span>
+                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
+                  <button
+                    type="button"
+                    data-testid="quick-margin-v-dec-btn"
+                    disabled={(settings.marginTopPx ?? 12) <= 4 && (settings.marginBottomPx ?? 20) <= 8}
+                    onClick={() =>
+                      applySmoothReaderSetting({
+                        marginTopPx: Math.max(4, (settings.marginTopPx ?? 12) - 4),
+                        marginBottomPx: Math.max(8, (settings.marginBottomPx ?? 20) - 4),
+                      })
+                    }
+                    aria-label="Giảm lề trên dưới"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <MoveVertical className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">-</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="quick-margin-v-inc-btn"
+                    disabled={(settings.marginTopPx ?? 12) >= 56}
+                    onClick={() =>
+                      applySmoothReaderSetting({
+                        marginTopPx: Math.min(56, (settings.marginTopPx ?? 12) + 4),
+                        marginBottomPx: Math.min(64, (settings.marginBottomPx ?? 20) + 4),
+                      })
+                    }
+                    aria-label="Tăng lề trên dưới"
+                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
+                  >
+                    <MoveVertical className="w-3 h-3" />
+                    <span className="text-[11px] font-bold leading-none">+</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 5. Khoảng cách đoạn: icon- / icon+ */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                  {strings.paragraphSpacing}
                 </span>
                 <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
                   <button
@@ -2452,7 +2509,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-paraspacing-dec-btn"
                     disabled={settings.paragraphSpacing <= 4}
                     onClick={() =>
-                      onUpdateSettings({
+                      applySmoothReaderSetting({
                         paragraphSpacing: Math.max(4, settings.paragraphSpacing - 2),
                       })
                     }
@@ -2467,7 +2524,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     data-testid="quick-paraspacing-inc-btn"
                     disabled={settings.paragraphSpacing >= 36}
                     onClick={() =>
-                      onUpdateSettings({
+                      applySmoothReaderSetting({
                         paragraphSpacing: Math.min(36, settings.paragraphSpacing + 2),
                       })
                     }
@@ -2499,7 +2556,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 >
                   <Languages className="w-3.5 h-3.5 shrink-0" />
                   <span>
-                    {settings.translationMode === 'override' ? 'Đã dịch' : 'Dịch'}
+                    {settings.translationMode === 'override'
+                      ? strings.translated
+                      : strings.translateQuick}
                   </span>
                 </button>
               </div>
@@ -2523,7 +2582,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
               <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
                 <h2 className="text-[13px] font-sans font-semibold truncate">
-                  Tùy chọn
+                  {strings.readerOptions}
                 </h2>
                 <button
                   type="button"
@@ -2550,7 +2609,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   >
                     <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
                       <SlidersHorizontal className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                      <span>Chữ, Nền &amp; Lật</span>
+                      <span>{strings.textBgAndTurn}</span>
                     </span>
                     <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
@@ -2567,7 +2626,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   >
                     <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
                       <Headphones className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                      <span>Giọng đọc</span>
+                      <span>{strings.readingVoice}</span>
                     </span>
                     <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
                   </button>
@@ -2585,7 +2644,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                     <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
                       <Music className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
                       <span>
-                        Nhạc nền{ambientActiveCount > 0 ? ` (${ambientActiveCount})` : ''}
+                        {strings.ambientMusic}{ambientActiveCount > 0 ? ` (${ambientActiveCount})` : ''}
                       </span>
                     </span>
                     <ChevronRight className="w-4 h-4 text-stone-400 shrink-0" />
@@ -2615,7 +2674,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   >
                     <span className="flex items-center gap-2 font-medium text-stone-900 dark:text-stone-100">
                       <Sparkles className="w-4 h-4 text-amber-800 dark:text-amber-400 shrink-0" />
-                      <span>{isScanningCleanup ? 'Đang quét...' : 'AI Quét sạch'}</span>
+                      <span>{isScanningCleanup ? strings.scanning : strings.aiCleanScan}</span>
                     </span>
                     {cleanScanVerified ? (
                       <span
@@ -2634,7 +2693,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 {/* Compact Inline Dịch nhanh Controls with GlassSelect */}
                 <div className="space-y-2 pt-2 border-t border-stone-300/40 dark:border-white/10">
                   <div className="text-[11px] font-semibold text-stone-600 dark:text-stone-400">
-                    Dịch nhanh
+                    {strings.quickTranslate}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <GlassSelect<TranslationMode>
@@ -2694,7 +2753,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       <Download className="w-3.5 h-3.5 shrink-0" />
                     )}
                     <span>
-                      {settings.translationMode !== 'original' ? 'Dịch & xuất EPUB' : 'Xuất EPUB'}
+                      {settings.translationMode !== 'original'
+                        ? strings.translateAndExportEpub
+                        : strings.exportEpub}
                     </span>
                   </button>
                 </div>
@@ -2782,6 +2843,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                       paddingLeft: `${settings.marginHorizontalPx ?? 16}px`,
                       paddingRight: `${settings.marginHorizontalPx ?? 16}px`,
                       ...vintageTexture,
+                      transition: !liveTurn
+                        ? 'padding 180ms cubic-bezier(0.22,1,0.36,1)'
+                        : undefined,
                       ...(liveCurlGeom && liveCurlGeom.peel > 0.002
                         ? {
                             clipPath: liveCurlGeom.frontClipPath,
@@ -2803,7 +2867,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                           }
                         : {}),
                     }
-                  : undefined
+                  : {
+                      transition: 'padding 180ms cubic-bezier(0.22,1,0.36,1)',
+                    }
               }
             >
               <article
@@ -2811,12 +2877,10 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 data-testid="reader-article"
                 key={
                   isPaginatedMode
-                    ? `${chapterIndex}-${safePageIndex}-${turnTick}`
+                    ? `${chapterIndex}-${turnTick}`
                     : chapterIndex
                 }
-                className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass} ${
-                  liveTurn ? '' : 'transition-all'
-                }`}
+                className={`mx-auto ${WIDTH_CLASSES[settings.pageWidth]} ${pageTurnClass}`}
                 style={{
                   fontFamily: settings.fontFamily,
                   fontSize: `${settings.fontSize}px`,
@@ -2824,6 +2888,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   letterSpacing: `${settings.letterSpacing}em`,
                   fontWeight: settings.fontWeight,
                   textAlign: settings.textAlign,
+                  transition: liveTurn
+                    ? 'none'
+                    : 'font-size 160ms cubic-bezier(0.22,1,0.36,1), line-height 160ms cubic-bezier(0.22,1,0.36,1), letter-spacing 160ms ease-out',
                 }}
               >
                 {translateError && (
@@ -3115,7 +3182,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 className="h-9 px-2.5 rounded-xl border bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] active:scale-[0.98] transition-all inline-flex items-center justify-center gap-1 font-semibold disabled:opacity-35"
               >
                 <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
-                <span>Trước</span>
+                <span>{strings.prevPage}</span>
               </button>
 
               <button
@@ -3153,7 +3220,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                 style={{ borderColor: activeTheme.border }}
                 className="h-9 px-2.5 rounded-xl border bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.12] active:scale-[0.98] transition-all inline-flex items-center justify-center gap-1 font-semibold disabled:opacity-35"
               >
-                <span>Tiếp</span>
+                <span>{strings.nextPage}</span>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
               </button>
             </footer>
@@ -3329,7 +3396,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
                   <span className="w-10 h-1 rounded-full bg-stone-400/50 dark:bg-stone-600/70" />
                 </div>
                 <div className="flex items-center justify-between px-5 py-3.5 border-b border-stone-300/40 dark:border-white/10 shrink-0">
-                  <h2 className="text-base font-sans font-semibold">Mục lục</h2>
+                  <h2 className="text-base font-sans font-semibold">{strings.toc}</h2>
                   <button
                     type="button"
                     onClick={() => setShowToc(false)}
@@ -3404,7 +3471,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
           onClose={() => setShowSettings(false)}
           onBackToToolsMenu={() => setShowToolsMenu(true)}
           settings={settings}
-          onUpdateSettings={onUpdateSettings}
+          onUpdateSettings={applySmoothReaderSetting}
           customFonts={customFonts}
           onAddCustomFont={onAddCustomFont}
         />

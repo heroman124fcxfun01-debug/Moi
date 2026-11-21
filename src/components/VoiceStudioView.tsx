@@ -7,11 +7,10 @@ import {
   Loader2,
   Sliders,
   Play,
+  Save,
   Square,
-  Plus,
   Check,
   Music,
-  Link2,
   X,
   ChevronDown,
   ChevronUp,
@@ -38,7 +37,6 @@ import {
   MIN_READING_SPEED,
   READING_SPEED_STEP,
   normalizeReadingSpeed,
-  stepReadingSpeed,
 } from '../utils/audioFilterEngine';
 import {
   triggerDeviceHaptic,
@@ -67,12 +65,7 @@ import { useLongPress } from '../hooks/useLongPress';
 import { LongPressActionSheet } from './LongPressActionSheet';
 import { TwoTapDeleteButton } from './TwoTapDeleteButton';
 import {
-  VOICE_AGE_OPTIONS,
-  VOICE_PERSONALITY_OPTIONS,
   buildCompactVoiceProfile,
-  parseAiVoiceInstruction,
-  type VoiceAgeGroup,
-  type VoicePersonality,
 } from '../utils/voiceProfileEngine';
 import {
   loadPronunciationDict,
@@ -84,6 +77,8 @@ import {
   runVocalCloningPipeline,
   type VocalPipelineProgress,
 } from '../utils/vocalClonerDsp';
+import { IosSheet } from './IosSheet';
+import { useI18n } from '../contexts/LanguageContext';
 
 const VOICE_ALIAS_STORAGE_KEY = 'bookhad_voice_aliases_v1';
 const FONT_ALIAS_STORAGE_KEY = 'bookhad_font_aliases_v1';
@@ -178,6 +173,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   onDeleteCustomAmbientTrack,
   standaloneDeviceMode = true,
 }) => {
+  const { strings } = useI18n();
   const fontInputRef = useRef<HTMLInputElement>(null);
   const builderVoiceInputRef = useRef<HTMLInputElement>(null);
   const playerRef = useRef<FilteredAudioPlayer | null>(null);
@@ -192,11 +188,9 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     useState<BuilderImportedVoiceDraft | null>(null);
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
 
-  // Voice Studio Builder State — starts EMPTY & locked until user imports a voice file or URL
+  // Minimalist Zero-Manual-Tuning Voice Creator State (6 rows + Save Confirmation Dialog)
   const [studioName, setStudioName] = useState('');
   const [studioReadingStyle, setStudioReadingStyle] = useState<BookReadingStyle>('novel');
-  const [voiceUrlInput, setVoiceUrlInput] = useState('');
-  const [isFetchingVoiceUrl, setIsFetchingVoiceUrl] = useState(false);
   const [baseGeminiVoice, setBaseGeminiVoice] = useState<GeminiVoiceName>('Kore');
   const [tone, setTone] = useState<VoiceToneSettings>(() => ({ ...DEFAULT_VOICE_TONE }));
   const [sampleText, setSampleText] = useState(
@@ -204,6 +198,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   );
   const [isTestingEq, setIsTestingEq] = useState(false);
   const [isSavingVoice, setIsSavingVoice] = useState(false);
+  const [showSaveConfirmModal, setShowSaveConfirmModal] = useState(false);
   const [studioFeedback, setStudioFeedback] = useState('');
   const [expandedFontIds, setExpandedFontIds] = useState<Record<string, boolean>>({});
   const [expandedVoiceIds, setExpandedVoiceIds] = useState<Record<string, boolean>>({});
@@ -232,7 +227,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   const resetBuilderToEmpty = () => {
     setBuilderImportedVoice(null);
     setStudioName('');
-    setVoiceUrlInput('');
     setStudioReadingStyle('novel');
     setBaseGeminiVoice('Kore');
     setTone({ ...DEFAULT_VOICE_TONE });
@@ -420,7 +414,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       durationSec: dspResult.durationSec,
       analyzedProfile: profile,
     });
-    setStudioName(tempAsset.name);
+    setStudioName((prev) => (prev.trim() ? prev : tempAsset.name));
     setBaseGeminiVoice(profile.recommendedBaseVoice);
     setTone((prev) => ({
       ...prev,
@@ -433,8 +427,8 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     triggerDeviceHaptic('success', true);
     setStudioFeedback(
       usedGeminiAi
-        ? `AI đã tách giọng & trích xuất Vector ${dspResult.speakerEmbedding.vectorId} (F0 ${dspResult.speakerEmbedding.f0Hz}Hz). Bấm "Nghe thử" để nghe giọng nhân bản thực tế!`
-        : `Đã tách tạp âm & trích xuất Vector ${dspResult.speakerEmbedding.vectorId} (F0 ${dspResult.speakerEmbedding.f0Hz}Hz). Bấm "Nghe thử" hoặc chỉnh thanh trượt rồi bấm "+ Lưu giọng".`
+        ? `AI đã tự động phân tích & khớp 100% âm sắc gốc (${dspResult.speakerEmbedding.vectorId}). Bấm "Nghe thử" hoặc Lưu!`
+        : `Đã trích xuất giọng gốc on-device (${dspResult.speakerEmbedding.vectorId}). Bấm "Nghe thử" hoặc Lưu!`
     );
   };
 
@@ -455,42 +449,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       setIsAnalyzingBuilderVoice(false);
       window.setTimeout(() => setCloningProgress(null), 900);
       if (builderVoiceInputRef.current) builderVoiceInputRef.current.value = '';
-    }
-  };
-
-  // Download a voice sample directly from a web audio URL (.mp3/.wav/.m4a/.ogg) and analyze with AI
-  const handleImportVoiceFromUrl = async () => {
-    const trimmed = voiceUrlInput.trim();
-    if (!trimmed) return;
-    setStudioFeedback('');
-    setIsFetchingVoiceUrl(true);
-    setIsAnalyzingBuilderVoice(true);
-    try {
-      const resp = await fetch(resolveApiUrl('/api/ai/fetch-voice-url'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: trimmed }),
-      });
-      const data = await resp.json();
-      if (!resp.ok || !data?.dataUrl) {
-        throw new Error(data?.error || 'Không thể tải file giọng nói từ liên kết này.');
-      }
-      const rawName = String(data.fileName || 'voice-tu-mang.mp3');
-      const cleanedName = rawName.replace(/\.[^.]+$/, '').trim() || 'Voice tải từ mạng';
-      await analyzeImportedVoiceData({
-        name: cleanedName,
-        fileName: rawName,
-        mimeType: data.mimeType || 'audio/mpeg',
-        dataUrl: data.dataUrl,
-      });
-    } catch (err) {
-      setStudioFeedback(
-        err instanceof Error ? err.message : 'Không thể tải mẫu voice từ đường link đã nhập.'
-      );
-    } finally {
-      setIsFetchingVoiceUrl(false);
-      setIsAnalyzingBuilderVoice(false);
-      window.setTimeout(() => setCloningProgress(null), 900);
     }
   };
 
@@ -521,6 +479,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       useVoiceDesign: boolean;
       vectorId?: string;
       cleanVocalSampleUrl?: string;
+      speakerEmbedding?: SpeakerEmbeddingVector;
     }
   ): Promise<boolean> => {
     if (previewRunIdRef.current !== runId) return true;
@@ -528,7 +487,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     const cacheKey = `${opts.vectorId || 'sys'}|${opts.baseVoice}|${opts.useVoiceDesign ? 1 : 0}|${opts.pitch.toFixed(2)}|${opts.rate.toFixed(2)}|${opts.toneSettings.warmthDb}|${opts.toneSettings.clarityDb}|${opts.stylePrompt.slice(0, 72)}|${sampleText.trim().slice(0, 120)}`;
     const cachedUrl = previewAudioCacheRef.current.get(cacheKey);
     if (cachedUrl) {
-      await player.play(cachedUrl, opts.toneSettings, opts.rate);
+      await player.play(cachedUrl, opts.toneSettings, opts.rate, undefined, 'none', opts.speakerEmbedding);
       return true;
     }
 
@@ -564,7 +523,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           }
           previewAudioCacheRef.current.set(cacheKey, dataUrl);
           if (previewRunIdRef.current !== runId) return true;
-          await player.play(dataUrl, opts.toneSettings, opts.rate);
+          await player.play(dataUrl, opts.toneSettings, opts.rate, undefined, 'none', opts.speakerEmbedding);
           return true;
         }
         if (data?.quotaExceeded) {
@@ -598,13 +557,13 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
 
     // Never revert to a generic default voice chime when we have the user's isolated clean vocal sample!
     if (opts.cleanVocalSampleUrl) {
-      await player.play(opts.cleanVocalSampleUrl, opts.toneSettings, opts.rate);
+      await player.play(opts.cleanVocalSampleUrl, opts.toneSettings, opts.rate, undefined, 'none', opts.speakerEmbedding);
       return true;
     }
 
     const pack = await installOfflineVoicePack(opts.baseVoice);
     if (previewRunIdRef.current !== runId) return true;
-    await player.play(pack.calibrationWavBase64, opts.toneSettings, opts.rate);
+    await player.play(pack.calibrationWavBase64, opts.toneSettings, opts.rate, undefined, 'none', opts.speakerEmbedding);
     return false;
   };
 
@@ -617,11 +576,15 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       stopAnyPreview();
       return;
     }
+    if (!voice.speakerEmbedding && !voice.cleanVocalSampleUrl && !voice.dataUrl) {
+      setVoicePreviewNotice(`Giọng "${voice.name}" chưa có Speaker Embedding. Hãy import lại file mẫu.`);
+      return;
+    }
     stopAnyPreview();
     const runId = previewRunIdRef.current;
     setPlayingVoiceId(key);
     try {
-      // Use the EXACT same AI Voice Design + EQ / on-device pipeline as ReaderView so preview === reading 100%
+      // Use the EXACT same AI Voice Design + Tone Color EQ pipeline as ReaderView so preview === reading 100%
       const extParams = computeExternalVoiceSpeechParams(voice);
       const effectiveTone: VoiceToneSettings = {
         ...DEFAULT_VOICE_TONE,
@@ -643,6 +606,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
         useVoiceDesign: true,
         vectorId: voice.speakerEmbedding?.vectorId || voice.voiceId || voice.id,
         cleanVocalSampleUrl: voice.cleanVocalSampleUrl || voice.dataUrl,
+        speakerEmbedding: voice.speakerEmbedding,
       });
       if (!ok && previewRunIdRef.current === runId) {
         setVoicePreviewNotice('Đang phát mẫu âm sắc nội bộ cho cấu hình giọng đã import.');
@@ -733,73 +697,10 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     }
   };
 
-  const handlePlayOriginalImportedClip = async () => {
-    if (!builderImportedVoice?.dataUrl) return;
-    unlockAudioPlaybackSync();
-    if (isTestingEq) {
-      stopAnyPreview();
-      return;
-    }
-    stopAnyPreview();
-    const runId = previewRunIdRef.current;
-    setStudioFeedback('');
-    setIsTestingEq(true);
-    try {
-      await getPlayer().play(
-        builderImportedVoice.cleanVocalSampleUrl || builderImportedVoice.dataUrl,
-        DEFAULT_VOICE_TONE,
-        1.0
-      );
-    } catch (err) {
-      if (previewRunIdRef.current === runId) {
-        setStudioFeedback(err instanceof Error ? err.message : 'Không thể phát file gốc.');
-      }
-    } finally {
-      if (previewRunIdRef.current === runId) {
-        setIsTestingEq(false);
-      }
-    }
-  };
-
-  const [studioAgeGroup, setStudioAgeGroup] = useState<VoiceAgeGroup>('youth');
-  const [studioPersonality, setStudioPersonality] = useState<VoicePersonality>('warm');
   const [pronDict, setPronDict] = useState<PronunciationEntry[]>(() => loadPronunciationDict());
   const [dictWrongWord, setDictWrongWord] = useState('');
   const [dictCorrectReading, setDictCorrectReading] = useState('');
   const [showPronDict, setShowPronDict] = useState(false);
-
-  const livePromptPreview = useMemo(() => {
-    const analyzed = builderImportedVoice?.analyzedProfile;
-    const gender: 'male' | 'female' =
-      analyzed?.gender === 'male'
-        ? 'male'
-        : analyzed?.gender === 'female'
-        ? 'female'
-        : getOnDeviceVoiceTone(baseGeminiVoice).preferGender === 'male'
-        ? 'male'
-        : 'female';
-    return parseAiVoiceInstruction(tone.styleDirection || analyzed?.stylePrompt || '', {
-      gender,
-      ageGroup: studioAgeGroup,
-      personality: studioPersonality,
-      acousticWarmthDb: tone.warmthDb,
-      acousticClarityDb: tone.clarityDb,
-      acousticSpeedFactor: tone.rate,
-      voiceStyle: READING_VOICE_STYLES.find((s) => s.id === studioReadingStyle)?.label,
-      name: studioName || builderImportedVoice?.fileName,
-    });
-  }, [
-    builderImportedVoice,
-    baseGeminiVoice,
-    tone.styleDirection,
-    tone.warmthDb,
-    tone.clarityDb,
-    tone.rate,
-    studioAgeGroup,
-    studioPersonality,
-    studioReadingStyle,
-    studioName,
-  ]);
 
   const handleTestStudioEq = async () => {
     if (!builderImportedVoice) return;
@@ -813,7 +714,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
     setStudioFeedback('');
     setIsTestingEq(true);
     try {
-      // Step 3: Synthesize live preview STRICTLY from the extracted Speaker Embedding + active 4 sliders + AI Prompt
+      // Synthesize live preview STRICTLY from the auto-extracted Speaker Embedding + Reading Style + AI Instruction
       const analyzed = builderImportedVoice.analyzedProfile;
       const styleLabel = READING_VOICE_STYLES.find((s) => s.id === studioReadingStyle)?.label;
 
@@ -822,8 +723,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           name: studioName.trim() || builderImportedVoice.fileName,
           embedding: builderImportedVoice.speakerEmbedding,
           tone,
-          ageGroup: studioAgeGroup,
-          personality: studioPersonality,
+          readingStyle: studioReadingStyle,
           voiceStyle: styleLabel,
           instruction: tone.styleDirection || analyzed?.stylePrompt || '',
           overrideGender:
@@ -844,51 +744,10 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           vectorId: cloned.vectorId,
           cleanVocalSampleUrl:
             builderImportedVoice.cleanVocalSampleUrl || builderImportedVoice.dataUrl,
+          speakerEmbedding: builderImportedVoice.speakerEmbedding,
         });
       } else {
-        const gender: 'male' | 'female' =
-          analyzed?.gender === 'male'
-            ? 'male'
-            : analyzed?.gender === 'female'
-            ? 'female'
-            : getOnDeviceVoiceTone(baseGeminiVoice).preferGender === 'male'
-            ? 'male'
-            : 'female';
-        const tempProfile = buildCompactVoiceProfile({
-          name: studioName.trim() || builderImportedVoice.fileName || 'Custom Voice',
-          gender,
-          ageGroup: studioAgeGroup,
-          personality: studioPersonality,
-          instruction: tone.styleDirection || analyzed?.stylePrompt || '',
-          voiceStyle: styleLabel,
-          sampleSignature: builderImportedVoice.dataUrl.slice(0, 128),
-          acousticSpeedFactor: tone.rate,
-          acousticWarmthDb: tone.warmthDb,
-          acousticClarityDb: tone.clarityDb,
-        });
-        const pp = tempProfile.promptParams;
-        const resolvedBaseVoice = pp.recommendedBaseVoice || baseGeminiVoice;
-        const presetTone = getOnDeviceVoiceTone(resolvedBaseVoice);
-
-        await previewSynthesizedVoice(runId, {
-          baseVoice: resolvedBaseVoice,
-          stylePrompt: pp.geminiStylePrompt,
-          toneSettings: {
-            ...tone,
-            warmthDb: pp.warmthDb,
-            clarityDb: pp.clarityDb,
-            pitch: pp.pitch,
-            rate: pp.speed,
-            styleDirection: pp.geminiStylePrompt,
-          },
-          pitch: pp.pitch,
-          rate: pp.speed,
-          preferGender: gender,
-          voiceSlotIndex: (presetTone.voiceSlotIndex + (tempProfile.fingerprintHash % 4)) % 6,
-          useVoiceDesign: true,
-          vectorId: tempProfile.voiceId,
-          cleanVocalSampleUrl: builderImportedVoice.dataUrl,
-        });
+        setStudioFeedback('Không tìm thấy Speaker Embedding hợp lệ. Vui lòng import lại file mẫu.');
       }
     } catch (err) {
       if (previewRunIdRef.current === runId) {
@@ -914,7 +773,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       const analyzed = builderImportedVoice.analyzedProfile;
       const styleMeta = READING_VOICE_STYLES.find((s) => s.id === studioReadingStyle);
 
-      // Step 4: Package complete Voice Profile with Speaker Embedding + unique voiceId + Prompt/EQ params
       let voiceId: string;
       let gender: 'male' | 'female';
       let pp: NonNullable<ExternalVoiceAsset['promptParams']>;
@@ -925,8 +783,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           name: studioName.trim(),
           embedding: speakerEmbedding,
           tone,
-          ageGroup: studioAgeGroup,
-          personality: studioPersonality,
+          readingStyle: studioReadingStyle,
           voiceStyle: styleMeta?.label,
           instruction: tone.styleDirection || analyzed?.stylePrompt || '',
           overrideGender:
@@ -951,8 +808,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
         const compactProfile = buildCompactVoiceProfile({
           name: studioName.trim(),
           gender,
-          ageGroup: studioAgeGroup,
-          personality: studioPersonality,
           instruction: tone.styleDirection || analyzed?.stylePrompt || '',
           voiceStyle: styleMeta?.label,
           sampleSignature: dataUrl.slice(0, 128),
@@ -971,8 +826,6 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
         };
       }
 
-      const eqSummary = `Trầm ${pp.warmthDb >= 0 ? '+' : ''}${pp.warmthDb}dB · Sáng ${pp.clarityDb >= 0 ? '+' : ''}${pp.clarityDb}dB · Cao độ ${pp.pitch.toFixed(2)} · Tốc độ ${pp.speed.toFixed(2)}x`;
-
       const newVoice: ExternalVoiceAsset = {
         id: voiceId,
         voiceId,
@@ -984,16 +837,14 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
         speakerEmbedding,
         durationSec: builderImportedVoice.durationSec,
         readingStyle: studioReadingStyle,
-        ageGroup: studioAgeGroup,
-        personality: studioPersonality,
         promptParams: pp,
         originType: 'imported',
         originLabel: speakerEmbedding
-          ? `Nhân bản AI (${speakerEmbedding.vectorId}) · ${styleMeta?.label || 'Tiểu thuyết'}`
+          ? `AI Clone (${speakerEmbedding.vectorId}) · ${styleMeta?.label || 'Tiểu thuyết'}`
           : `Voice Profile · ${styleMeta?.label || 'Tiểu thuyết'}`,
         toneSettings: finalToneSettings,
         analyzedProfile: {
-          description: `${analyzed?.description || `Phân tích từ ${fileName}`} (${eqSummary}).`,
+          description: analyzed?.description || `Phân tích từ ${fileName}`,
           stylePrompt: pp.geminiStylePrompt || '',
           recommendedBaseVoice: pp.recommendedBaseVoice || baseGeminiVoice,
           gender,
@@ -1008,11 +859,10 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
       };
 
       await onAddExternalVoice(newVoice);
+      setShowSaveConfirmModal(false);
       resetBuilderToEmpty();
       triggerDeviceHaptic('success', true);
-      setStudioFeedback(
-        `Đã lưu giọng "${newVoice.name}" (${voiceId}) vào danh sách giọng đọc sách!`
-      );
+      setStudioFeedback(`Đã lưu giọng "${newVoice.name}" thành công!`);
     } finally {
       setIsSavingVoice(false);
     }
@@ -1029,474 +879,223 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
   return (
     <main className="w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3.5 pb-4 sm:pt-5 sm:pb-6 space-y-4 sm:space-y-6 overflow-x-clip">
 
-      {/* Studio Voice Equalizer & Custom Profile Builder */}
+      {/* Minimalist Zero-Manual-Tuning 6-Row On-Device Voice Cloning Creator */}
       <section
-        aria-label="Phòng chỉnh giọng đọc và âm sắc"
-        className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-5 space-y-3.5 min-w-0 overflow-hidden"
+        data-testid="minimalist-voice-creator"
+        aria-label={strings.createVoice}
+        className="border border-stone-200 dark:border-stone-800 rounded-2xl bg-white dark:bg-[#16181C] p-3.5 sm:p-5 space-y-3 min-w-0 overflow-hidden"
       >
-        <div className="space-y-2.5 min-w-0">
-          <div className="space-y-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <Sliders className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-                <h2 className="text-[13px] font-semibold text-stone-900 dark:text-stone-100 truncate">
-                  Tạo giọng
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => toggleDisclosure('builder-help')}
-                aria-expanded={activeDisclosure === 'builder-help'}
-                aria-label="Xem mô tả tạo giọng"
-                className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
-              >
-                <ChevronDown
-                  className={`w-3.5 h-3.5 transition-transform ${
-                    activeDisclosure === 'builder-help' ? 'rotate-180' : ''
-                  }`}
-                />
-              </button>
-            </div>
-            {activeDisclosure === 'builder-help' && (
-              <p className="text-[11px] leading-snug text-stone-500">
-                Chọn file hoặc dán link audio để AI phân tích rồi lưu giọng mới.
-              </p>
-            )}
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Sliders className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+            <h2 className="text-[13px] font-semibold text-stone-900 dark:text-stone-100 truncate">
+              {strings.createVoice}
+            </h2>
           </div>
+          <button
+            type="button"
+            onClick={() => toggleDisclosure('builder-help')}
+            aria-expanded={activeDisclosure === 'builder-help'}
+            aria-label="Xem mô tả tạo giọng"
+            className="p-1 rounded-full text-stone-500 hover:text-stone-900 dark:hover:text-white shrink-0"
+          >
+            <ChevronDown
+              className={`w-3.5 h-3.5 transition-transform ${
+                activeDisclosure === 'builder-help' ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
         </div>
+        {activeDisclosure === 'builder-help' && (
+          <p className="text-[11px] leading-snug text-stone-500">
+            Nạp file giọng mẫu 5–8 giây. AI tự động trích xuất &amp; khớp 100% âm sắc gốc on-device mà không cần chỉnh thông số thủ công.
+          </p>
+        )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start min-w-0">
-          <div className="lg:col-span-6 space-y-3 min-w-0">
-            {/* Import Voice from Device OR Web URL */}
-            <div className="p-3 rounded-xl border border-dashed border-amber-800/40 dark:border-amber-500/35 bg-amber-50/45 dark:bg-amber-950/15 space-y-2 min-w-0">
-              <input
-                ref={builderVoiceInputRef}
-                data-testid="import-voice-file-input"
-                type="file"
-                accept="audio/*,.mp3,.wav,.ogg,.m4a"
-                className="hidden"
-                onChange={(e) => handleImportVoiceIntoBuilder(e.target.files)}
-              />
+        {/* Strict 6-Row Top-to-Bottom Minimalist Layout (ZERO manual audio sliders!) */}
+        <div className="max-w-2xl space-y-2.5 min-w-0">
+          {/* Row 1: Single Import Voice Button */}
+          <div className="space-y-1.5 min-w-0">
+            <input
+              ref={builderVoiceInputRef}
+              data-testid="import-voice-file-input"
+              type="file"
+              accept="audio/*,.mp3,.wav,.ogg,.m4a"
+              className="hidden"
+              onChange={(e) => handleImportVoiceIntoBuilder(e.target.files)}
+            />
+            <div className="flex items-center gap-1.5 min-w-0">
               <button
                 type="button"
                 data-testid="import-voice-file-btn"
                 disabled={isAnalyzingBuilderVoice}
                 onClick={() => builderVoiceInputRef.current?.click()}
-                className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-90 disabled:opacity-50 min-h-[42px]"
+                className={`flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all disabled:opacity-50 min-h-[42px] border ${
+                  builderImportedVoice
+                    ? 'border-emerald-600/45 bg-emerald-50/70 dark:bg-emerald-950/25 text-emerald-900 dark:text-emerald-200'
+                    : 'border-transparent bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 hover:opacity-90'
+                }`}
               >
-                {isAnalyzingBuilderVoice && !isFetchingVoiceUrl ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                {isAnalyzingBuilderVoice ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                ) : builderImportedVoice ? (
+                  <Check className="w-3.5 h-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 ) : (
-                  <Upload className="w-3.5 h-3.5" />
+                  <Upload className="w-3.5 h-3.5 shrink-0" />
                 )}
-                <span>
-                  {builderImportedVoice ? 'Đổi file' : 'Chọn file'}
+                <span className="truncate">
+                  {builderImportedVoice
+                    ? `${builderImportedVoice.fileName} · ${strings.voiceReady}`
+                    : strings.importVoice}
                 </span>
               </button>
-
-              <div className="flex items-center gap-1.5 min-w-0">
-                <div className="relative flex-1 min-w-0">
-                  <Link2 className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="url"
-                    data-testid="import-voice-url-input"
-                    value={voiceUrlInput}
-                    onChange={(e) => setVoiceUrlInput(e.target.value)}
-                    placeholder="Dán link .mp3 / .wav..."
-                    className="w-full pl-8 pr-2.5 py-2 text-[11px] rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 focus:outline-none focus:border-amber-700"
-                  />
-                </div>
+              {builderImportedVoice && (
                 <button
                   type="button"
-                  data-testid="import-voice-url-btn"
-                  disabled={!voiceUrlInput.trim() || isAnalyzingBuilderVoice}
-                  onClick={handleImportVoiceFromUrl}
-                  className="px-3 py-2 rounded-lg bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 disabled:opacity-45 shrink-0 inline-flex items-center gap-1"
+                  data-testid="clear-imported-voice-btn"
+                  onClick={resetBuilderToEmpty}
+                  aria-label="Gỡ file voice gốc"
+                  className="w-10 h-[42px] rounded-xl border border-stone-200 dark:border-stone-700 text-stone-500 hover:text-red-600 flex items-center justify-center shrink-0"
                 >
-                  {isFetchingVoiceUrl ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : null}
-                  <span>Tải link</span>
+                  <X className="w-4 h-4" />
                 </button>
-              </div>
-
-              {/* Live 3-Step Vocal Separation & Speaker Embedding Progress Bar */}
-              {(isAnalyzingBuilderVoice || (cloningProgress && cloningProgress.percent < 100)) && (
-                <div
-                  data-testid="voice-cloning-progress"
-                  className="p-2.5 rounded-lg bg-white/90 dark:bg-stone-900/90 border border-amber-700/35 space-y-1.5"
-                >
-                  <div className="flex items-center justify-between gap-2 text-[10.5px] font-medium text-amber-900 dark:text-amber-300">
-                    <span className="inline-flex items-center gap-1.5 truncate">
-                      <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                      <span className="truncate">
-                        {cloningProgress?.label || 'Đang xử lý tách giọng & lọc tạp âm...'}
-                      </span>
-                    </span>
-                    <span className="tabular-nums font-semibold shrink-0">
-                      {cloningProgress?.percent ?? 15}%
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full rounded-full bg-amber-900/15 dark:bg-amber-500/20 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-amber-800 dark:bg-amber-400 transition-all duration-300"
-                      style={{ width: `${cloningProgress?.percent ?? 15}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {builderImportedVoice && (
-                <div
-                  data-testid="voice-embedding-ready-card"
-                  className="p-2.5 rounded-lg bg-white/90 dark:bg-stone-900/90 border border-amber-700/30 flex items-start justify-between gap-2"
-                >
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-800 text-white text-[10px] font-semibold">
-                        {builderImportedVoice.speakerEmbedding
-                          ? `Vector ${builderImportedVoice.speakerEmbedding.vectorId}`
-                          : builderImportedVoice.analyzedProfile.analyzedBy === 'gemini-ai'
-                          ? 'AI đã phân tích'
-                          : 'DSP thiết bị'}
-                      </span>
-                      <span className="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
-                        {builderImportedVoice.fileName}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-stone-600 dark:text-stone-400 leading-snug">
-                      {builderImportedVoice.analyzedProfile.description}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handlePlayOriginalImportedClip}
-                      className="inline-flex items-center gap-1 text-[10.5px] font-medium text-amber-800 dark:text-amber-400 hover:underline"
-                    >
-                      <Play className="w-3 h-3" />
-                      <span>Nghe mẫu sạch</span>
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={resetBuilderToEmpty}
-                    aria-label="Gỡ file voice gốc"
-                    className="p-1 rounded-md text-stone-400 hover:text-red-600 shrink-0"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
               )}
             </div>
 
-            {/* 1. Tên giọng (trống và khóa cho đến khi import file voice) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-medium text-stone-500 mb-1">
-                  Tên giọng
-                </label>
-                <input
-                  type="text"
-                  data-testid="studio-voice-name-input"
-                  value={studioName}
-                  disabled={!builderImportedVoice}
-                  placeholder={
-                    builderImportedVoice
-                      ? 'Nhập tên giọng...'
-                      : 'Chọn file trước'
-                  }
-                  onChange={(e) => setStudioName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-transparent disabled:bg-stone-100 dark:disabled:bg-stone-900/60 disabled:text-stone-400 disabled:cursor-not-allowed"
-                />
-              </div>
-
-              {/* 2. Văn phong */}
-              <div>
-                <label className="block text-[11px] font-medium text-stone-500 mb-1">
-                  Văn phong
-                </label>
-                <GlassSelect<BookReadingStyle>
-                  ariaLabel="Chọn văn phong"
-                  title="Văn phong"
-                  value={studioReadingStyle}
-                  onChange={setStudioReadingStyle}
-                  options={READING_VOICE_STYLES.map((style) => ({
-                    value: style.id,
-                    label: style.label,
-                    subtitle: style.description,
-                  }))}
-                />
-              </div>
-            </div>
-
-            {/* 3. Độ tuổi & Tính cách (Voice Profile Tags) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div className="space-y-1">
-                <label className="block text-[11px] font-medium text-stone-500">Độ tuổi</label>
-                <div className="flex flex-wrap gap-1">
-                  {VOICE_AGE_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      disabled={!builderImportedVoice}
-                      onClick={() => setStudioAgeGroup(opt.id)}
-                      className={`px-2.5 py-1 rounded-full text-[10.5px] font-semibold border transition-all disabled:opacity-45 ${
-                        studioAgeGroup === opt.id
-                          ? 'bg-amber-800 border-amber-800 text-white'
-                          : 'bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-700 text-stone-700 dark:text-stone-300'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="block text-[11px] font-medium text-stone-500">Tính cách</label>
-                <div className="flex flex-wrap gap-1">
-                  {VOICE_PERSONALITY_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      disabled={!builderImportedVoice}
-                      onClick={() => setStudioPersonality(opt.id)}
-                      className={`px-2.5 py-1 rounded-full text-[10.5px] font-semibold border transition-all disabled:opacity-45 ${
-                        studioPersonality === opt.id
-                          ? 'bg-amber-800 border-amber-800 text-white'
-                          : 'bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-700 text-stone-700 dark:text-stone-300'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* 4. Chỉ dẫn AI (Prompt-to-Voice Controller) */}
-            <div className="space-y-1.5">
-              <label className="block text-[11px] font-medium text-stone-500">
-                Chỉ dẫn AI
-              </label>
-              <input
-                type="text"
-                data-testid="studio-voice-prompt-input"
-                value={builderImportedVoice ? tone.styleDirection : ''}
-                disabled={!builderImportedVoice}
-                placeholder={
-                  builderImportedVoice
-                    ? 'VD: Trầm ấm, chậm rãi, nhấn mạnh cuối câu, cổ trang...'
-                    : 'Tự điền sau khi chọn file'
-                }
-                onChange={(e) => setTone((t) => ({ ...t, styleDirection: e.target.value }))}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-transparent disabled:bg-stone-100 dark:disabled:bg-stone-900/60 disabled:text-stone-400 disabled:cursor-not-allowed"
-              />
-              {builderImportedVoice && (
-                <div className="flex flex-wrap items-center gap-1 text-[10px] text-amber-900 dark:text-amber-300">
-                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 font-semibold">
-                    Nền: {livePromptPreview.recommendedBaseVoice}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 tabular-nums">
-                    Cao độ {livePromptPreview.pitch}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 tabular-nums">
-                    Tốc độ {livePromptPreview.speed}x
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-amber-800/10 tabular-nums">
-                    Nghỉ {livePromptPreview.pauseDurationMs}ms
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-medium text-stone-500 mb-1">
-                Câu thử
-              </label>
-              <textarea
-                rows={2}
-                value={sampleText}
-                onChange={(e) => setSampleText(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-lg border border-stone-300 dark:border-stone-700 bg-transparent"
-              />
-            </div>
-          </div>
-
-          <div className="lg:col-span-6 space-y-4 bg-stone-50 dark:bg-stone-900/50 p-4 rounded-xl border border-stone-200 dark:border-stone-800 min-w-0">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 min-w-0">
-              <label className="block space-y-1.5 min-w-0">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-medium">Âm trầm</span>
-                  <span className="tabular-nums text-amber-800 dark:text-amber-400 font-semibold shrink-0">
-                    {tone.warmthDb >= 0 ? '+' : ''}
-                    {tone.warmthDb} dB
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  aria-label="Âm trầm"
-                  min={-6}
-                  max={12}
-                  step={1}
-                  value={tone.warmthDb}
-                  onChange={(e) => setTone((t) => ({ ...t, warmthDb: Number(e.target.value) }))}
-                  className="block w-full min-w-0 accent-amber-800 h-2"
-                />
-              </label>
-
-              <label className="block space-y-1.5 min-w-0">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-medium">Độ sáng</span>
-                  <span className="tabular-nums text-amber-800 dark:text-amber-400 font-semibold shrink-0">
-                    {tone.clarityDb >= 0 ? '+' : ''}
-                    {tone.clarityDb} dB
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  aria-label="Độ sáng"
-                  min={-6}
-                  max={10}
-                  step={1}
-                  value={tone.clarityDb}
-                  onChange={(e) => setTone((t) => ({ ...t, clarityDb: Number(e.target.value) }))}
-                  className="block w-full min-w-0 accent-amber-800 h-2"
-                />
-              </label>
-
-              <label className="block space-y-1.5 min-w-0">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-medium">Cao độ</span>
-                  <span className="tabular-nums font-semibold shrink-0">{tone.pitch.toFixed(2)}</span>
-                </div>
-                <input
-                  type="range"
-                  aria-label="Cao độ"
-                  min={0.7}
-                  max={1.4}
-                  step={0.05}
-                  value={tone.pitch}
-                  onChange={(e) => setTone((t) => ({ ...t, pitch: Number(e.target.value) }))}
-                  className="block w-full min-w-0 accent-amber-800 h-2"
-                />
-              </label>
-
-              <div className="block space-y-1.5 min-w-0">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-medium">Tốc độ</span>
-                  <div className="inline-flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setTone((t) => ({ ...t, rate: stepReadingSpeed(t.rate, -1) }))
-                      }
-                      aria-label="Giảm tốc độ giọng 0.1"
-                      className="w-6 h-6 rounded-md border border-stone-300 dark:border-stone-700 text-xs font-semibold flex items-center justify-center hover:border-amber-700"
-                    >
-                      −
-                    </button>
-                    <div className="inline-flex items-center rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-1.5 h-6">
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        aria-label="Nhập tốc độ đọc giọng Studio"
-                        min={MIN_READING_SPEED}
-                        max={MAX_READING_SPEED}
-                        step={READING_SPEED_STEP}
-                        value={tone.rate}
-                        onChange={(e) => {
-                          const num = Number(e.target.value.replace(',', '.'));
-                          if (Number.isFinite(num)) {
-                            setTone((t) => ({
-                              ...t,
-                              rate: Math.min(MAX_READING_SPEED, Math.max(MIN_READING_SPEED, Math.round(num * 10) / 10)),
-                            }));
-                          }
-                        }}
-                        onBlur={(e) =>
-                          setTone((t) => ({
-                            ...t,
-                            rate: normalizeReadingSpeed(e.target.value, t.rate),
-                          }))
-                        }
-                        className="w-11 text-center text-[11px] font-semibold tabular-nums bg-transparent focus:outline-none"
-                      />
-                      <span className="text-[10px] text-stone-500">x</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setTone((t) => ({ ...t, rate: stepReadingSpeed(t.rate, 1) }))
-                      }
-                      aria-label="Tăng tốc độ giọng 0.1"
-                      className="w-6 h-6 rounded-md border border-stone-300 dark:border-stone-700 text-xs font-semibold flex items-center justify-center hover:border-amber-700"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  aria-label="Nhịp đọc giọng"
-                  min={MIN_READING_SPEED}
-                  max={MAX_READING_SPEED}
-                  step={READING_SPEED_STEP}
-                  value={tone.rate}
-                  onChange={(e) =>
-                    setTone((t) => ({ ...t, rate: normalizeReadingSpeed(e.target.value, t.rate) }))
-                  }
-                  className="block w-full min-w-0 accent-amber-800 h-2"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
-              <button
-                type="button"
-                disabled={!builderImportedVoice}
-                onClick={handleTestStudioEq}
-                className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-45 disabled:cursor-not-allowed min-h-[44px]"
+            {(isAnalyzingBuilderVoice || (cloningProgress && cloningProgress.percent < 100)) && (
+              <div
+                data-testid="voice-cloning-progress"
+                className="p-2 rounded-lg bg-amber-50/60 dark:bg-amber-950/20 border border-amber-700/25 space-y-1"
               >
-                {isTestingEq ? (
-                  <>
-                    <Square className="w-3.5 h-3.5 text-red-600 shrink-0" />
-                    <span>Dừng</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-                    <span>Nghe thử</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                data-testid="save-studio-voice-btn"
-                disabled={
-                  !builderImportedVoice ||
-                  !studioName.trim() ||
-                  isSavingVoice ||
-                  isAnalyzingBuilderVoice
-                }
-                onClick={handleSaveStudioVoice}
-                className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 disabled:opacity-45 disabled:cursor-not-allowed min-h-[44px]"
-              >
-                {isSavingVoice ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                ) : (
-                  <Plus className="w-3.5 h-3.5 shrink-0" />
-                )}
-                <span>Lưu giọng</span>
-              </button>
-            </div>
-
-            {studioFeedback && (
-              <div className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
-                <Check className="w-4 h-4 shrink-0" />
-                <span>{studioFeedback}</span>
+                <div className="flex items-center justify-between gap-2 text-[10.5px] font-medium text-amber-900 dark:text-amber-300">
+                  <span className="truncate">
+                    {cloningProgress?.label || 'Đang trích xuất âm sắc gốc...'}
+                  </span>
+                  <span className="tabular-nums font-semibold shrink-0">
+                    {cloningProgress?.percent ?? 15}%
+                  </span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-amber-900/15 dark:bg-amber-500/20 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-amber-800 dark:bg-amber-400 transition-all duration-300"
+                    style={{ width: `${cloningProgress?.percent ?? 15}%` }}
+                  />
+                </div>
               </div>
             )}
           </div>
+
+          {/* Row 2: Tên giọng */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-stone-500">
+              {strings.voiceName}
+            </label>
+            <input
+              type="text"
+              data-testid="studio-voice-name-input"
+              value={studioName}
+              placeholder={strings.voiceNamePlaceholder}
+              onChange={(e) => setStudioName(e.target.value)}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-transparent focus:outline-none focus:border-amber-700"
+            />
+          </div>
+
+          {/* Row 3: Văn phong */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-stone-500">
+              {strings.voiceStyle}
+            </label>
+            <GlassSelect<BookReadingStyle>
+              ariaLabel={strings.voiceStyle}
+              title={strings.voiceStyle}
+              value={studioReadingStyle}
+              onChange={setStudioReadingStyle}
+              options={READING_VOICE_STYLES.map((style) => ({
+                value: style.id,
+                label: style.label,
+              }))}
+            />
+          </div>
+
+          {/* Row 4: Mô tả chỉ dẫn AI */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-stone-500">
+              {strings.aiInstruction}
+            </label>
+            <input
+              type="text"
+              data-testid="studio-voice-prompt-input"
+              value={tone.styleDirection}
+              placeholder={strings.aiInstructionPlaceholder}
+              onChange={(e) => setTone((t) => ({ ...t, styleDirection: e.target.value }))}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-transparent focus:outline-none focus:border-amber-700"
+            />
+          </div>
+
+          {/* Row 5: Nội dung nghe thử (Rectangular multi-line editable box) */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium text-stone-500">
+              {strings.previewContent}
+            </label>
+            <textarea
+              rows={3}
+              data-testid="studio-preview-text-input"
+              value={sampleText}
+              onChange={(e) => setSampleText(e.target.value)}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-stone-300 dark:border-stone-700 bg-transparent focus:outline-none focus:border-amber-700 resize-none"
+            />
+          </div>
+
+          {/* Row 6: Nghe thử + Save Icon Button side-by-side */}
+          <div className="flex items-center gap-2 pt-0.5">
+            <button
+              type="button"
+              data-testid="studio-preview-btn"
+              disabled={!builderImportedVoice}
+              onClick={handleTestStudioEq}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-xs font-semibold hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-45 disabled:cursor-not-allowed min-h-[44px]"
+            >
+              {isTestingEq ? (
+                <>
+                  <Square className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                  <span>{strings.stopPreview}</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
+                  <span>{strings.previewVoice}</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              data-testid="studio-save-voice-icon-btn"
+              aria-label={strings.saveVoice}
+              title={strings.saveVoice}
+              disabled={
+                !builderImportedVoice ||
+                !studioName.trim() ||
+                isSavingVoice ||
+                isAnalyzingBuilderVoice
+              }
+              onClick={() => setShowSaveConfirmModal(true)}
+              className="w-12 h-[44px] rounded-xl bg-amber-800 text-white hover:bg-amber-900 disabled:opacity-45 disabled:cursor-not-allowed flex items-center justify-center shrink-0 shadow-sm transition-all active:scale-95"
+            >
+              {isSavingVoice ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+            </button>
+          </div>
+
+          {studioFeedback && (
+            <div className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
+              <Check className="w-4 h-4 shrink-0" />
+              <span>{studioFeedback}</span>
+            </div>
+          )}
         </div>
 
         {/* Personalized Pronunciation Dictionary (Từ điển phát âm cá nhân) */}
@@ -1605,7 +1204,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5 min-w-0">
                 <Volume2 className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-                <h2 className="text-[13px] font-semibold truncate">Giọng đọc</h2>
+                <h2 className="text-[13px] font-semibold truncate">{strings.readingVoice}</h2>
                 <button
                   type="button"
                   onClick={() => toggleDisclosure('voice-help')}
@@ -2224,7 +1823,7 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
             <div className="flex items-center gap-1.5 min-w-0">
               <Music className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
               <h2 className="text-[13px] font-sans font-semibold text-stone-900 dark:text-stone-100 truncate">
-                Nhạc nền
+                {strings.ambientMusic}
               </h2>
             </div>
             <button
@@ -2254,6 +1853,50 @@ export const VoiceStudioView: React.FC<VoiceStudioViewProps> = ({
           onDeleteCustomTrack={onDeleteCustomAmbientTrack}
         />
       </section>
+
+      {/* Save Cloned Voice Confirmation Dialog: "Lưu giọng - [Tên giọng]" */}
+      <IosSheet
+        isOpen={showSaveConfirmModal}
+        onClose={() => setShowSaveConfirmModal(false)}
+        variant="center-dialog"
+        zIndexClass="z-[85]"
+        ariaLabel={`${strings.saveVoiceConfirmPrefix} - ${studioName.trim()}`}
+        testId="save-voice-confirm-dialog"
+        panelClassName="ios-frosted-surface w-full max-w-xs rounded-[22px] text-stone-900 dark:text-stone-100 p-4 space-y-3.5 font-sans shadow-2xl"
+      >
+        <div className="space-y-1.5">
+          <h3
+            data-testid="save-voice-confirm-title"
+            className="text-[14px] font-semibold text-stone-900 dark:text-stone-100 leading-snug"
+          >
+            {strings.saveVoiceConfirmPrefix} - {studioName.trim()}
+          </h3>
+          <p className="text-[11.5px] text-stone-500 dark:text-stone-400 leading-relaxed">
+            {builderImportedVoice?.fileName}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            type="button"
+            data-testid="cancel-save-voice-btn"
+            onClick={() => setShowSaveConfirmModal(false)}
+            className="h-10 rounded-xl border border-stone-300 dark:border-stone-700 bg-white/80 dark:bg-stone-900 text-xs font-semibold text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800"
+          >
+            {strings.cancel}
+          </button>
+          <button
+            type="button"
+            data-testid="confirm-save-voice-btn"
+            disabled={isSavingVoice}
+            onClick={() => void handleSaveStudioVoice()}
+            className="h-10 rounded-xl bg-amber-800 hover:bg-amber-900 text-white text-xs font-semibold disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+          >
+            {isSavingVoice ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+            <span>{strings.accept}</span>
+          </button>
+        </div>
+      </IosSheet>
 
       {/* Long-Press Context Sheet for Voices & Fonts */}
       <LongPressActionSheet

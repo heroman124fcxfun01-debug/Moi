@@ -76,6 +76,8 @@ import {
   type DriveItemRef,
   type DuplicateScanResult,
 } from '../utils/googleDriveSync';
+import { useI18n } from '../contexts/LanguageContext';
+import { APP_LANGUAGE_OPTIONS } from '../utils/i18n';
 import {
   LANGUAGE_PACK_CATALOG,
   downloadLanguagePackToApp,
@@ -159,6 +161,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
   onUpdateBasicSettings,
   onApplySyncedLibrary,
 }) => {
+  const { strings } = useI18n();
   const syncFileInputRef = useRef<HTMLInputElement>(null);
   const matchBookInputRef = useRef<HTMLInputElement>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
@@ -931,12 +934,12 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           >
             <div className="flex items-center gap-1.5">
               <Settings className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-[13px] font-semibold">Cơ bản</h2>
+              <h2 className="text-[13px] font-semibold">{strings.basicShortHeading}</h2>
             </div>
 
             <div className="space-y-1.5">
               <span className="block text-[11px] font-medium text-stone-600 dark:text-stone-400">
-                Giao diện
+                {strings.themeLabel}
               </span>
               <div
                 ref={themeBarRef}
@@ -949,8 +952,8 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 />
                 {(
                   [
-                    { id: 'light', label: 'Sáng', icon: Sun },
-                    { id: 'dark', label: 'Tối', icon: Moon },
+                    { id: 'light', label: strings.themeLight, icon: Sun },
+                    { id: 'dark', label: strings.themeDark, icon: Moon },
                     { id: 'amoled', label: 'AMOLED', icon: Smartphone },
                   ] as const
                 ).map((item) => {
@@ -978,7 +981,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
 
             <div className="space-y-2 pt-2 border-t border-stone-100 dark:border-stone-800 text-[11px]">
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Chạm lật trang</span>
+                <span>{strings.tapToTurnPageLabel}</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.tapToTurnPage}
@@ -990,7 +993,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Giữ sáng màn</span>
+                <span>{strings.keepScreenAwakeLabel}</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.keepScreenAwake}
@@ -1002,7 +1005,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Tự mở sách cũ</span>
+                <span>{strings.autoResumeLastBookLabel}</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.autoResumeLastBook}
@@ -1014,7 +1017,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
               </label>
 
               <label className="flex items-center justify-between gap-2.5 cursor-pointer py-0.5">
-                <span>Phím âm lượng</span>
+                <span>{strings.volumeKeyPageTurnLabel}</span>
                 <input
                   type="checkbox"
                   checked={basicSettings.volumeKeyPageTurn !== false}
@@ -1025,24 +1028,18 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                 />
               </label>
 
-              {/* 3-Language System Selector: Tiếng Việt / English / 中文 */}
-              <div className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-1.5">
-                <span className="block text-[11px] font-medium text-stone-600 dark:text-stone-400">
-                  Ngôn ngữ hệ thống
+              {/* Compact 50% Smaller 3-Language System Selector: Tiếng Việt / English / 中文 */}
+              <div className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-1">
+                <span className="block text-[10.5px] font-medium text-stone-600 dark:text-stone-400">
+                  {strings.languageLabel}
                 </span>
                 <div
                   role="radiogroup"
-                  aria-label="Ngôn ngữ hệ thống"
+                  aria-label={strings.languageLabel}
                   data-testid="system-language-selector"
-                  className="grid grid-cols-3 gap-1.5"
+                  className="grid grid-cols-3 gap-1"
                 >
-                  {(
-                    [
-                      { id: 'vi', label: 'Tiếng Việt' },
-                      { id: 'en', label: 'English' },
-                      { id: 'zh', label: '中文' },
-                    ] as const
-                  ).map((lang) => {
+                  {APP_LANGUAGE_OPTIONS.map((lang) => {
                     const active = (basicSettings.appLanguage || 'vi') === lang.id;
                     return (
                       <button
@@ -1052,13 +1049,16 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                         aria-checked={active}
                         data-testid={`lang-btn-${lang.id}`}
                         onClick={() => onUpdateBasicSettings({ appLanguage: lang.id })}
-                        className={`ios-elevated-oval py-1.5 px-2 rounded-full text-[10.5px] font-semibold border transition-colors ${
+                        className={`ios-elevated-oval py-1 px-1.5 rounded-full text-[9.5px] font-semibold leading-none min-h-[24px] border inline-flex items-center justify-center gap-1 whitespace-nowrap transition-colors ${
                           active
                             ? 'bg-amber-800 text-white border-amber-800'
                             : 'bg-white dark:bg-[#1C1E24] text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700 hover:border-amber-700'
                         }`}
                       >
-                        {lang.label}
+                        <span className="text-[10px] leading-none" aria-hidden="true">
+                          {lang.flag}
+                        </span>
+                        <span className="truncate">{lang.label}</span>
                       </button>
                     );
                   })}
@@ -1074,7 +1074,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
           >
             <div className="flex items-center gap-1.5">
               <Palette className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
-              <h2 className="text-[13px] font-semibold">Màu &amp; Ảnh nền</h2>
+              <h2 className="text-[13px] font-semibold">{strings.appearanceHeading}</h2>
             </div>
 
             {(() => {
@@ -1113,7 +1113,7 @@ export const SettingsSyncView: React.FC<SettingsSyncViewProps> = ({
                       />
                       <span className="min-w-0">
                         <span className="block text-[10px] text-stone-500 leading-none">
-                          Màu chủ đạo
+                          {strings.accentColorLabel}
                         </span>
                         <span className="block text-[11.5px] font-semibold text-stone-900 dark:text-stone-100 truncate mt-0.5">
                           {activeColorName}

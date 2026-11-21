@@ -14,7 +14,9 @@ import {
 import { buildUnifiedFontCatalog } from '../utils/studioCatalog';
 import { getVintagePaperTextureStyles } from '../utils/readerEffects';
 import { DEFAULT_READER_SETTINGS } from '../utils/storage';
+import { useI18n } from '../contexts/LanguageContext';
 import { IosSheet } from './IosSheet';
+import { PressHoldSlider } from './PressHoldSlider';
 
 interface ReaderSettingsDrawerProps {
   isOpen: boolean;
@@ -26,14 +28,11 @@ interface ReaderSettingsDrawerProps {
   onAddCustomFont: (font: CustomFontAsset) => Promise<void>;
 }
 
-const THREE_TURN_MODES: Array<{
-  id: 'slide' | 'scroll' | 'curl';
-  label: string;
-  desc: string;
-}> = [
-  { id: 'slide', label: 'Trượt ngang mờ dần', desc: 'Kéo trang sang ngang, mờ dần khi rời tay' },
-  { id: 'scroll', label: 'Lướt dọc', desc: 'Cuộn liên tục mượt mà' },
-  { id: 'curl', label: 'Lật cong góc 3D', desc: 'Uốn cong góc phải dưới lên như sách thật' },
+const PAGE_WIDTH_STEPS: Array<{ id: PageWidthOption; valueLabel: string }> = [
+  { id: 'narrow', valueLabel: '560px' },
+  { id: 'medium', valueLabel: '680px' },
+  { id: 'wide', valueLabel: '820px' },
+  { id: 'full', valueLabel: '100%' },
 ];
 
 export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
@@ -45,6 +44,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   customFonts,
   onAddCustomFont,
 }) => {
+  const { strings } = useI18n();
   const fontInputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<ReaderSettings>(settings);
   const [isDesktop, setIsDesktop] = useState(() =>
@@ -67,8 +67,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   }, []);
 
   const unifiedFonts = useMemo(() => buildUnifiedFontCatalog(customFonts), [customFonts]);
-  const selectedFontItem =
-    unifiedFonts.find((f) => f.cssValue === draft.fontFamily) || unifiedFonts[0];
 
   const updateDraft = (patch: Partial<ReaderSettings>) => {
     setDraft((prev) => ({ ...prev, ...patch }));
@@ -95,6 +93,18 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
       ? 'curl'
       : 'slide';
 
+  const turnModes: Array<{ id: 'slide' | 'scroll' | 'curl'; label: string }> = [
+    { id: 'slide', label: strings.turnSlide },
+    { id: 'scroll', label: strings.turnScroll },
+    { id: 'curl', label: strings.turnCurl },
+  ];
+
+  const currentWidthIdx = Math.max(
+    0,
+    PAGE_WIDTH_STEPS.findIndex((w) => w.id === draft.pageWidth)
+  );
+  const currentWidthMeta = PAGE_WIDTH_STEPS[currentWidthIdx] || PAGE_WIDTH_STEPS[1];
+
   const innerContent = (
     <>
       <div className="flex items-center justify-between gap-2 px-3.5 sm:px-4 py-2 border-b border-stone-300/40 dark:border-white/10 shrink-0">
@@ -106,14 +116,16 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                 onClose();
                 onBackToToolsMenu();
               }}
-              aria-label="Quay lại tùy chọn đọc sách"
+              aria-label={strings.back}
               className="inline-flex items-center gap-0.5 px-2 py-1 -ml-1 rounded-full bg-black/5 dark:bg-white/10 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:bg-black/10 shrink-0"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
-              <span>Quay lại</span>
+              <span>{strings.back}</span>
             </button>
           )}
-          <h2 className="text-[13px] font-display font-semibold truncate">Chữ, Nền &amp; Lề trang</h2>
+          <h2 className="text-[13px] font-display font-semibold truncate">
+            {strings.pageAndBgTitle}
+          </h2>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
@@ -123,7 +135,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
               setDraft(reset);
               onUpdateSettings(reset);
             }}
-            aria-label="Khôi phục mặc định cài đặt đọc"
+            aria-label="Reset"
             className="p-1.5 rounded-md text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-200/60 dark:hover:bg-stone-800"
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -131,7 +143,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           <button
             type="button"
             onClick={commitAndClose}
-            aria-label="Đóng bảng tùy chỉnh"
+            aria-label={strings.close}
             className="p-1.5 rounded-md text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-200/60 dark:hover:bg-stone-800"
           >
             <X className="w-3.5 h-3.5" />
@@ -140,154 +152,146 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
       </div>
 
       <div className="overflow-y-auto overscroll-contain min-h-0 px-3.5 sm:px-4 py-2.5 space-y-3 text-xs">
-        {/* Compact 2-Column Parallel Typography & Margin Sliders (First for Instant Live Adjustment) */}
+        {/* Compact 2-Column Parallel Typography & Margin Sliders (Press-and-Hold + Drag ONLY, anti-accidental tap) */}
         <section
           data-testid="reader-sliders-grid-section"
           className="space-y-2 min-w-0"
         >
           <h3 className="text-[11px] font-semibold text-stone-800 dark:text-stone-200">
-            Cỡ chữ, Giãn dòng &amp; Lề trang (px)
+            {strings.slidersHeading}
           </h3>
 
           <div
             data-testid="reader-sliders-2col-grid"
             className="grid grid-cols-2 gap-x-3 gap-y-2"
           >
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Cỡ chữ</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.fontSize}</span>
                 <span>{draft.fontSize}px</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-font-size"
+              </div>
+              <PressHoldSlider
+                testId="slider-font-size"
+                ariaLabel={strings.fontSize}
                 min={14}
                 max={32}
                 step={1}
                 value={draft.fontSize}
-                onChange={(e) => updateDraft({ fontSize: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ fontSize: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Giãn dòng</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.lineHeight}</span>
                 <span>{draft.lineHeight.toFixed(2)}</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-line-height"
+              </div>
+              <PressHoldSlider
+                testId="slider-line-height"
+                ariaLabel={strings.lineHeight}
                 min={1.3}
                 max={2.3}
                 step={0.05}
                 value={draft.lineHeight}
-                onChange={(e) => updateDraft({ lineHeight: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ lineHeight: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Khoảng cách đoạn</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.paragraphSpacing}</span>
                 <span>{draft.paragraphSpacing}px</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-paragraph-spacing"
+              </div>
+              <PressHoldSlider
+                testId="slider-paragraph-spacing"
+                ariaLabel={strings.paragraphSpacing}
                 min={4}
                 max={36}
                 step={2}
                 value={draft.paragraphSpacing}
-                onChange={(e) => updateDraft({ paragraphSpacing: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ paragraphSpacing: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Giãn chữ</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.letterSpacing}</span>
                 <span>{draft.letterSpacing.toFixed(2)}em</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-letter-spacing"
+              </div>
+              <PressHoldSlider
+                testId="slider-letter-spacing"
+                ariaLabel={strings.letterSpacing}
                 min={-0.02}
                 max={0.08}
                 step={0.01}
                 value={draft.letterSpacing}
-                onChange={(e) => updateDraft({ letterSpacing: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ letterSpacing: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Độ đậm</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.fontWeight}</span>
                 <span>{draft.fontWeight}</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-font-weight"
+              </div>
+              <PressHoldSlider
+                testId="slider-font-weight"
+                ariaLabel={strings.fontWeight}
                 min={300}
                 max={700}
                 step={100}
                 value={draft.fontWeight}
-                onChange={(e) => updateDraft({ fontWeight: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ fontWeight: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Lề trên</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.marginTop}</span>
                 <span>{draft.marginTopPx ?? 12}px</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-margin-top"
+              </div>
+              <PressHoldSlider
+                testId="slider-margin-top"
+                ariaLabel={strings.marginTop}
                 min={0}
                 max={64}
                 step={2}
                 value={draft.marginTopPx ?? 12}
-                onChange={(e) => updateDraft({ marginTopPx: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ marginTopPx: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Lề dưới</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.marginBottom}</span>
                 <span>{draft.marginBottomPx ?? 20}px</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-margin-bottom"
+              </div>
+              <PressHoldSlider
+                testId="slider-margin-bottom"
+                ariaLabel={strings.marginBottom}
                 min={0}
                 max={64}
                 step={2}
                 value={draft.marginBottomPx ?? 20}
-                onChange={(e) => updateDraft({ marginBottomPx: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ marginBottomPx: v })}
               />
-            </label>
+            </div>
 
-            <label className="block space-y-0.5 min-w-0">
-              <span className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
-                <span>Lề ngang</span>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex justify-between text-[10.5px] text-stone-500 tabular-nums">
+                <span>{strings.marginHorizontal}</span>
                 <span>{draft.marginHorizontalPx ?? 16}px</span>
-              </span>
-              <input
-                type="range"
-                data-testid="slider-margin-horizontal"
+              </div>
+              <PressHoldSlider
+                testId="slider-margin-horizontal"
+                ariaLabel={strings.marginHorizontal}
                 min={4}
                 max={56}
                 step={2}
                 value={draft.marginHorizontalPx ?? 16}
-                onChange={(e) => updateDraft({ marginHorizontalPx: Number(e.target.value) })}
-                className="w-full h-1.5 accent-amber-800"
+                onChange={(v) => updateDraft({ marginHorizontalPx: v })}
               />
-            </label>
+            </div>
           </div>
         </section>
 
@@ -295,10 +299,10 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
         <section className="space-y-1.5 pt-2.5 border-t border-stone-200 dark:border-stone-800 min-w-0">
           <div className="flex items-center justify-between gap-2 min-w-0">
             <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-              Màu nền &amp; Giấy sách
+              {strings.paperThemeHeading}
             </h3>
-            <span className="text-[10px] text-amber-800 dark:text-amber-400 shrink-0">
-              {PAPER_THEMES.length} mẫu
+            <span className="text-[10px] text-amber-800 dark:text-amber-400 shrink-0 tabular-nums">
+              {PAPER_THEMES.length}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-1.5">
@@ -345,14 +349,14 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                   : 'border-stone-300 dark:border-stone-700'
               }`}
             >
-              Màu tự chọn
+              {strings.customColor}
             </button>
             <div className="flex items-center gap-3">
               <label className="flex items-center gap-1 text-[11px]">
-                <span className="text-stone-500">Nền</span>
+                <span className="text-stone-500">{strings.bgColor}</span>
                 <input
                   type="color"
-                  aria-label="Chọn màu nền tùy chỉnh"
+                  aria-label={strings.bgColor}
                   value={draft.customBgColor}
                   onChange={(e) =>
                     updateDraft({
@@ -364,10 +368,10 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                 />
               </label>
               <label className="flex items-center gap-1 text-[11px]">
-                <span className="text-stone-500">Chữ</span>
+                <span className="text-stone-500">{strings.textColor}</span>
                 <input
                   type="color"
-                  aria-label="Chọn màu chữ tùy chỉnh"
+                  aria-label={strings.textColor}
                   value={draft.customTextColor}
                   onChange={(e) =>
                     updateDraft({
@@ -382,42 +386,44 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           </div>
 
           <div className="grid grid-cols-2 gap-3 pt-1">
-            <label className="space-y-1">
-              <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-                <span>Độ sáng</span>
+            <div className="space-y-0.5">
+              <div className="flex justify-between text-[11px] text-stone-500 tabular-nums">
+                <span>{strings.brightness}</span>
                 <span>{draft.brightness}%</span>
-              </span>
-              <input
-                type="range"
+              </div>
+              <PressHoldSlider
+                testId="slider-brightness"
+                ariaLabel={strings.brightness}
                 min={60}
                 max={115}
+                step={1}
                 value={draft.brightness}
-                onChange={(e) => updateDraft({ brightness: Number(e.target.value) })}
-                className="w-full accent-amber-800"
+                onChange={(v) => updateDraft({ brightness: v })}
               />
-            </label>
-            <label className="space-y-1">
-              <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-                <span>Ánh vàng dịu</span>
+            </div>
+            <div className="space-y-0.5">
+              <div className="flex justify-between text-[11px] text-stone-500 tabular-nums">
+                <span>{strings.warmthYellow}</span>
                 <span>{draft.warmth}%</span>
-              </span>
-              <input
-                type="range"
+              </div>
+              <PressHoldSlider
+                testId="slider-warmth"
+                ariaLabel={strings.warmthYellow}
                 min={0}
                 max={45}
+                step={1}
                 value={draft.warmth}
-                onChange={(e) => updateDraft({ warmth: Number(e.target.value) })}
-                className="w-full accent-amber-800"
+                onChange={(v) => updateDraft({ warmth: v })}
               />
-            </label>
+            </div>
           </div>
         </section>
 
-        {/* Compact Half-Width Scrollable Font Family Picker */}
+        {/* Compact Font Picker — NO redundant preview box (text updates live on the page behind) */}
         <section className="space-y-2 pt-3 border-t border-stone-200 dark:border-stone-800 min-w-0">
           <div className="flex items-center justify-between gap-2 min-w-0">
             <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200 shrink-0">
-              Phông chữ ({unifiedFonts.length})
+              {strings.fontsHeading} ({unifiedFonts.length})
             </h3>
             <input
               ref={fontInputRef}
@@ -432,75 +438,49 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
               className="ios-pressable inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50/90 dark:bg-amber-950/40 border border-amber-700/25 text-[10.5px] font-medium text-amber-800 dark:text-amber-300"
             >
               <Upload className="w-3 h-3 shrink-0" />
-              <span>Thêm phông</span>
+              <span>{strings.addFont}</span>
             </button>
           </div>
 
-          <div className="flex items-stretch gap-2.5 min-w-0">
-            <div
-              role="listbox"
-              data-testid="reader-font-picker-box"
-              aria-label="Danh sách phông chữ đọc sách"
-              className="w-1/2 shrink-0 max-h-[164px] overflow-y-auto overscroll-contain rounded-xl border border-stone-200 dark:border-stone-800 divide-y divide-stone-100 dark:divide-stone-800/80 bg-white dark:bg-stone-900/70"
-            >
-              {unifiedFonts.map((f) => {
-                const active = draft.fontFamily === f.cssValue;
-                return (
-                  <button
-                    key={f.id}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    onClick={() => updateDraft({ fontFamily: f.cssValue })}
-                    className={`ios-pressable w-full px-2.5 py-2 text-left flex items-center justify-between gap-1.5 transition-colors ${
-                      active
-                        ? 'bg-amber-50/90 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 font-semibold'
-                        : 'hover:bg-stone-50 dark:hover:bg-stone-800/60 text-stone-800 dark:text-stone-200'
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div style={{ fontFamily: f.cssValue }} className="text-[11.5px] truncate">
-                        {f.name}
-                      </div>
-                      <div className="text-[9.5px] text-stone-500 truncate">{f.origin}</div>
-                    </div>
-                    {active && <Check className="w-3 h-3 text-amber-700 shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="flex-1 min-w-0 rounded-xl border border-stone-200/80 dark:border-stone-800 bg-stone-50/90 dark:bg-stone-900/50 p-2.5 flex flex-col justify-between gap-1.5">
-              <div className="min-w-0">
-                <div className="text-[9.5px] text-stone-500 truncate">Đang chọn</div>
-                <div
-                  style={{ fontFamily: draft.fontFamily }}
-                  className="text-[13px] font-semibold text-stone-900 dark:text-stone-100 truncate mt-0.5"
+          <div
+            role="listbox"
+            data-testid="reader-font-picker-box"
+            aria-label={strings.fontsHeading}
+            className="w-full max-h-[144px] overflow-y-auto overscroll-contain rounded-xl border border-stone-200 dark:border-stone-800 divide-y divide-stone-100 dark:divide-stone-800/80 bg-white dark:bg-stone-900/70"
+          >
+            {unifiedFonts.map((f) => {
+              const active = draft.fontFamily === f.cssValue;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => updateDraft({ fontFamily: f.cssValue })}
+                  className={`ios-pressable w-full px-3 py-2 text-left flex items-center justify-between gap-2 transition-colors ${
+                    active
+                      ? 'bg-amber-50/90 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 font-semibold'
+                      : 'hover:bg-stone-50 dark:hover:bg-stone-800/60 text-stone-800 dark:text-stone-200'
+                  }`}
                 >
-                  {selectedFontItem?.name || 'Mặc định'}
-                </div>
-              </div>
-              <div
-                style={{ fontFamily: draft.fontFamily }}
-                className="text-[15px] leading-snug text-stone-700 dark:text-stone-300 line-clamp-3"
-              >
-                Aa Bb Cc · Tiếng Việt rõ nét, dịu mắt.
-              </div>
-              <div className="text-[9.5px] text-stone-500 truncate">
-                {selectedFontItem?.origin || 'Phông hệ thống'}
-              </div>
-            </div>
+                  <span style={{ fontFamily: f.cssValue }} className="text-[12px] truncate">
+                    {f.name}
+                  </span>
+                  {active && <Check className="w-3.5 h-3.5 text-amber-700 shrink-0" />}
+                </button>
+              );
+            })}
           </div>
         </section>
 
-        {/* Strict 3-Option Page Turn & Layout Selector */}
+        {/* Minimal Page Turn Selector — ONLY Mode Names, ZERO Descriptions */}
         <section className="space-y-2 pt-2.5 border-t border-stone-200 dark:border-stone-800">
           <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-            Chế độ lật trang
+            {strings.pageTurnModeHeading}
           </h3>
 
-          <div className="space-y-1.5">
-            {THREE_TURN_MODES.map((opt) => {
+          <div data-testid="page-turn-mode-list" className="space-y-1.5">
+            {turnModes.map((opt) => {
               const active = activeThreeMode === opt.id;
               return (
                 <button
@@ -521,10 +501,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                       : 'border-stone-200 dark:border-stone-800 text-stone-800 dark:text-stone-200'
                   }`}
                 >
-                  <div className="min-w-0">
-                    <div className="text-[11.5px]">{opt.label}</div>
-                    <div className="text-[10px] text-stone-500">{opt.desc}</div>
-                  </div>
+                  <span className="text-[11.5px] truncate">{opt.label}</span>
                   {active && <Check className="w-3.5 h-3.5 text-amber-700 shrink-0" />}
                 </button>
               );
@@ -542,7 +519,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                     : 'border-stone-300 dark:border-stone-700'
                 }`}
               >
-                1 trang đơn
+                {strings.singlePage}
               </button>
               <button
                 type="button"
@@ -553,43 +530,61 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
                     : 'border-stone-300 dark:border-stone-700'
                 }`}
               >
-                2 trang sách mở
+                {strings.twoPages}
               </button>
             </div>
           )}
 
-          <div>
-            <span className="block text-[11px] text-stone-500 mb-1">Độ rộng khung chữ</span>
-            <div className="grid grid-cols-4 gap-1.5">
-              {(
-                [
-                  { id: 'narrow', label: 'Hẹp' },
-                  { id: 'medium', label: 'Chuẩn' },
-                  { id: 'wide', label: 'Rộng' },
-                  { id: 'full', label: 'Tràn lề' },
-                ] as Array<{ id: PageWidthOption; label: string }>
-              ).map((w) => (
-                <button
-                  key={w.id}
-                  type="button"
-                  onClick={() => updateDraft({ pageWidth: w.id })}
-                  className={`py-1.5 rounded-md border text-[11px] ${
-                    draft.pageWidth === w.id
-                      ? 'border-amber-700 bg-amber-50 dark:bg-amber-950/30 font-semibold'
-                      : 'border-stone-300 dark:border-stone-700'
-                  }`}
-                >
-                  {w.label}
-                </button>
-              ))}
+          {/* Single Horizontal Row: Độ rộng khung chữ [value] [-] [+] */}
+          <div
+            data-testid="page-width-stepper-row"
+            className="flex items-center justify-between gap-2 pt-0.5"
+          >
+            <span className="text-[11.5px] font-medium text-stone-700 dark:text-stone-300 truncate">
+              {strings.pageWidthLabel}
+            </span>
+            <div className="inline-flex items-center gap-1.5 shrink-0">
+              <span
+                data-testid="page-width-value"
+                className="text-[11px] font-semibold tabular-nums text-stone-600 dark:text-stone-300 min-w-[40px] text-right"
+              >
+                {currentWidthMeta.valueLabel}
+              </span>
+              <button
+                type="button"
+                data-testid="page-width-dec-btn"
+                disabled={currentWidthIdx <= 0}
+                onClick={() => {
+                  const prev = PAGE_WIDTH_STEPS[Math.max(0, currentWidthIdx - 1)];
+                  if (prev) updateDraft({ pageWidth: prev.id });
+                }}
+                aria-label="Giảm độ rộng khung chữ"
+                className="w-7 h-7 rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-sm font-semibold hover:border-amber-700 disabled:opacity-35 flex items-center justify-center"
+              >
+                −
+              </button>
+              <button
+                type="button"
+                data-testid="page-width-inc-btn"
+                disabled={currentWidthIdx >= PAGE_WIDTH_STEPS.length - 1}
+                onClick={() => {
+                  const next =
+                    PAGE_WIDTH_STEPS[Math.min(PAGE_WIDTH_STEPS.length - 1, currentWidthIdx + 1)];
+                  if (next) updateDraft({ pageWidth: next.id });
+                }}
+                aria-label="Tăng độ rộng khung chữ"
+                className="w-7 h-7 rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-sm font-semibold hover:border-amber-700 disabled:opacity-35 flex items-center justify-center"
+              >
+                +
+              </button>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-1.5">
             {(
               [
-                { id: 'justify', label: 'Canh đều hai bên' },
-                { id: 'left', label: 'Canh trái' },
+                { id: 'justify', label: strings.alignJustify },
+                { id: 'left', label: strings.alignLeft },
               ] as Array<{ id: TextAlignOption; label: string }>
             ).map((al) => (
               <button
@@ -609,7 +604,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
 
           <div className="space-y-2 pt-1 text-[11.5px]">
             <label className="flex items-center justify-between cursor-pointer">
-              <span>Chữ cái lớn đầu chương (Drop Cap)</span>
+              <span>{strings.dropCapLabel}</span>
               <input
                 type="checkbox"
                 checked={draft.dropCap}
@@ -618,7 +613,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
               />
             </label>
             <label className="flex items-center justify-between cursor-pointer">
-              <span>Thụt đầu dòng mỗi đoạn văn</span>
+              <span>{strings.firstLineIndentLabel}</span>
               <input
                 type="checkbox"
                 checked={draft.firstLineIndent}
@@ -629,21 +624,20 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           </div>
 
           {draft.readingMode === 'scroll' && (
-            <label className="block space-y-1 pt-1">
-              <span className="flex justify-between text-[11px] text-stone-500 tabular-nums">
-                <span>Tự động cuộn trang</span>
-                <span>{draft.autoScrollSpeed === 0 ? 'Tắt' : `Mức ${draft.autoScrollSpeed}`}</span>
-              </span>
-              <input
-                type="range"
+            <div className="space-y-1 pt-1">
+              <div className="flex justify-between text-[11px] text-stone-500 tabular-nums">
+                <span>{strings.autoScrollLabel}</span>
+                <span>{draft.autoScrollSpeed === 0 ? strings.off : `${draft.autoScrollSpeed}`}</span>
+              </div>
+              <PressHoldSlider
+                ariaLabel={strings.autoScrollLabel}
                 min={0}
                 max={5}
                 step={1}
                 value={draft.autoScrollSpeed}
-                onChange={(e) => updateDraft({ autoScrollSpeed: Number(e.target.value) })}
-                className="w-full accent-amber-800"
+                onChange={(v) => updateDraft({ autoScrollSpeed: v })}
               />
-            </label>
+            </div>
           )}
         </section>
       </div>
@@ -655,7 +649,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
           onClick={commitAndClose}
           className="w-full py-2 rounded-xl bg-amber-800 text-white text-xs font-semibold hover:bg-amber-900 transition-colors"
         >
-          Xong
+          {strings.done}
         </button>
       </div>
     </>
@@ -665,7 +659,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
     <IosSheet
       isOpen={isOpen}
       onClose={commitAndClose}
-      ariaLabel="Tùy chỉnh giao diện trang đọc"
+      ariaLabel={strings.pageAndBgTitle}
       testId="reader-settings-drawer"
       variant={isDesktop ? 'drawer-right' : 'bottom-sheet'}
       inlineDesktop={isDesktop}

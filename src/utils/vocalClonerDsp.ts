@@ -417,8 +417,9 @@ export function resolveClonedVoiceSynthesis(input: {
   name: string;
   embedding: SpeakerEmbeddingVector;
   tone: VoiceToneSettings;
-  ageGroup: VoiceAgeGroup;
-  personality: VoicePersonality;
+  ageGroup?: VoiceAgeGroup;
+  personality?: VoicePersonality;
+  readingStyle?: string;
   voiceStyle?: string;
   instruction?: string;
   overrideGender?: 'male' | 'female';
@@ -471,7 +472,7 @@ export function resolveClonedVoiceSynthesis(input: {
     ageGroup: input.ageGroup,
     personality: input.personality,
     instruction: input.instruction || tone.styleDirection || '',
-    voiceStyle: input.voiceStyle,
+    voiceStyle: input.voiceStyle || input.readingStyle,
     sampleSignature: `${embedding.vectorId}:${embedding.f0Hz}:${embedding.spectralCentroidHz}`,
     acousticSpeedFactor: effectiveSpeed,
     acousticWarmthDb: mergedWarmthDb,

@@ -47,6 +47,7 @@ import { BookShowcase3D } from './BookShowcase3D';
 import { GlassSelect } from './GlassSelect';
 import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
 import { TwoTapDeleteButton } from './TwoTapDeleteButton';
+import { useI18n } from '../contexts/LanguageContext';
 
 interface LibraryViewProps {
   books: Book[];
@@ -95,6 +96,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onRestoreSamples,
   focusCollectionSignal = null,
 }) => {
+  const { strings } = useI18n();
   const coverInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [shelfTab, setShelfTab] = useState<LibraryShelfTab>('all');
@@ -474,13 +476,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         >
           <div className="flex items-center gap-1.5 text-[10.5px] font-sans font-semibold text-amber-800 dark:text-amber-400">
             <Clock className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">Thời gian đọc</span>
+            <span className="truncate">{strings.readingTime}</span>
           </div>
 
           <div className="space-y-1 mt-1 min-w-0">
             <div className="min-w-0">
               <div className="text-[9.5px] text-stone-500 dark:text-stone-400 leading-tight">
-                Tổng giờ đọc
+                {strings.totalReadingHours}
               </div>
               <button
                 type="button"
@@ -500,7 +502,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
             <div className="min-w-0">
               <div className="text-[9px] text-stone-500 dark:text-stone-400 leading-tight truncate">
-                Ngày / Tuần / Tháng / T.trước
+                {strings.periodRowLabel}
               </div>
               <div className="text-[10.5px] sm:text-[11px] font-semibold text-stone-800 dark:text-stone-200 tabular-nums leading-snug break-words">
                 {readingSummary.todayLabel} / {readingSummary.weekLabel} / {readingSummary.thisMonthLabel} / {readingSummary.prevMonthLabel}
@@ -508,7 +510,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             </div>
 
             <div className="pt-1 border-t border-stone-100 dark:border-stone-800/80 flex items-baseline justify-between gap-1 text-[10px]">
-              <span className="text-stone-500 dark:text-stone-400 truncate">TB 1 ngày:</span>
+              <span className="text-stone-500 dark:text-stone-400 truncate">{strings.dailyAverageLabel}</span>
               <span className="font-bold text-amber-800 dark:text-amber-400 tabular-nums shrink-0">
                 {readingSummary.dailyAverageLabel}
               </span>
@@ -523,7 +525,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         >
           <div className="flex items-center justify-between gap-1 min-w-0">
             <h1 className="text-[10.5px] font-sans font-semibold text-stone-800 dark:text-stone-200 truncate">
-              Sách mới đọc
+              {strings.recentlyRead}
             </h1>
             {featuredBook && (
               <button
@@ -581,20 +583,20 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </span>
                 </div>
                 <div className="text-[10px] font-semibold text-amber-800 dark:text-amber-400">
-                  Đọc tiếp →
+                  {strings.continueReading} →
                 </div>
               </div>
             </button>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-center gap-1.5 py-2">
               <BookOpen className="w-6 h-6 text-stone-300 dark:text-stone-700" />
-              <p className="text-[10.5px] text-stone-500">Chưa có sách nào</p>
+              <p className="text-[10.5px] text-stone-500">{strings.noRecentBook}</p>
               <button
                 type="button"
                 onClick={onOpenImportModal}
                 className="text-[10.5px] font-semibold text-amber-800 dark:text-amber-400 hover:underline"
               >
-                + Thêm sách
+                + {strings.addBookBtn}
               </button>
             </div>
           )}
@@ -602,10 +604,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       </section>
 
       {/* 2. TIẾP THEO: KHO SÁCH RIÊNG & BỘ SƯU TẬP */}
-      <section aria-label="Thư viện riêng và Bộ sưu tập" className="space-y-3">
+      <section aria-label={strings.privateLibrary} className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
           <h2 className="text-[13.5px] sm:text-[15px] font-sans font-bold text-stone-900 dark:text-stone-100 whitespace-nowrap">
-            Kho sách riêng
+            {strings.privateLibrary}
           </h2>
           <div className="flex items-center gap-1.5 shrink-0">
             <button
@@ -615,7 +617,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               className="ios-elevated-oval ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-[#1C1E24] border border-stone-200/90 dark:border-zinc-700/60 text-[11px] font-semibold text-stone-700 dark:text-stone-200 hover:text-amber-800 whitespace-nowrap"
             >
               <Shield className="w-3 h-3 shrink-0 text-amber-800 dark:text-amber-400" />
-              <span>Ẩn danh</span>
+              <span>{strings.anonymousBtn}</span>
             </button>
             <button
               type="button"
@@ -623,7 +625,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               className="ios-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 whitespace-nowrap"
             >
               <Plus className="w-3 h-3 shrink-0" />
-              <span>Thêm sách</span>
+              <span>{strings.addBookBtn}</span>
             </button>
           </div>
         </div>
@@ -641,16 +643,16 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             />
             {(
               [
-                { id: 'all', label: `Tất cả (${books.length})` },
+                { id: 'all', label: `${strings.tabAll} (${books.length})` },
                 {
                   id: 'imported',
-                  label: `Sách đã cho vào (${books.filter((b) => b.sourceType !== 'web').length})`,
+                  label: `${strings.tabImported} (${books.filter((b) => b.sourceType !== 'web').length})`,
                 },
                 {
                   id: 'downloaded',
-                  label: `Sách tải về (${books.filter((b) => b.sourceType === 'web').length})`,
+                  label: `${strings.tabDownloaded} (${books.filter((b) => b.sourceType === 'web').length})`,
                 },
-                { id: 'collections', label: `Bộ sưu tập (${collections.length})` },
+                { id: 'collections', label: `${strings.tabCollections} (${collections.length})` },
               ] as const
             ).map((tab) => (
               <button
@@ -677,7 +679,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={
-                  shelfTab === 'collections' ? 'Tìm bộ sưu tập...' : 'Tìm sách, tác giả...'
+                  shelfTab === 'collections' ? strings.searchCollections : strings.searchBooks
                 }
                 aria-label="Tìm kiếm sách trong tủ"
                 className="w-full pl-8 pr-3 py-1.5 text-[11px] rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-900 dark:text-stone-100 focus:outline-none min-h-[34px]"

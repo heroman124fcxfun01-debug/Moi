@@ -61,7 +61,6 @@ import {
   analyzeChapterOnDevice,
   applyNarratorVoiceToCharacters,
   buildAutoVoiceAssignments,
-  CHARACTER_VOICE_POOL,
   computeReadingStyleModulation,
   READING_VOICE_STYLES,
 } from '../utils/onDeviceCharacterAI';
@@ -90,6 +89,12 @@ import { resolveApiUrl } from '../utils/apiClient';
 import { AmbientSoundPanel } from './AmbientSoundPanel';
 import { GlassSelect, type GlassSelectOption } from './GlassSelect';
 import { IosSheet } from './IosSheet';
+import { useI18n } from '../contexts/LanguageContext';
+import {
+  resolveDefaultCharacterAssignment,
+  resolveSpeechEngineRoute,
+  sliceRemainingSpeechFromCursor,
+} from '../utils/ttsRouter';
 
 interface AudiobookStudioDrawerProps {
   isOpen: boolean;
@@ -203,6 +208,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   onNextChapter,
   defaultVoice,
 }) => {
+  const { strings } = useI18n();
   const [ambientActiveCount, setAmbientActiveCount] = useState(
     () => Object.keys(ambientSoundManager.getSnapshot().activeVolumes).length
   );
@@ -302,6 +308,9 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
   const autoContinueChapterRef = useRef(false);
   const speedRef = useRef(playbackSpeed);
   const currentBatchIndexRef = useRef(currentBatchIndex);
+  const previewingIdRef = useRef<string | null>(previewingId);
+  previewingIdRef.current = previewingId;
+  const activeCursorCharInBatchRef = useRef<number>(0);
 
   // Live refs prevent stale closures during async playback loops & prevent page-turns from clobbering edits
   const bookRef = useRef(book);
@@ -581,7 +590,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         resolveNarratorAssignmentFromDefault(defaultVoiceRef.current, liveExt),
     };
     const autoMap = buildAutoVoiceAssignments(mergedAnalysis.characters, seededAssignments, {
-      inheritNarratorVoice: false,
+      inheritNarratorVoice: true,
     });
     onSaveChapterAnalysis(chapter.id, mergedAnalysis, autoMap);
     setScannedBookCharacters(bookScan.topCharacters.filter((c) => c.id !== 'narrator'));
@@ -731,6 +740,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     previewAbortRef.current = null;
     isPlayingRef.current = false;
     setIsPlaying(false);
+    previewingIdRef.current = null;
     setPreviewingId(null);
     stopAudioFocusKeepalive();
     if (hideBar) {
@@ -749,40 +759,31 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
   const getAssignment = (
     charId: string,
-    suggested?: GeminiVoiceName,
+    _suggested?: GeminiVoiceName,
     overrideMap?: Record<string, CharacterVoiceAssignment>
   ): CharacterVoiceAssignment => {
     const liveBook = bookRef.current;
     const liveExt = externalVoicesRef.current;
     const liveDefault = defaultVoiceRef.current;
-    const existing = overrideMap?.[charId] || liveBook.voiceAssignments?.[charId];
-    if (existing) {
-      const normalizedVoice: GeminiVoiceName = VALID_PRESET_VOICES.includes(
-        existing.geminiVoice
-      )
-        ? existing.geminiVoice
-        : 'Kore';
-      return { ...existing, geminiVoice: normalizedVoice };
-    }
+    const mapSource = overrideMap || liveBook.voiceAssignments;
+    const existing = mapSource?.[charId];
     if (charId === 'narrator') {
+      if (existing) {
+        const normalizedVoice: GeminiVoiceName = VALID_PRESET_VOICES.includes(
+          existing.geminiVoice
+        )
+          ? existing.geminiVoice
+          : 'Kore';
+        return { ...existing, geminiVoice: normalizedVoice };
+      }
       return resolveNarratorAssignmentFromDefault(liveDefault, liveExt);
     }
-    const fallbackVoice: GeminiVoiceName =
-      suggested && VALID_PRESET_VOICES.includes(suggested) ? suggested : 'Kore';
-    const charPreset = CHARACTER_VOICE_POOL.find((p) => p.voiceName === fallbackVoice);
-    return {
-      characterId: charId,
-      source: 'gemini',
-      geminiVoice: fallbackVoice,
-      stylePrompt: 'Tự nhiên theo ngữ cảnh nhân vật',
-      browserPitch: charPreset?.browserPitch ?? 1.0,
-      browserRate: charPreset?.browserRate ?? 1.0,
-      toneSettings: {
-        ...DEFAULT_VOICE_TONE,
-        pitch: charPreset?.browserPitch ?? 1.0,
-        rate: charPreset?.browserRate ?? 1.0,
-      },
-    };
+    const narratorBase = getAssignment('narrator', undefined, overrideMap);
+    const resolved = resolveDefaultCharacterAssignment(charId, narratorBase, mapSource);
+    const normalizedVoice: GeminiVoiceName = VALID_PRESET_VOICES.includes(resolved.geminiVoice)
+      ? resolved.geminiVoice
+      : 'Kore';
+    return { ...resolved, geminiVoice: normalizedVoice };
   };
 
   const narratorAssign = getAssignment('narrator', 'Kore');
@@ -896,39 +897,62 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       rate: assign.browserRate,
     };
 
-    if (assign.source === 'external' && assign.externalVoiceId) {
-      const ext = liveExt.find((v) => v.id === assign.externalVoiceId);
-      if (ext) {
-        const extSpeech = computeExternalVoiceSpeechParams(ext);
-        const modulated = computeReadingStyleModulation(
-          activeStyle,
-          emotionStyle,
-          extSpeech.pitch,
-          extSpeech.rate
-        );
-        const mergedTone: VoiceToneSettings = {
-          ...DEFAULT_VOICE_TONE,
-          warmthDb: extSpeech.warmthDb,
-          clarityDb: extSpeech.clarityDb,
-          pitch: modulated.pitch,
-          rate: modulated.rate,
-          styleDirection: extSpeech.stylePrompt,
-          ...(ext.toneSettings || {}),
-        };
+    const route = resolveSpeechEngineRoute(assign, liveExt, activeStyle);
+
+    if (route.engine === 'ON_DEVICE_CLONED') {
+      if (route.missingEmbeddingError || !route.externalVoice) {
         return {
-          voiceName: extSpeech.baseVoice,
-          stylePrompt: `${extSpeech.stylePrompt}. ${modulated.stylePrompt}`,
-          pitch: modulated.pitch,
-          rate: modulated.rate,
-          preferGender: extSpeech.preferGender,
-          voiceSlotIndex: extSpeech.voiceSlotIndex,
+          voiceName: assign.geminiVoice,
+          stylePrompt: assign.stylePrompt || '',
+          pitch: 1.0,
+          rate: 1.0,
+          preferGender: 'neutral' as const,
+          voiceSlotIndex: 0,
           voiceURI: undefined as string | undefined,
-          tone: mergedTone,
-          externalAsset: ext,
-          useAiTts: true,
-          useVoiceDesign: true,
+          tone: assignTone,
+          externalAsset: route.externalVoice,
+          speakerEmbedding: undefined as import('../types/book').SpeakerEmbeddingVector | undefined,
+          missingEmbeddingError:
+            route.missingEmbeddingError ||
+            'Giọng nhân bản chưa có Speaker Embedding. Hãy nạp lại file mẫu 5–8 giây.',
+          useAiTts: false,
+          useVoiceDesign: false,
         };
       }
+
+      const ext = route.externalVoice;
+      const extSpeech = computeExternalVoiceSpeechParams(ext);
+      const cloned = route.clonedSynthesis;
+      const modulated = computeReadingStyleModulation(
+        activeStyle,
+        emotionStyle,
+        cloned?.pitch ?? extSpeech.pitch,
+        cloned?.rate ?? extSpeech.rate
+      );
+      const mergedTone: VoiceToneSettings = {
+        ...DEFAULT_VOICE_TONE,
+        warmthDb: cloned?.warmthDb ?? extSpeech.warmthDb,
+        clarityDb: cloned?.clarityDb ?? extSpeech.clarityDb,
+        pitch: modulated.pitch,
+        rate: modulated.rate,
+        styleDirection: cloned?.stylePrompt || extSpeech.stylePrompt,
+        ...(ext.toneSettings || {}),
+      };
+      return {
+        voiceName: cloned?.baseVoice ?? extSpeech.baseVoice,
+        stylePrompt: `${cloned?.stylePrompt || extSpeech.stylePrompt}. ${modulated.stylePrompt}`,
+        pitch: modulated.pitch,
+        rate: modulated.rate,
+        preferGender: cloned?.gender ?? extSpeech.preferGender,
+        voiceSlotIndex: extSpeech.voiceSlotIndex,
+        voiceURI: undefined as string | undefined,
+        tone: mergedTone,
+        externalAsset: ext,
+        speakerEmbedding: route.embedding,
+        missingEmbeddingError: undefined as string | undefined,
+        useAiTts: true,
+        useVoiceDesign: true,
+      };
     }
 
     if (assign.source === 'browser' && assign.browserVoiceURI) {
@@ -948,6 +972,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         voiceURI: assign.browserVoiceURI,
         tone: assignTone,
         externalAsset: undefined,
+        speakerEmbedding: undefined as import('../types/book').SpeakerEmbeddingVector | undefined,
+        missingEmbeddingError: undefined as string | undefined,
         useAiTts: false,
         useVoiceDesign: false,
       };
@@ -983,6 +1009,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         rate: modulated.rate,
       },
       externalAsset: undefined,
+      speakerEmbedding: undefined as import('../types/book').SpeakerEmbeddingVector | undefined,
+      missingEmbeddingError: undefined as string | undefined,
       useAiTts: true,
       useVoiceDesign: false,
     };
@@ -1088,10 +1116,16 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     preferGender?: 'female' | 'male' | 'neutral',
     voiceSlotIndex = 0,
     speedOverride?: number,
-    spokenTextOverride?: string
+    spokenTextOverride?: string,
+    baseCharOffsetInBatch = 0,
+    fullBatchPreparedLen?: number
   ): Promise<boolean> => {
     const text = (spokenTextOverride ?? unit.combinedText).trim();
     if (!text) return true;
+    const totalBatchLen = Math.max(
+      1,
+      fullBatchPreparedLen ?? (baseCharOffsetInBatch + text.length)
+    );
     const activeSpeed = speedOverride ?? speedRef.current;
     const finalRate = Math.min(
       MAX_READING_SPEED,
@@ -1102,9 +1136,12 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     );
     let lastSyncedPara = -1;
 
-    const applyProgress = (ratio: number, explicitCharIndex?: number) => {
+    const applyProgress = (charIndexInSlice: number) => {
       if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
-      const resolved = resolveActiveHighlightInBatch(unit, ratio, explicitCharIndex);
+      const absBatchChar = Math.min(totalBatchLen, baseCharOffsetInBatch + Math.max(0, charIndexInSlice));
+      activeCursorCharInBatchRef.current = absBatchChar;
+      const absRatio = Math.min(0.99, absBatchChar / totalBatchLen);
+      const resolved = resolveActiveHighlightInBatch(unit, absRatio, absBatchChar);
       onHighlightParagraphRef.current(
         resolved.paragraphIndex,
         resolved.paragraphRatio,
@@ -1125,16 +1162,15 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       preferGender,
       voiceSlotIndex,
       onStart: () => {
-        applyProgress(0, 0);
+        applyProgress(0);
       },
       onBoundary: (charIndex) => {
-        if (text.length > 0) {
-          applyProgress(Math.min(0.99, charIndex / text.length), charIndex);
-        }
+        applyProgress(charIndex);
       },
     });
 
     if (ok && playbackRunIdRef.current === runId && isPlayingRef.current) {
+      activeCursorCharInBatchRef.current = totalBatchLen;
       const lastSpan = unit.spans[unit.spans.length - 1];
       if (lastSpan) {
         onHighlightParagraphRef.current(
@@ -1198,6 +1234,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     const units = batchedUnitsRef.current;
     if (units.length === 0) return;
     const idx = Math.max(0, Math.min(units.length - 1, currentBatchIndexRef.current));
+    // Preserve exact live reading cursor (position D) so switching voices NEVER resets back to A
+    const resumeCharOffset = Math.max(0, activeCursorCharInBatchRef.current);
 
     playbackRunIdRef.current += 1;
     const runId = playbackRunIdRef.current;
@@ -1205,7 +1243,10 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     activeAiTtsAbortRef.current = null;
     filteredPlayerRef.current?.stop();
     stopOnDeviceSpeech();
-    void playBatchAt(idx, runId, units, opts);
+    void playBatchAt(idx, runId, units, {
+      ...opts,
+      startCharOffsetInBatch: resumeCharOffset,
+    });
   };
 
   const startPlaybackAt = (
@@ -1223,6 +1264,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
     unlockAudioPlaybackSync();
     startAudioFocusKeepalive();
+    activeCursorCharInBatchRef.current = 0;
     playbackRunIdRef.current += 1;
     const runId = playbackRunIdRef.current;
     activeAiTtsAbortRef.current?.abort();
@@ -1244,6 +1286,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       voiceOverrides?: Record<string, CharacterVoiceAssignment>;
       styleOverride?: BookReadingStyle;
       speedOverride?: number;
+      startCharOffsetInBatch?: number;
     }
   ) => {
     if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
@@ -1330,6 +1373,27 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
     // Apply Personalized Pronunciation Dictionary + AI Smart Breathing Pauses before TTS
     effectiveSpokenText = applySmartBreathingPauses(applyPronunciationDict(effectiveSpokenText));
+    const fullPreparedLen = Math.max(1, effectiveSpokenText.length);
+
+    // Resume seamlessly from position D when hot-reloading mid-batch
+    let spokenSegmentText = effectiveSpokenText;
+    let baseCharOffset = 0;
+    if (opts?.startCharOffsetInBatch && opts.startCharOffsetInBatch > 0) {
+      const sliced = sliceRemainingSpeechFromCursor(
+        effectiveSpokenText,
+        opts.startCharOffsetInBatch
+      );
+      if (!sliced.remainingText) {
+        activeCursorCharInBatchRef.current = 0;
+        await playBatchAt(index + 1, runId, batchedUnitsRef.current);
+        return;
+      }
+      spokenSegmentText = sliced.remainingText;
+      baseCharOffset = sliced.effectiveStartOffset;
+      activeCursorCharInBatchRef.current = baseCharOffset;
+    } else {
+      activeCursorCharInBatchRef.current = 0;
+    }
 
     // Detect Spatial Audio Effect (inner_thought reverb / whisper / shout)
     const segType =
@@ -1338,13 +1402,24 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         : /nội tâm|suy tư|thầm nghĩ/i.test(unit.emotionStyle)
         ? 'inner_thought'
         : 'dialogue';
-    const spatialEffect = detectSpatialEffect(segType, unit.emotionStyle, effectiveSpokenText);
+    const spatialEffect = detectSpatialEffect(segType, unit.emotionStyle, spokenSegmentText);
 
     syncMediaSessionForUnit(unit, 'playing');
 
-    const firstSpanStart = unit.spans[0]?.paragraphCharStart ?? 0;
-    onHighlightParagraphRef.current(unit.firstParagraphIndex, 0, firstSpanStart);
-    onSyncReadingParagraphRef.current?.(unit.firstParagraphIndex, firstSpanStart);
+    const initialHighlight = resolveActiveHighlightInBatch(
+      unit,
+      Math.min(0.99, baseCharOffset / fullPreparedLen),
+      baseCharOffset
+    );
+    onHighlightParagraphRef.current(
+      initialHighlight.paragraphIndex,
+      initialHighlight.paragraphRatio,
+      initialHighlight.charOffsetInParagraph
+    );
+    onSyncReadingParagraphRef.current?.(
+      initialHighlight.paragraphIndex,
+      initialHighlight.charOffsetInParagraph
+    );
 
     const params = resolveTtsParamsForSpeaker(
       unit.speakerId,
@@ -1353,6 +1428,13 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       opts?.voiceOverrides,
       opts?.styleOverride
     );
+
+    // Strict TTS Router guard: NEVER silently fall back to System Default TTS when cloned embedding is missing
+    if (params.missingEmbeddingError) {
+      stopAllAudio(false);
+      setErrorMsg(params.missingEmbeddingError);
+      return;
+    }
 
     // Zero-Latency Rolling RAM Queue: prefetch BOTH batch N+1 and N+2 while batch N plays
     for (const lookaheadOffset of [1, 2]) {
@@ -1377,7 +1459,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
           opts?.voiceOverrides,
           opts?.styleOverride
         );
-        if (nextParams.useAiTts) {
+        if (nextParams.useAiTts && !nextParams.missingEmbeddingError) {
           void fetchAiTtsAudio(preparedNextText, nextParams, opts?.styleOverride);
         }
       }
@@ -1385,9 +1467,9 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
     let spokeOk = false;
 
-    // Engine 1: Real Gemini AI TTS / Voice Design + Web Audio EQ & Spatial Effects (when online)
+    // Engine 1: Real Gemini AI TTS / Voice Design + Web Audio Tone Color EQ & Spatial Effects
     if (params.useAiTts) {
-      const aiAudioUrl = await fetchAiTtsAudio(effectiveSpokenText, params, opts?.styleOverride, {
+      const aiAudioUrl = await fetchAiTtsAudio(spokenSegmentText, params, opts?.styleOverride, {
         timeoutMs: 4200,
         abortSlot: 'playback',
       });
@@ -1395,14 +1477,20 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       if (aiAudioUrl) {
         try {
           const activeSpeed = opts?.speedOverride ?? speedRef.current;
-          let lastSyncedPara = unit.firstParagraphIndex;
+          let lastSyncedPara = initialHighlight.paragraphIndex;
           await getPlayer().play(
             aiAudioUrl,
             params.tone,
             activeSpeed,
             (ratio) => {
               if (playbackRunIdRef.current !== runId || !isPlayingRef.current) return;
-              const resolved = resolveActiveHighlightInBatch(unit, ratio);
+              const currentBatchChar = Math.min(
+                fullPreparedLen,
+                baseCharOffset + Math.round(ratio * spokenSegmentText.length)
+              );
+              activeCursorCharInBatchRef.current = currentBatchChar;
+              const batchRatio = Math.min(0.99, currentBatchChar / fullPreparedLen);
+              const resolved = resolveActiveHighlightInBatch(unit, batchRatio, currentBatchChar);
               onHighlightParagraphRef.current(
                 resolved.paragraphIndex,
                 resolved.paragraphRatio,
@@ -1416,7 +1504,8 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                 );
               }
             },
-            spatialEffect
+            spatialEffect,
+            params.speakerEmbedding
           );
           spokeOk = playbackRunIdRef.current === runId && isPlayingRef.current;
         } catch {
@@ -1436,7 +1525,9 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         params.preferGender,
         params.voiceSlotIndex,
         opts?.speedOverride,
-        effectiveSpokenText
+        spokenSegmentText,
+        baseCharOffset,
+        fullPreparedLen
       );
     }
 
@@ -1449,6 +1540,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     }
 
     if (isPlayingRef.current && playbackRunIdRef.current === runId) {
+      activeCursorCharInBatchRef.current = 0;
       // Subsequent batches read fresh bookRef.current (no stale voiceOverrides)
       await playBatchAt(index + 1, runId, batchedUnitsRef.current);
     }
@@ -1483,6 +1575,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       stopOnDeviceSpeech();
     }
     setErrorMsg('');
+    previewingIdRef.current = charId;
     setPreviewingId(charId);
     previewAbortRef.current?.abort();
     previewAbortRef.current = null;
@@ -1491,6 +1584,13 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
     const assign = override ? { ...base, ...override } : base;
     const params = resolveTtsParamsForSpeaker(charId, 'Tự nhiên', assign);
     const textToSpeak = sampleText || 'Xin chào, đây là giọng đọc thử của BOOKHAD.';
+
+    if (params.missingEmbeddingError) {
+      setErrorMsg(params.missingEmbeddingError);
+      previewingIdRef.current = null;
+      setPreviewingId(null);
+      return;
+    }
 
     try {
       let played = false;
@@ -1501,7 +1601,14 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         });
         if (aiAudioUrl && playbackRunIdRef.current === runId) {
           try {
-            await getPlayer().play(aiAudioUrl, params.tone, speedRef.current);
+            await getPlayer().play(
+              aiAudioUrl,
+              params.tone,
+              speedRef.current,
+              undefined,
+              'none',
+              params.speakerEmbedding
+            );
             played = true;
           } catch {
             played = false;
@@ -1528,6 +1635,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       }
     } finally {
       if (playbackRunIdRef.current === runId) {
+        previewingIdRef.current = null;
         setPreviewingId(null);
       }
     }
@@ -1557,11 +1665,11 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
               className="inline-flex items-center gap-0.5 pl-1.5 pr-2.5 py-1 rounded-full bg-black/5 dark:bg-white/10 text-[11px] font-medium text-stone-700 dark:text-stone-200 hover:bg-black/10 dark:hover:bg-white/15 shrink-0"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
-              <span>Quay lại</span>
+              <span>{strings.back}</span>
             </button>
           )}
           <h2 className="text-[14px] font-sans font-semibold truncate">
-            Nghe sách
+            {strings.listenBook}
           </h2>
         </div>
         <button
@@ -1576,23 +1684,78 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
       {/* Unified Single Scrollable List */}
       <div className="overflow-y-auto overscroll-contain px-4 py-3 space-y-2.5 text-xs">
-        {/* 1. Playback Speed & Controls */}
+        {/* 1. Enlarged 1.5x Play/Pause + Adjacent Compact Speed Cluster (No large "Tốc độ" header row) */}
         <div className="p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-300">
-              Tốc độ
-            </span>
-            <div className="inline-flex items-center gap-1 shrink-0">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const prev = Math.max(0, currentBatchIndex - 1);
+                  setCurrentBatchIndex(prev);
+                  if (isPlaying) startPlaybackAt(prev);
+                }}
+                aria-label="Đoạn trước"
+                className="w-8 h-8 rounded-full border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center justify-center shrink-0"
+              >
+                <SkipBack className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                data-testid="audiobook-play-pause-btn"
+                onClick={handleTogglePlay}
+                aria-label={isPlaying ? strings.pause : strings.play}
+                className="inline-flex items-center justify-center gap-2 px-7 min-h-[48px] rounded-full bg-amber-800 text-white text-sm font-bold whitespace-nowrap shrink-0 hover:bg-amber-900 active:scale-[0.98] transition-all shadow-md"
+              >
+                {isPlaying ? (
+                  <Pause className="w-4 h-4 shrink-0" />
+                ) : (
+                  <Play className="w-4 h-4 shrink-0 ml-0.5" />
+                )}
+                <span>{isPlaying ? strings.pause : strings.play}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const next = Math.min(batchedUnits.length - 1, currentBatchIndex + 1);
+                  setCurrentBatchIndex(next);
+                  if (isPlaying) startPlaybackAt(next);
+                }}
+                aria-label="Đoạn tiếp theo"
+                className="w-8 h-8 rounded-full border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center justify-center shrink-0"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+              </button>
+
+              {(isPlaying || showMiniBar) && (
+                <button
+                  type="button"
+                  onClick={() => stopAllAudio(true)}
+                  aria-label="Dừng hẳn"
+                  className="w-8 h-8 rounded-full border border-stone-300 dark:border-stone-700 text-stone-600 hover:text-red-600 flex items-center justify-center shrink-0"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Compact Speed Cluster placed right beside Play/Pause */}
+            <div
+              data-testid="audiobook-speed-cluster"
+              className="inline-flex items-center gap-1 shrink-0"
+            >
               <button
                 type="button"
                 onClick={() => applyReadingSpeed(stepReadingSpeed(playbackSpeed, -1))}
                 disabled={playbackSpeed <= MIN_READING_SPEED}
                 aria-label="Giảm tốc độ đọc 0.1"
-                className="w-7 h-7 rounded-lg border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/80 text-sm font-semibold text-stone-800 dark:text-stone-100 hover:border-amber-700 disabled:opacity-40 flex items-center justify-center"
+                className="w-7 h-7 rounded-lg border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/80 text-xs font-bold text-stone-800 dark:text-stone-100 hover:border-amber-700 disabled:opacity-40 flex items-center justify-center"
               >
                 −
               </button>
-              <div className="inline-flex items-center rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-2 h-7 focus-within:border-amber-700">
+              <div className="inline-flex items-center rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-1.5 h-7 focus-within:border-amber-700">
                 <input
                   type="number"
                   inputMode="decimal"
@@ -1621,78 +1784,25 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                       (e.currentTarget as HTMLInputElement).blur();
                     }
                   }}
-                  className="w-11 text-center text-xs font-semibold tabular-nums bg-transparent text-stone-900 dark:text-stone-100 focus:outline-none"
+                  className="w-9 text-center text-[11px] font-semibold tabular-nums bg-transparent text-stone-900 dark:text-stone-100 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
-                <span className="text-[11px] font-medium text-stone-500 select-none">x</span>
+                <span className="text-[10.5px] font-medium text-stone-500 select-none">x</span>
               </div>
               <button
                 type="button"
                 onClick={() => applyReadingSpeed(stepReadingSpeed(playbackSpeed, 1))}
                 disabled={playbackSpeed >= MAX_READING_SPEED}
                 aria-label="Tăng tốc độ đọc 0.1"
-                className="w-7 h-7 rounded-lg border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/80 text-sm font-semibold text-stone-800 dark:text-stone-100 hover:border-amber-700 disabled:opacity-40 flex items-center justify-center"
+                className="w-7 h-7 rounded-lg border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/80 text-xs font-bold text-stone-800 dark:text-stone-100 hover:border-amber-700 disabled:opacity-40 flex items-center justify-center"
               >
                 +
               </button>
             </div>
           </div>
 
-          <div className="flex items-center justify-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={() => {
-                const prev = Math.max(0, currentBatchIndex - 1);
-                setCurrentBatchIndex(prev);
-                if (isPlaying) startPlaybackAt(prev);
-              }}
-              aria-label="Đoạn trước"
-              className="p-2 rounded-full border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800"
-            >
-              <SkipBack className="w-4 h-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={handleTogglePlay}
-              aria-label={isPlaying ? 'Tạm dừng' : 'Phát'}
-              className="inline-flex items-center justify-center gap-1.5 px-5 h-9 rounded-full bg-amber-800 text-white text-xs font-semibold whitespace-nowrap shrink-0 hover:bg-amber-900 transition-colors shadow-sm"
-            >
-              {isPlaying ? (
-                <Pause className="w-3.5 h-3.5 shrink-0" />
-              ) : (
-                <Play className="w-3.5 h-3.5 shrink-0" />
-              )}
-              <span>{isPlaying ? 'Tạm dừng' : 'Phát'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                const next = Math.min(batchedUnits.length - 1, currentBatchIndex + 1);
-                setCurrentBatchIndex(next);
-                if (isPlaying) startPlaybackAt(next);
-              }}
-              aria-label="Đoạn tiếp theo"
-              className="p-2 rounded-full border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800"
-            >
-              <SkipForward className="w-4 h-4" />
-            </button>
-
-            {(isPlaying || showMiniBar) && (
-              <button
-                type="button"
-                onClick={() => stopAllAudio(true)}
-                aria-label="Dừng hẳn"
-                className="p-2 rounded-full border border-stone-300 dark:border-stone-700 text-stone-600 hover:text-red-600"
-              >
-                <Square className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
           <label className="flex items-center justify-between gap-2 cursor-pointer pt-2 border-t border-stone-100 dark:border-stone-800">
             <span className="text-[11px] font-medium text-stone-700 dark:text-stone-300">
-              Sáng chữ đang đọc
+              {strings.highlightSpoken}
             </span>
             <input
               type="checkbox"
@@ -1704,8 +1814,11 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
 
           <label className="flex items-start justify-between gap-2 cursor-pointer pt-2 border-t border-stone-100 dark:border-stone-800">
             <div className="min-w-0">
-              <div className="text-[11px] font-medium text-stone-700 dark:text-stone-300">
-                AI quét trước đọc
+              <div
+                data-testid="ai-fix-errors-label"
+                className="text-[11px] font-medium text-stone-700 dark:text-stone-300"
+              >
+                {strings.aiFixErrors}
               </div>
               <div
                 data-testid="preread-ai-status"
@@ -1745,7 +1858,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
               <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                 <Moon className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
                 <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 whitespace-nowrap">
-                  Hẹn giờ tắt:
+                  {strings.sleepTimer}:
                 </span>
               </div>
 
@@ -1764,7 +1877,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                     onChange={(e) => setSleepHoursInput(sanitizeSleepHoursInput(e.target.value))}
                     className="w-10 px-1 py-0.5 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-[11px] font-semibold text-center tabular-nums text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                   />
-                  <span className="whitespace-nowrap">giờ</span>
+                  <span className="whitespace-nowrap">{strings.hours}</span>
                 </label>
 
                 <label className="inline-flex items-center gap-1 text-[11px] text-stone-600 dark:text-stone-300">
@@ -1781,7 +1894,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                     onChange={(e) => setSleepMinutesInput(sanitizeSleepMinutesInput(e.target.value))}
                     className="w-10 px-1 py-0.5 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 text-[11px] font-semibold text-center tabular-nums text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-700 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                   />
-                  <span className="whitespace-nowrap">phút</span>
+                  <span className="whitespace-nowrap">{strings.minutes}</span>
                 </label>
 
                 <button
@@ -1806,7 +1919,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                 data-testid="sleep-timer-hint"
                 className="text-stone-400 dark:text-stone-500"
               >
-                Để trống: Dừng khi hết chương
+                {strings.sleepTimerHint}
               </span>
               {sleepTimerConfig.mode === 'countdown' && sleepRemainingSec > 0 && (
                 <span
@@ -1843,10 +1956,10 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         {/* 2. Reading Voice Style Selector */}
         <section className="p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-2">
           <div className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-            Phong cách
+            {strings.readingStyle}
           </div>
           <GlassSelect<BookReadingStyle>
-            title="Chọn phong cách"
+            title={strings.readingStyle}
             ariaLabel="Chọn phong cách giọng đọc"
             value={readingStyle}
             options={readingStyleOptions}
@@ -1861,7 +1974,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
         <section className="p-3 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
-              Dẫn truyện
+              {strings.narrator}
             </span>
             <button
               type="button"
@@ -1875,12 +1988,12 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-stone-300 dark:border-stone-700 text-[11px] font-medium hover:border-amber-700 shrink-0"
             >
               <Volume2 className="w-3 h-3" />
-              <span>{previewingId === 'narrator' ? 'Đang phát' : 'Thử'}</span>
+              <span>{previewingId === 'narrator' ? strings.playing : strings.previewShort}</span>
             </button>
           </div>
 
           <GlassSelect
-            title="Chọn giọng dẫn truyện"
+            title={strings.narrator}
             ariaLabel="Chọn giọng dẫn truyện"
             value={currentNarratorChoiceKey}
             placeholder={activeVoiceLabel}
@@ -1888,6 +2001,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             onChange={(key) => {
               const chosen = unifiedVoiceChoices.find((v) => v.key === key);
               if (!chosen) return;
+              const wasPreviewingNarrator = previewingIdRef.current === 'narrator';
               const presetTone = getOnDeviceVoiceTone(chosen.geminiVoice);
               const matchedExt =
                 chosen.source === 'external' && chosen.externalVoiceId
@@ -1927,8 +2041,18 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
               } else {
                 onUpdateVoiceAssignment('narrator', nextNarratorAssign);
               }
-              setInfoNotice(`Dẫn truyện: ${chosen.label}`);
-              hotReloadCurrentPlayback({ voiceOverrides: nextMap });
+              setInfoNotice(`${strings.narrator}: ${chosen.label}`);
+              // Seamless voice preview: if currently previewing narrator, immediately preview newly chosen voice
+              if (wasPreviewingNarrator) {
+                void handlePreviewVoiceChoice(
+                  'narrator',
+                  activeParagraphs[book.currentParagraphIndex || 0]?.slice(0, 80) ||
+                    'Xin chào, đây là giọng dẫn truyện của BOOKHAD.',
+                  nextNarratorAssign
+                );
+              } else {
+                hotReloadCurrentPlayback({ voiceOverrides: nextMap });
+              }
             }}
           />
         </section>
@@ -1939,7 +2063,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             <div className="flex items-center gap-1.5 text-[11.5px] font-semibold text-stone-800 dark:text-stone-200 min-w-0">
               <Users className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
               <span className="truncate">
-                Nhân vật
+                {strings.characters}
                 {discoveredCharacters.length > 0 ? ` (${discoveredCharacters.length}/10)` : ''}
               </span>
             </div>
@@ -1983,7 +2107,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                 }`}
               >
                 {!characterVoicesConfigured && <Lock className="w-2.5 h-2.5 shrink-0" />}
-                <span>{characterVoicesEnabled ? 'Bật' : 'Tắt'}</span>
+                <span>{characterVoicesEnabled ? strings.on : strings.off}</span>
                 <span
                   className={`relative inline-flex w-7 h-4 rounded-full transition-colors ${
                     characterVoicesEnabled
@@ -2013,7 +2137,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                 }}
                 className="px-3 py-1.5 rounded-full bg-amber-800 text-white text-[11px] font-semibold hover:bg-amber-900 shrink-0"
               >
-                Quét
+                {strings.scan}
               </button>
             </div>
           </div>
@@ -2066,7 +2190,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                         className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-stone-300 dark:border-stone-700 text-[10.5px] hover:border-amber-700 shrink-0"
                       >
                         <Volume2 className="w-3 h-3" />
-                        <span>{previewingId === char.id ? 'Đang phát' : 'Thử'}</span>
+                        <span>{previewingId === char.id ? strings.playing : strings.previewShort}</span>
                       </button>
                     </div>
 
@@ -2078,6 +2202,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                       onChange={(key) => {
                         const chosen = unifiedVoiceChoices.find((v) => v.key === key);
                         if (!chosen) return;
+                        const wasPreviewingChar = previewingIdRef.current === char.id;
                         const presetTone = getOnDeviceVoiceTone(chosen.geminiVoice);
                         const matchedExt =
                           chosen.source === 'external' && chosen.externalVoiceId
@@ -2108,6 +2233,13 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                           [char.id]: updatedAssign,
                         }));
                         setHasPendingCharEdits(true);
+                        if (wasPreviewingChar) {
+                          void handlePreviewVoiceChoice(
+                            char.id,
+                            char.sampleQuote || char.voiceDescription,
+                            updatedAssign
+                          );
+                        }
                       }}
                     />
                   </div>
@@ -2157,7 +2289,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
                     : 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 hover:opacity-90'
                 }`}
               >
-                Xác nhận
+                {strings.confirm}
               </button>
             </div>
           )}
@@ -2174,7 +2306,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-stone-800 dark:text-stone-200">
               <Music className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
               <span>
-                Nhạc nền{ambientActiveCount > 0 ? ` (${ambientActiveCount})` : ''}
+                {strings.ambientMusic}{ambientActiveCount > 0 ? ` (${ambientActiveCount})` : ''}
               </span>
             </span>
             <ChevronDown
@@ -2188,6 +2320,7 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
             <div className="px-3 pb-3 pt-1 border-t border-stone-100 dark:border-stone-800">
               <AmbientSoundPanel
                 compact
+                readerMinimal
                 customTracks={customAmbientTracks}
                 onAddCustomTrack={onAddCustomAmbientTrack}
                 onDeleteCustomTrack={onDeleteCustomAmbientTrack}
@@ -2209,10 +2342,11 @@ export const AudiobookStudioDrawer: React.FC<AudiobookStudioDrawerProps> = ({
       inlineDesktop={isDesktop}
       showGrabHandle={!isDesktop}
       zIndexClass="z-[72]"
+      backdropClassName={!isDesktop ? '!bg-black/15 !backdrop-blur-none' : ''}
       panelClassName={
         isDesktop
           ? 'w-[390px] shrink-0 sticky top-[52px] self-start h-auto max-h-[calc(100vh-52px)] text-stone-900 dark:text-stone-100 rounded-bl-[24px] flex flex-col overflow-hidden'
-          : 'w-full max-w-lg h-auto max-h-[76dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
+          : 'w-full max-w-lg h-auto max-h-[48dvh] rounded-t-[26px] text-stone-900 dark:text-stone-100 flex flex-col overflow-hidden'
       }
     >
       {panelBody}

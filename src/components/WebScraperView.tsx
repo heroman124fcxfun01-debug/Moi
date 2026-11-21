@@ -33,6 +33,7 @@ import { GlassSelect } from './GlassSelect';
 import { InAppBrowserWindow } from './InAppBrowserWindow';
 import { IosSheet } from './IosSheet';
 import { TwoTapDeleteButton } from './TwoTapDeleteButton';
+import { useI18n } from '../contexts/LanguageContext';
 
 interface WebScraperViewProps {
   crawler: WebCrawlerController;
@@ -81,6 +82,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
   onEnsureYoutubeCollection,
   onBackgroundToLibrary,
 }) => {
+  const { strings } = useI18n();
   const {
     urlInput,
     setUrlInput,
@@ -509,8 +511,8 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
               data-testid="youtube-url-input"
               value={ytUrl}
               onChange={(e) => setYtUrl(e.target.value)}
-              placeholder="MP3 sang Epub"
-              aria-label="MP3 sang Epub"
+              placeholder={strings.mp3ToEpubPlaceholder}
+              aria-label={strings.mp3ToEpubPlaceholder}
               className="w-full min-w-0 pl-8 pr-9 py-1.5 text-[11.5px] rounded-full ios-elevated-oval bg-white dark:bg-[#1C1E24] border border-stone-200 dark:border-zinc-700/70 min-h-[36px]"
             />
             <button
@@ -575,8 +577,8 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
                 data-testid="web-novel-url-input"
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
-                placeholder="Tìm truyện"
-                aria-label="Tìm truyện"
+                placeholder={strings.searchNovelPlaceholder}
+                aria-label={strings.searchNovelPlaceholder}
                 className="w-full min-w-0 pl-8 pr-3 py-1.5 text-[11.5px] rounded-full ios-liquid-bar border border-stone-300/80 dark:border-zinc-700/70 min-h-[36px]"
               />
             </div>
@@ -593,7 +595,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
                 ) : (
                   <Globe className="w-3 h-3" />
                 )}
-                <span>Đọc</span>
+                <span>{strings.webReadBtn}</span>
               </button>
 
               <button
@@ -603,7 +605,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
                 className="ios-liquid-pill flex-1 sm:flex-none inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-full border border-amber-700/40 bg-amber-50/90 dark:bg-amber-950/35 text-amber-900 dark:text-amber-200 text-[11px] font-semibold whitespace-nowrap shrink-0 min-h-[34px] hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
               >
                 <ExternalLink className="w-3 h-3 shrink-0" />
-                <span>Trình duyệt</span>
+                <span>{strings.webBrowserBtn}</span>
               </button>
             </div>
           </div>
@@ -616,7 +618,7 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
               className="ios-liquid-pill inline-flex items-center gap-1 px-2.5 py-1 rounded-full ios-liquid-bar border border-stone-200 dark:border-zinc-700/60 text-[10.5px] font-medium text-stone-800 dark:text-stone-100 min-h-[30px]"
             >
               <ClipboardPaste className="w-3 h-3 shrink-0" />
-              <span>Dán link</span>
+              <span>{strings.pasteLinkBtn}</span>
             </button>
 
             <button
