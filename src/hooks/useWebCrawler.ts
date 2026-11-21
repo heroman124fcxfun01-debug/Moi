@@ -61,7 +61,13 @@ export function useWebCrawler(
     });
 
   const fetchPageData = useCallback(async (targetUrl: string): Promise<ScrapedChapterDraft> => {
-    const normalizedUrl = targetUrl.trim();
+    const rawTrimmed = targetUrl.trim();
+    const normalizedUrl =
+      rawTrimmed.startsWith('/') || /^https?:\/\//i.test(rawTrimmed)
+        ? rawTrimmed
+        : rawTrimmed.includes('.') && !rawTrimmed.includes(' ')
+          ? `https://${rawTrimmed}`
+          : rawTrimmed;
     let data: Record<string, unknown> | null = null;
 
     // Default AI Auto-Scan: auto-scrolls / locates bottom & right-side next-page controls
@@ -71,9 +77,12 @@ export function useWebCrawler(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: normalizedUrl, useAiClean: true }),
       });
-      const aiJson = await aiResp.json();
+      const aiRaw = await aiResp.text();
       if (aiResp.ok) {
-        data = aiJson;
+        const parsed = JSON.parse(aiRaw) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          data = parsed;
+        }
       }
     } catch {
       // Fall through cleanly to /api/web/fetch
@@ -83,7 +92,13 @@ export function useWebCrawler(
       try {
         const qs = new URLSearchParams({ url: normalizedUrl });
         const resp = await fetch(resolveApiUrl(`/api/web/fetch?${qs.toString()}`));
-        const json = (await resp.json()) as Record<string, unknown>;
+        const rawText = await resp.text();
+        let json: Record<string, unknown> = {};
+        try {
+          json = JSON.parse(rawText) as Record<string, unknown>;
+        } catch {
+          json = { error: `Máy chủ trả về phản hồi không hợp lệ (HTTP ${resp.status}).` };
+        }
         if (!resp.ok) {
           throw new Error(
             String(json?.error || `Lỗi HTTP ${resp.status} khi tải trang web.`)

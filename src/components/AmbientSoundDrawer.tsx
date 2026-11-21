@@ -52,7 +52,7 @@ export const AmbientSoundDrawer: React.FC<AmbientSoundDrawerProps> = ({
               <span>{strings.back}</span>
             </button>
           )}
-          <h2 className="text-[13px] font-display font-semibold flex items-center gap-1.5 min-w-0">
+          <h2 className="text-[13px] font-sans font-semibold tracking-normal flex items-center gap-1.5 min-w-0">
             <Music className="w-3.5 h-3.5 text-amber-800 dark:text-amber-400 shrink-0" />
             <span className="truncate">{strings.ambientDrawerTitle}</span>
           </h2>

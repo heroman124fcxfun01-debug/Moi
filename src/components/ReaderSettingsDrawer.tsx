@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, X, Upload, RotateCcw, Check } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronLeft, X, RotateCcw, Check } from 'lucide-react';
 import type {
   CustomFontAsset,
   PageWidthOption,
@@ -7,10 +7,7 @@ import type {
   ReaderSettings,
   TextAlignOption,
 } from '../types/book';
-import {
-  PAPER_THEMES,
-  createCustomFontFromFile,
-} from '../utils/fileHelpers';
+import { PAPER_THEMES } from '../utils/fileHelpers';
 import { buildUnifiedFontCatalog } from '../utils/studioCatalog';
 import { getVintagePaperTextureStyles } from '../utils/readerEffects';
 import { DEFAULT_READER_SETTINGS } from '../utils/storage';
@@ -25,7 +22,7 @@ interface ReaderSettingsDrawerProps {
   settings: ReaderSettings;
   onUpdateSettings: (patch: Partial<ReaderSettings>) => void;
   customFonts: CustomFontAsset[];
-  onAddCustomFont: (font: CustomFontAsset) => Promise<void>;
+  onAddCustomFont?: (font: CustomFontAsset) => Promise<void>;
 }
 
 const PAGE_WIDTH_STEPS: Array<{ id: PageWidthOption; valueLabel: string }> = [
@@ -42,10 +39,8 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
   settings,
   onUpdateSettings,
   customFonts,
-  onAddCustomFont,
 }) => {
   const { strings } = useI18n();
-  const fontInputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<ReaderSettings>(settings);
   const [isDesktop, setIsDesktop] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
@@ -76,14 +71,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
 
   const commitAndClose = () => {
     onClose();
-  };
-
-  const handleFontUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const file = files[0];
-    const asset = await createCustomFontFromFile(file);
-    await onAddCustomFont(asset);
-    updateDraft({ fontFamily: `"${asset.fontFamily}", serif` });
   };
 
   const activeThreeMode: 'slide' | 'scroll' | 'curl' =
@@ -123,7 +110,7 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
               <span>{strings.back}</span>
             </button>
           )}
-          <h2 className="text-[13px] font-display font-semibold truncate">
+          <h2 className="text-[13px] font-sans font-semibold tracking-normal truncate">
             {strings.pageAndBgTitle}
           </h2>
         </div>
@@ -425,21 +412,6 @@ export const ReaderSettingsDrawer: React.FC<ReaderSettingsDrawerProps> = ({
             <h3 className="text-[11.5px] font-semibold text-stone-800 dark:text-stone-200 shrink-0">
               {strings.fontsHeading} ({unifiedFonts.length})
             </h3>
-            <input
-              ref={fontInputRef}
-              type="file"
-              accept=".ttf,.otf,.woff,.woff2"
-              className="hidden"
-              onChange={(e) => handleFontUpload(e.target.files)}
-            />
-            <button
-              type="button"
-              onClick={() => fontInputRef.current?.click()}
-              className="ios-pressable inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50/90 dark:bg-amber-950/40 border border-amber-700/25 text-[10.5px] font-medium text-amber-800 dark:text-amber-300"
-            >
-              <Upload className="w-3 h-3 shrink-0" />
-              <span>{strings.addFont}</span>
-            </button>
           </div>
 
           <div

@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Music,
   Pause,
   Play,
   Search,
@@ -8,15 +7,13 @@ import {
   Upload,
   Volume2,
 } from 'lucide-react';
-import type { AmbientSoundCategory, CustomAmbientTrack } from '../types/book';
+import type { CustomAmbientTrack } from '../types/book';
 import {
-  AMBIENT_CATEGORY_LABELS,
   BUILTIN_AMBIENT_SOUNDS,
   ambientSoundManager,
   filterAmbientSounds,
 } from '../utils/ambientSoundEngine';
 import { readFileAsDataUrl } from '../utils/fileHelpers';
-import { LiquidDropThumb, useLiquidDropIndicator } from './LiquidGlassBar';
 import { useLongPress } from '../hooks/useLongPress';
 import { LongPressActionSheet } from './LongPressActionSheet';
 import { TwoTapDeleteButton } from './TwoTapDeleteButton';
@@ -120,8 +117,6 @@ const CustomTrackRow: React.FC<CustomTrackRowProps> = ({
   );
 };
 
-type FilterTab = 'all' | AmbientSoundCategory | 'custom';
-
 export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
   customTracks,
   onAddCustomTrack,
@@ -131,12 +126,6 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
 }) => {
   const { strings } = useI18n();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const categoryBarRef = useRef<HTMLDivElement>(null);
-  const [category, setCategory] = useState<FilterTab>('all');
-  const { thumb: categoryThumb, isGliding: categoryGliding } = useLiquidDropIndicator(
-    category,
-    categoryBarRef
-  );
   const [searchQuery, setSearchQuery] = useState('');
   const [isImporting, setIsImporting] = useState(false);
   const [actionTrack, setActionTrack] = useState<CustomAmbientTrack | null>(null);
@@ -152,9 +141,8 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
   const activeCount = Object.keys(playbackSnap.activeVolumes).length;
 
   const filteredBuiltin = useMemo(() => {
-    if (category === 'custom') return [];
-    return filterAmbientSounds(BUILTIN_AMBIENT_SOUNDS, category, searchQuery);
-  }, [category, searchQuery]);
+    return filterAmbientSounds(BUILTIN_AMBIENT_SOUNDS, 'all', searchQuery);
+  }, [searchQuery]);
 
   const filteredCustom = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -165,6 +153,8 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
         t.fileName.toLowerCase().includes(q)
     );
   }, [customTracks, searchQuery]);
+
+  const totalVisibleCount = filteredCustom.length + filteredBuiltin.length;
 
   const handleImportAudio = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -182,7 +172,6 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
         };
         await onAddCustomTrack(track);
       }
-      setCategory('custom');
     } finally {
       setIsImporting(false);
     }
@@ -353,103 +342,18 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
         </label>
       </div>
 
-      {/* Category Filter Liquid-Glass Pills & Search */}
-      <div className="space-y-2.5 min-w-0">
-        <div
-          ref={categoryBarRef}
-          className="relative flex flex-wrap gap-1.5 p-1.5 rounded-2xl ios-liquid-bar border border-white/75 dark:border-zinc-700/60 w-full"
-        >
-          <LiquidDropThumb
-            thumb={categoryThumb}
-            isGliding={categoryGliding}
-            roundedClass="rounded-full"
-          />
-          {(
-            ['all', 'nature', 'space', 'chill', 'custom'] as FilterTab[]
-          ).map((cat) => (
-            <button
-              key={cat}
-              type="button"
-              data-liquid-key={cat}
-              onClick={() => setCategory(cat)}
-              className={`relative z-10 ios-liquid-pill px-3 py-1.5 rounded-full text-[11px] font-medium ${
-                category === cat
-                  ? 'text-amber-800 dark:text-amber-300 font-semibold'
-                  : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white'
-              }`}
-            >
-              {cat === 'custom'
-                ? `Nhạc đã Import (${customTracks.length})`
-                : AMBIENT_CATEGORY_LABELS[cat]}
-            </button>
-          ))}
-        </div>
-
-        <div className="relative w-full min-w-0">
-          <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Tìm tiếng mưa, lửa trại, lo-fi, piano..."
-            aria-label="Tìm kiếm âm thanh và nhạc nền"
-            className="w-full min-w-0 pl-9 pr-4 py-2 text-xs rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-800"
-          />
-        </div>
+      {/* Search Bar (No style category filters) */}
+      <div className="relative w-full min-w-0">
+        <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Tìm tiếng mưa, lửa trại, lo-fi, piano..."
+          aria-label="Tìm kiếm âm thanh và nhạc nền"
+          className="w-full min-w-0 pl-9 pr-4 py-2 text-xs rounded-full ios-liquid-bar border border-white/75 dark:border-zinc-700/60 text-stone-900 dark:text-stone-100 focus:outline-none focus:border-amber-800"
+        />
       </div>
-
-      {/* Imported Custom Audio Tracks Section */}
-      {(category === 'all' || category === 'custom') && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-stone-500">
-            <span>Nhạc & Tiếng đã Import ({filteredCustom.length})</span>
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="text-amber-800 dark:text-amber-400 normal-case font-medium hover:underline"
-            >
-              + Thêm file nhạc
-            </button>
-          </div>
-
-          {filteredCustom.length === 0 ? (
-            category === 'custom' && (
-              <div className="p-5 rounded-xl border border-dashed border-stone-300 dark:border-stone-700 text-center text-xs text-stone-500 space-y-2">
-                <Music className="w-5 h-5 mx-auto text-stone-400" />
-                <p>Chưa có nhạc hoặc âm thanh ngoài nào được nạp.</p>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-3 py-1.5 rounded-lg bg-amber-800 text-white text-[11px] font-medium"
-                >
-                  Chọn file MP3 / WAV / M4A từ máy
-                </button>
-              </div>
-            )
-          ) : (
-            <div className={compact ? 'space-y-2' : 'grid grid-cols-1 sm:grid-cols-2 gap-2.5'}>
-              {filteredCustom.map((track) => {
-                const trackVol = playbackSnap.activeVolumes[track.id];
-                const isPlaying = typeof trackVol === 'number';
-                return (
-                  <CustomTrackRow
-                    key={track.id}
-                    track={track}
-                    trackVol={trackVol}
-                    isPlaying={isPlaying}
-                    onTogglePlay={() => ambientSoundManager.toggleCustomTrack(track)}
-                    onLongPressOpen={() => setActionTrack(track)}
-                    onDelete={() => {
-                      if (isPlaying) ambientSoundManager.stopTrack(track.id);
-                      void onDeleteCustomTrack(track.id);
-                    }}
-                  />
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Long-Press Rename / 2-Tap Red Delete Sheet (strictly for imported custom tracks) */}
       <LongPressActionSheet
@@ -472,17 +376,38 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
         }}
       />
 
-      {/* 20 Built-in Ambient & Chill Presets inside a Bordered Scrollable Box (2/3 height) */}
-      {category !== 'custom' && (
-        <div className="space-y-2">
-          <div className="text-[11px] font-sans font-semibold uppercase tracking-wider text-stone-500">
-            Tất cả nhạc nền ({filteredBuiltin.length})
-          </div>
-          <div
-            data-testid="ambient-sounds-scroll-box"
-            className="max-h-[245px] overflow-y-auto p-2 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950/30"
-          >
-            <div className={compact ? 'space-y-2' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2'}>
+      {/* Unified All Ambient Sounds (Imported + Built-in Original Sounds together) */}
+      <div className="space-y-2">
+        <div
+          data-testid="all-ambient-heading"
+          className="text-[11px] font-sans font-semibold uppercase tracking-wider text-stone-500"
+        >
+          Tất cả âm nền ({totalVisibleCount})
+        </div>
+        <div
+          data-testid="ambient-sounds-scroll-box"
+          className="max-h-[260px] overflow-y-auto p-2 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950/30"
+        >
+          <div className={compact ? 'space-y-2' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2'}>
+            {filteredCustom.map((track) => {
+              const trackVol = playbackSnap.activeVolumes[track.id];
+              const isPlaying = typeof trackVol === 'number';
+              return (
+                <CustomTrackRow
+                  key={track.id}
+                  track={track}
+                  trackVol={trackVol}
+                  isPlaying={isPlaying}
+                  onTogglePlay={() => ambientSoundManager.toggleCustomTrack(track)}
+                  onLongPressOpen={() => setActionTrack(track)}
+                  onDelete={() => {
+                    if (isPlaying) ambientSoundManager.stopTrack(track.id);
+                    void onDeleteCustomTrack(track.id);
+                  }}
+                />
+              );
+            })}
+
             {filteredBuiltin.map((sound) => {
               const trackVol = playbackSnap.activeVolumes[sound.id];
               const isPlaying = typeof trackVol === 'number';
@@ -556,10 +481,9 @@ export const AmbientSoundPanel: React.FC<AmbientSoundPanelProps> = ({
                 </div>
               );
             })}
-            </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

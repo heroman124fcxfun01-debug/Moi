@@ -199,12 +199,25 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: trimmed }),
         });
-        const data = await res.json();
+        const rawText = await res.text();
+        let data: {
+          playlistTitle?: string;
+          title?: string;
+          estimatedSeconds?: number;
+          estimatedFullSec?: number;
+          videos?: Array<{ videoId: string; title: string; url: string }>;
+        } = {};
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          data = {};
+        }
         if (res.ok && Array.isArray(data.videos) && data.videos.length > 0) {
           setYtPlaylistPreview({
-            title: data.playlistTitle || 'YouTube Playlist',
+            title: data.playlistTitle || data.title || 'YouTube Playlist',
             videoCount: data.videos.length,
-            estimatedSeconds: data.estimatedSeconds || data.videos.length * 18,
+            estimatedSeconds:
+              data.estimatedSeconds || data.estimatedFullSec || data.videos.length * 14,
             videos: data.videos,
           });
         } else {
@@ -284,7 +297,19 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: scanTarget }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: {
+        code?: string;
+        error?: string;
+        title?: string;
+        paragraphs?: string[];
+      } = {};
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = { error: res.ok ? 'Dữ liệu phản hồi không hợp lệ.' : `Máy chủ trả về lỗi HTTP ${res.status}.` };
+      }
+
       if (!res.ok) {
         setYtNotice({
           kind: 'err',
@@ -308,10 +333,11 @@ export const WebScraperView: React.FC<WebScraperViewProps> = ({
         kind: 'ok',
         text: `Đã tạo EPUB "${cleanTitle}" (${paragraphs.length} đoạn) vào Kho sách riêng & /YouTube_Notes.`,
       });
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : '';
       setYtNotice({
         kind: 'err',
-        text: 'Lỗi kết nối máy chủ trích xuất phụ đề YouTube.',
+        text: `Lỗi kết nối máy chủ trích xuất phụ đề YouTube${detail}. Hãy kiểm tra kết nối mạng hoặc thử lại.`,
       });
     } finally {
       setYtScanning(false);

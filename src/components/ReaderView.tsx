@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
-  AlignJustify,
   ArrowLeft,
   Bookmark,
   BookMarked,
@@ -17,11 +16,8 @@ import {
   Languages,
   Loader2,
   Menu,
-  MoveHorizontal,
-  MoveVertical,
   Music,
   Pause,
-  Pilcrow,
   Play,
   RotateCcw,
   Settings,
@@ -2364,9 +2360,9 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
               setShowToolsMenu(false);
               setShowQuickActions((v) => !v);
             }}
-            aria-label="Mở công cụ nhanh cỡ chữ và dịch"
+            aria-label="Mở dịch nhanh"
             aria-expanded={showQuickActions}
-            title="Chỉnh cỡ chữ & dịch nhanh"
+            title="Dịch nhanh"
             className={`ios-liquid-pill relative w-9 h-9 rounded-full border flex items-center justify-center shrink-0 ${
               showQuickActions || settings.translationMode !== 'original'
                 ? 'ios-liquid-pill-active border-amber-700/40 text-amber-800 dark:text-amber-300'
@@ -2403,7 +2399,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         </div>
       </div>
 
-      {/* Quick Actions Floating Popover (!) — Icon-Pair Adjusters ONLY (Zero numeric indicators) */}
+      {/* Quick Actions Floating Popover (!) — Translation ONLY */}
       {showQuickActions &&
         typeof document !== 'undefined' &&
         createPortal(
@@ -2416,225 +2412,32 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
             <div
               role="dialog"
               data-testid="quick-actions-popover"
-              aria-label="Chỉnh nhanh giao diện đọc"
-              className="ios-sheet-enter ios-frosted-surface rounded-[20px] p-2.5 w-[228px] space-y-2 text-stone-900 dark:text-stone-100 shadow-xl"
+              aria-label="Dịch nhanh"
+              className="ios-sheet-enter ios-frosted-surface rounded-[18px] p-2 w-[176px] text-stone-900 dark:text-stone-100 shadow-xl"
             >
-              {/* 1. Cỡ chữ: A- / A+ */}
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  {strings.fontSize}
+              <button
+                type="button"
+                data-testid="quick-translate-btn"
+                disabled={isTranslating}
+                onClick={() => {
+                  const nextMode: TranslationMode =
+                    settings.translationMode === 'override' ? 'original' : 'override';
+                  void handleTranslationModeChange(nextMode);
+                }}
+                aria-pressed={settings.translationMode === 'override'}
+                className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-xs font-semibold transition-colors whitespace-nowrap ${
+                  settings.translationMode === 'override'
+                    ? 'bg-amber-800 text-white shadow-sm'
+                    : 'bg-black/5 dark:bg-white/10 text-stone-800 dark:text-stone-100 hover:bg-black/10 dark:hover:bg-white/15'
+                }`}
+              >
+                <Languages className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {settings.translationMode === 'override'
+                    ? strings.translated
+                    : strings.translateQuick}
                 </span>
-                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
-                  <button
-                    type="button"
-                    data-testid="quick-font-dec-btn"
-                    disabled={settings.fontSize <= 12}
-                    onClick={() =>
-                      applySmoothReaderSetting({ fontSize: Math.max(12, settings.fontSize - 1) })
-                    }
-                    aria-label="Giảm cỡ chữ"
-                    className="w-9 h-7 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center"
-                  >
-                    A-
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="quick-font-inc-btn"
-                    disabled={settings.fontSize >= 36}
-                    onClick={() =>
-                      applySmoothReaderSetting({ fontSize: Math.min(36, settings.fontSize + 1) })
-                    }
-                    aria-label="Tăng cỡ chữ"
-                    className="w-9 h-7 rounded-full text-xs font-semibold hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center"
-                  >
-                    A+
-                  </button>
-                </div>
-              </div>
-
-              {/* 2. Độ giãn dòng: icon- / icon+ */}
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  {strings.lineHeight}
-                </span>
-                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
-                  <button
-                    type="button"
-                    data-testid="quick-lineheight-dec-btn"
-                    disabled={settings.lineHeight <= 1.3}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        lineHeight: Math.max(1.3, Math.round((settings.lineHeight - 0.1) * 100) / 100),
-                      })
-                    }
-                    aria-label="Giảm độ giãn dòng"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <AlignJustify className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">-</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="quick-lineheight-inc-btn"
-                    disabled={settings.lineHeight >= 2.3}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        lineHeight: Math.min(2.3, Math.round((settings.lineHeight + 0.1) * 100) / 100),
-                      })
-                    }
-                    aria-label="Tăng độ giãn dòng"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <AlignJustify className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">+</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* 3. Lề trái / phải: icon- / icon+ */}
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  {strings.marginHorizontal}
-                </span>
-                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
-                  <button
-                    type="button"
-                    data-testid="quick-margin-dec-btn"
-                    disabled={(settings.marginHorizontalPx ?? 16) <= 4}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        marginHorizontalPx: Math.max(4, (settings.marginHorizontalPx ?? 16) - 4),
-                      })
-                    }
-                    aria-label="Giảm khoảng cách lề ngang"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <MoveHorizontal className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">-</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="quick-margin-inc-btn"
-                    disabled={(settings.marginHorizontalPx ?? 16) >= 56}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        marginHorizontalPx: Math.min(56, (settings.marginHorizontalPx ?? 16) + 4),
-                      })
-                    }
-                    aria-label="Tăng khoảng cách lề ngang"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <MoveHorizontal className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">+</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* 4. Lề trên / dưới: icon- / icon+ (Top/Bottom Page Margin) */}
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  {strings.marginVertical}
-                </span>
-                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
-                  <button
-                    type="button"
-                    data-testid="quick-margin-v-dec-btn"
-                    disabled={(settings.marginTopPx ?? 12) <= 4 && (settings.marginBottomPx ?? 20) <= 8}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        marginTopPx: Math.max(4, (settings.marginTopPx ?? 12) - 4),
-                        marginBottomPx: Math.max(8, (settings.marginBottomPx ?? 20) - 4),
-                      })
-                    }
-                    aria-label="Giảm lề trên dưới"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <MoveVertical className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">-</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="quick-margin-v-inc-btn"
-                    disabled={(settings.marginTopPx ?? 12) >= 56}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        marginTopPx: Math.min(56, (settings.marginTopPx ?? 12) + 4),
-                        marginBottomPx: Math.min(64, (settings.marginBottomPx ?? 20) + 4),
-                      })
-                    }
-                    aria-label="Tăng lề trên dưới"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <MoveVertical className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">+</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* 5. Khoảng cách đoạn: icon- / icon+ */}
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
-                  {strings.paragraphSpacing}
-                </span>
-                <div className="inline-flex items-center gap-1 rounded-full bg-black/5 dark:bg-white/10 p-0.5">
-                  <button
-                    type="button"
-                    data-testid="quick-paraspacing-dec-btn"
-                    disabled={settings.paragraphSpacing <= 4}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        paragraphSpacing: Math.max(4, settings.paragraphSpacing - 2),
-                      })
-                    }
-                    aria-label="Giảm khoảng cách đoạn"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <Pilcrow className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">-</span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="quick-paraspacing-inc-btn"
-                    disabled={settings.paragraphSpacing >= 36}
-                    onClick={() =>
-                      applySmoothReaderSetting({
-                        paragraphSpacing: Math.min(36, settings.paragraphSpacing + 2),
-                      })
-                    }
-                    aria-label="Tăng khoảng cách đoạn"
-                    className="w-9 h-7 rounded-full hover:bg-white/80 dark:hover:bg-white/15 disabled:opacity-35 transition-colors flex items-center justify-center gap-0.5"
-                  >
-                    <Pilcrow className="w-3 h-3" />
-                    <span className="text-[11px] font-bold leading-none">+</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Quick Translate Toggle */}
-              <div className="pt-1.5 border-t border-stone-200/70 dark:border-white/10">
-                <button
-                  type="button"
-                  disabled={isTranslating}
-                  onClick={() => {
-                    const nextMode: TranslationMode =
-                      settings.translationMode === 'override' ? 'original' : 'override';
-                    void handleTranslationModeChange(nextMode);
-                  }}
-                  aria-pressed={settings.translationMode === 'override'}
-                  className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold transition-colors whitespace-nowrap ${
-                    settings.translationMode === 'override'
-                      ? 'bg-amber-800 text-white shadow-sm'
-                      : 'bg-black/5 dark:bg-white/10 text-stone-800 dark:text-stone-100 hover:bg-black/10 dark:hover:bg-white/15'
-                  }`}
-                >
-                  <Languages className="w-3.5 h-3.5 shrink-0" />
-                  <span>
-                    {settings.translationMode === 'override'
-                      ? strings.translated
-                      : strings.translateQuick}
-                  </span>
-                </button>
-              </div>
+              </button>
             </div>
           </div>,
           document.body

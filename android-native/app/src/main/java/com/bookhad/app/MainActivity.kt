@@ -6,9 +6,14 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -18,10 +23,10 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.bookhad.app.ai.BookReaderAiTtsEngine
-import com.bookhad.app.ai.OnnxAssetExtractor
-import com.bookhad.app.ai.UnifiedBookTtsRouter
-import com.bookhad.app.ai.VoiceCloner
+import com.bookhad.app.ai.NeuralZeroShotTtsEngine
+import com.bookhad.app.ai.OnnxRuntimeConfig
+import com.bookhad.app.ai.SpeakerEncoderEngine
+import com.bookhad.app.ai.ZeroShotVoiceCloningManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,17 +35,6 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * BOOKHAD MainActivity:
- *  1. Full Edge-to-Edge display: transparent status bar & navigation bar so App / Reader paper
- *     background fills 100% up behind the system clock, battery, and camera cutout (zero black strip).
- *  2. Automatic clock/icon color inversion via WindowInsetsControllerCompat.isAppearanceLightStatusBars:
- *       - Light background (White, Warm, Sepia) -> Black status bar icons.
- *       - Dark background (Night, AMOLED) -> White status bar icons.
- *  3. Safe-area inset synchronization (--native-safe-top, --native-safe-bottom) so book text and
- *     top/bottom floating bars never overlap system bars or camera notches.
- *  4. Native On-Device Voice Cloning & Helio G99 Streaming AI TTS Bridge (window.BookhadNative).
- */
 class MainActivity : AppCompatActivity() {
 
     companion object {
@@ -49,17 +43,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-
+    private lateinit var rootContainer: FrameLayout
     private lateinit var webView: WebView
-    private lateinit var voiceCloner: VoiceCloner
-    private lateinit var aiTtsEngine: BookReaderAiTtsEngine
-    private lateinit var ttsRouter: UnifiedBookTtsRouter
-
+    private var embeddedBrowserWebView: WebView? = null
+    private lateinit var zeroShotManager: ZeroShotVoiceCloningManager
     private var pendingVoiceNameAfterPermission: String? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 1. Enable Android Edge-to-Edge with completely transparent status & navigation bars
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
@@ -74,22 +65,28 @@ class MainActivity : AppCompatActivity() {
             window.isNavigationBarContrastEnforced = false
         }
 
-        // 2. Initialize On-Device AI Voice Cloner & Streaming TTS Router (Helio G99 safe)
-        voiceCloner = VoiceCloner(applicationContext)
-        aiTtsEngine = BookReaderAiTtsEngine(applicationContext, voiceCloner)
-        ttsRouter = UnifiedBookTtsRouter(applicationContext, aiTtsEngine)
+        zeroShotManager = ZeroShotVoiceCloningManager(applicationContext)
 
-        // Pre-extract ONNX assets & espeak-ng-data on background IO thread so first tap is instant
         activityScope.launch(Dispatchers.IO) {
             try {
-                OnnxAssetExtractor.ensureExtracted(applicationContext)
+                OnnxRuntimeConfig.ensureModelsExtracted(applicationContext)
             } catch (_: Throwable) {
-                // Handled gracefully with user-facing error if assets are missing
             }
         }
 
-        // 3. Configure WebView host filling 100% Edge-to-Edge viewport
+        rootContainer = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            setBackgroundColor(Color.parseColor(DEFAULT_PAPER_BG_HEX))
+        }
+
         webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
@@ -97,20 +94,14 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor(DEFAULT_PAPER_BG_HEX))
             addJavascriptInterface(BookhadNativeBridge(), "BookhadNative")
         }
-        setContentView(webView)
+        rootContainer.addView(webView)
+        setContentView(rootContainer)
 
-        // 4. Sync initial light status bar icons & window safe-area insets
         applyEdgeToEdgeAppearance(DEFAULT_PAPER_BG_HEX, isLightBar = true)
-        installEdgeToEdgeInsetListener(webView)
-
-        // Load bundled web app (Capacitor / local assets)
+        installEdgeToEdgeInsetListener(rootContainer)
         webView.loadUrl("file:///android_asset/public/index.html")
     }
 
-    /**
-     * Dynamically fills 100% edge-to-edge background behind status bar and flips clock/icon color
-     * between dark icons (light backgrounds) and white icons (dark backgrounds).
-     */
     fun applyEdgeToEdgeAppearance(backgroundHex: String, isLightBar: Boolean) {
         runOnUiThread {
             val parsedColor = try {
@@ -118,11 +109,8 @@ class MainActivity : AppCompatActivity() {
             } catch (_: IllegalArgumentException) {
                 Color.parseColor(DEFAULT_PAPER_BG_HEX)
             }
-
             window.decorView.setBackgroundColor(parsedColor)
-            if (::webView.isInitialized) {
-                webView.setBackgroundColor(parsedColor)
-            }
+            if (::webView.isInitialized) webView.setBackgroundColor(parsedColor)
             window.statusBarColor = Color.TRANSPARENT
             window.navigationBarColor = Color.TRANSPARENT
 
@@ -132,21 +120,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Forwards real Android status bar & navigation bar safe-area heights into CSS variables
-     * so Reader content and floating headers never collide with clock, notch, or gesture pill.
-     */
     private fun installEdgeToEdgeInsetListener(targetView: View) {
         ViewCompat.setOnApplyWindowInsetsListener(targetView) { view, windowInsets ->
-            val systemBars = windowInsets.getInsets(
+            val insets = windowInsets.getInsets(
                 WindowInsetsCompat.Type.statusBars() or
                     WindowInsetsCompat.Type.navigationBars() or
                     WindowInsetsCompat.Type.displayCutout()
             )
             val density = resources.displayMetrics.density.coerceAtLeast(1f)
-            val topDp = (systemBars.top / density)
-            val bottomDp = (systemBars.bottom / density)
-
+            val topDp = insets.top / density
+            val bottomDp = insets.bottom / density
             val js = """
                 (function() {
                   var r = document.documentElement.style;
@@ -154,11 +137,7 @@ class MainActivity : AppCompatActivity() {
                   r.setProperty('--native-safe-bottom', '${bottomDp}px');
                 })();
             """.trimIndent()
-            if (::webView.isInitialized) {
-                webView.post { webView.evaluateJavascript(js, null) }
-            }
-
-            // Return CONSUMED=false (original insets) so background remains edge-to-edge behind bars
+            if (::webView.isInitialized) webView.post { webView.evaluateJavascript(js, null) }
             view.setPadding(0, 0, 0, 0)
             windowInsets
         }
@@ -168,29 +147,23 @@ class MainActivity : AppCompatActivity() {
         val safeJson = JSONObject.quote(payload.toString())
         val script = "window.dispatchEvent(new CustomEvent('$eventName', { detail: JSON.parse($safeJson) }));"
         runOnUiThread {
-            if (::webView.isInitialized) {
-                webView.evaluateJavascript(script, null)
-            }
+            if (::webView.isInitialized) webView.evaluateJavascript(script, null)
         }
     }
 
-    private fun startNativeVoiceCloningFlow(voiceName: String) {
+    private fun startZeroShotEnrollment(voiceName: String) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
             pendingVoiceNameAfterPermission = voiceName
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.RECORD_AUDIO),
-                REQ_RECORD_AUDIO,
-            )
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
             return
         }
 
-        voiceCloner.startRecording(
-            voiceName = voiceName,
-            listener = object : VoiceCloner.Listener {
-                override fun onRecordingProgress(elapsedMs: Long, rmsLevel: Float) {
+        zeroShotManager.startEnrollmentRecording(
+            displayName = voiceName,
+            listener = object : ZeroShotVoiceCloningManager.EnrollmentListener {
+                override fun onRecordingTick(elapsedMs: Long, rmsLevel: Float) {
                     dispatchJsEvent(
                         "bookhad-voice-clone-progress",
                         JSONObject().apply {
@@ -200,14 +173,14 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-                override fun onEncodingStarted() {
+                override fun onEncodingEmbedding() {
                     dispatchJsEvent(
                         "bookhad-voice-clone-encoding",
                         JSONObject().apply { put("status", "encoding") },
                     )
                 }
 
-                override fun onVoiceCloned(profile: VoiceCloner.ClonedVoiceProfile) {
+                override fun onEnrolled(profile: SpeakerEncoderEngine.CachedVoiceEmbedding) {
                     dispatchJsEvent("bookhad-voice-cloned", profile.toJson())
                 }
 
@@ -229,33 +202,97 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_RECORD_AUDIO) {
             val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-            val pendingName = pendingVoiceNameAfterPermission
+            val pending = pendingVoiceNameAfterPermission
             pendingVoiceNameAfterPermission = null
-            if (granted && pendingName != null) {
-                startNativeVoiceCloningFlow(pendingName)
+            if (granted && pending != null) {
+                startZeroShotEnrollment(pending)
             } else {
                 dispatchJsEvent(
                     "bookhad-voice-clone-error",
-                    JSONObject().apply {
-                        put("message", "Bạn cần cấp quyền micro để ghi âm mẫu giọng nói 6–10 giây.")
-                    },
+                    JSONObject().apply { put("message", "Cần quyền micro để thu mẫu giọng 5–10 giây.") },
                 )
             }
         }
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun openNativeEmbeddedWebView(url: String, topDp: Int, bottomDp: Int) {
+        runOnUiThread {
+            val density = resources.displayMetrics.density.coerceAtLeast(1f)
+            val topPx = (topDp * density).toInt().coerceAtLeast(0)
+            val bottomPx = (bottomDp * density).toInt().coerceAtLeast(0)
+            val sidePx = (8 * density).toInt()
+
+            val browser = embeddedBrowserWebView ?: WebView(this).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                settings.builtInZoomControls = true
+                settings.displayZoomControls = false
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                    ): Boolean = false
+
+                    override fun onPageFinished(view: WebView?, loadedUrl: String?) {
+                        super.onPageFinished(view, loadedUrl)
+                        if (!loadedUrl.isNullOrBlank()) {
+                            dispatchJsEvent(
+                                "bookhad-browser-url",
+                                JSONObject().apply {
+                                    put("url", loadedUrl)
+                                    put("title", view?.title ?: loadedUrl)
+                                },
+                            )
+                        }
+                    }
+                }
+                embeddedBrowserWebView = this
+                rootContainer.addView(this)
+            }
+
+            val lp = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP,
+            ).apply {
+                topMargin = topPx
+                bottomMargin = bottomPx
+                leftMargin = sidePx
+                rightMargin = sidePx
+            }
+            browser.layoutParams = lp
+            browser.visibility = View.VISIBLE
+            browser.bringToFront()
+            if (url.isNotBlank() && browser.url != url) {
+                browser.loadUrl(url)
+            }
+        }
+    }
+
+    private fun closeNativeEmbeddedWebView() {
+        runOnUiThread {
+            embeddedBrowserWebView?.let { browser ->
+                browser.stopLoading()
+                browser.visibility = View.GONE
+            }
+        }
+    }
+
     override fun onDestroy() {
-        ttsRouter.destroy()
-        voiceCloner.release()
+        embeddedBrowserWebView?.let {
+            rootContainer.removeView(it)
+            it.destroy()
+        }
+        embeddedBrowserWebView = null
+        zeroShotManager.destroy()
         activityScope.cancel()
         super.onDestroy()
     }
 
-    /**
-     * JavaScript <-> Android Native Bridge exposed as window.BookhadNative
-     */
     inner class BookhadNativeBridge {
-
         @JavascriptInterface
         fun setSystemBarAppearance(backgroundHex: String, isLightBar: Boolean) {
             applyEdgeToEdgeAppearance(backgroundHex, isLightBar)
@@ -263,28 +300,20 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun startVoiceCloneRecording(voiceName: String) {
-            runOnUiThread { startNativeVoiceCloningFlow(voiceName) }
+            runOnUiThread { startZeroShotEnrollment(voiceName) }
         }
 
         @JavascriptInterface
         fun stopAndCloneVoice() {
-            voiceCloner.stopRecordingAndClone()
+            zeroShotManager.stopEnrollmentRecording()
         }
 
         @JavascriptInterface
-        fun cancelVoiceCloneRecording() {
-            voiceCloner.cancelRecording()
-        }
+        fun listClonedVoicesJson(): String = zeroShotManager.speakerEncoder.listCachedVoicesJson()
 
         @JavascriptInterface
-        fun listClonedVoicesJson(): String {
-            return voiceCloner.listClonedVoicesJson()
-        }
-
-        @JavascriptInterface
-        fun deleteClonedVoice(voiceId: String): Boolean {
-            return voiceCloner.deleteClonedVoice(voiceId)
-        }
+        fun deleteClonedVoice(voiceId: String): Boolean =
+            zeroShotManager.speakerEncoder.deleteCachedVoice(voiceId)
 
         @JavascriptInterface
         fun speakBookChapter(
@@ -295,68 +324,85 @@ class MainActivity : AppCompatActivity() {
         ) {
             val arr = JSONArray(paragraphsJson)
             val paragraphs = ArrayList<String>(arr.length())
-            for (i in 0 until arr.length()) {
-                paragraphs.add(arr.optString(i, ""))
-            }
+            for (i in 0 until arr.length()) paragraphs.add(arr.optString(i, ""))
 
-            ttsRouter.speakChapter(
+            zeroShotManager.speakChapter(
                 paragraphs = paragraphs,
                 voiceId = voiceId,
                 startParagraphIndex = startParagraphIndex,
                 speechRate = speechRate,
-                listener = object : BookReaderAiTtsEngine.PlaybackListener {
+                listener = object : NeuralZeroShotTtsEngine.StreamListener {
                     override fun onPlaybackStateChanged(isPlaying: Boolean) {
-                        dispatchJsEvent(
-                            "bookhad-tts-state",
-                            JSONObject().apply { put("isPlaying", isPlaying) },
-                        )
+                        dispatchJsEvent("bookhad-tts-state", JSONObject().apply { put("isPlaying", isPlaying) })
                     }
 
-                    override fun onHighlightChunk(
-                        paragraphIndex: Int,
-                        charOffset: Int,
-                        text: String,
-                    ) {
+                    override fun onHighlightSentence(paragraphIndex: Int, charOffset: Int, sentenceText: String) {
                         dispatchJsEvent(
                             "bookhad-tts-highlight",
                             JSONObject().apply {
                                 put("paragraphIndex", paragraphIndex)
                                 put("charOffset", charOffset)
-                                put("text", text)
+                                put("text", sentenceText)
                             },
                         )
                     }
 
-                    override fun onChapterCompleted() {
-                        dispatchJsEvent(
-                            "bookhad-tts-chapter-end",
-                            JSONObject().apply { put("completed", true) },
-                        )
+                    override fun onCompleted() {
+                        dispatchJsEvent("bookhad-tts-chapter-end", JSONObject().apply { put("completed", true) })
                     }
 
                     override fun onError(message: String) {
-                        dispatchJsEvent(
-                            "bookhad-tts-error",
-                            JSONObject().apply { put("message", message) },
-                        )
+                        dispatchJsEvent("bookhad-tts-error", JSONObject().apply { put("message", message) })
                     }
                 },
             )
         }
 
         @JavascriptInterface
-        fun pauseBookAudio() {
-            ttsRouter.pause()
+        fun pauseBookAudio() = zeroShotManager.pause()
+
+        @JavascriptInterface
+        fun resumeBookAudio() = zeroShotManager.resume()
+
+        @JavascriptInterface
+        fun stopBookAudio() = zeroShotManager.stopAll()
+
+        @JavascriptInterface
+        fun openEmbeddedWebView(url: String, topDp: Int, bottomDp: Int) {
+            openNativeEmbeddedWebView(url, topDp, bottomDp)
         }
 
         @JavascriptInterface
-        fun resumeBookAudio() {
-            ttsRouter.resume()
+        fun navigateEmbeddedWebView(url: String) {
+            runOnUiThread { embeddedBrowserWebView?.loadUrl(url) }
         }
 
         @JavascriptInterface
-        fun stopBookAudio() {
-            ttsRouter.stopAll()
+        fun embeddedWebViewGoBack() {
+            runOnUiThread {
+                if (embeddedBrowserWebView?.canGoBack() == true) {
+                    embeddedBrowserWebView?.goBack()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun embeddedWebViewGoForward() {
+            runOnUiThread {
+                if (embeddedBrowserWebView?.canGoForward() == true) {
+                    embeddedBrowserWebView?.goForward()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun embeddedWebViewReload() {
+            runOnUiThread { embeddedBrowserWebView?.reload() }
+        }
+
+        @JavascriptInterface
+        fun closeEmbeddedWebView() {
+            closeNativeEmbeddedWebView()
         }
     }
 }

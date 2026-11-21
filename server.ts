@@ -3,6 +3,12 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { extractWebChapterFromHtml } from './server/webScraper.ts';
+import {
+  fetchWebChapterResilient,
+  fetchYoutubePlaylistResilient,
+  fetchYoutubeTranscriptResilient,
+  normalizeExternalUrl,
+} from './server/communityExtractors.ts';
 import { renderDemoChapterHtml } from './server/demoNovel.ts';
 import {
   addCongDongComment,
@@ -82,7 +88,7 @@ async function startServer() {
     res.send(html);
   });
 
-  // Web fetch & readability extractor endpoint
+  // Web fetch & readability extractor endpoint (3-tier resilient fetcher: Desktop Chrome -> Mobile Chrome -> Readability fallback)
   app.get('/api/web/fetch', async (req, res) => {
     try {
       const targetUrl = String(req.query.url || '').trim();
@@ -92,43 +98,7 @@ async function startServer() {
         return;
       }
 
-      // Resolve relative demo paths against local server
-      const resolvedUrl = targetUrl.startsWith('/')
-        ? `http://127.0.0.1:${PORT}${targetUrl}`
-        : targetUrl;
-
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(resolvedUrl);
-      } catch {
-        res.status(400).json({ error: 'Đường dẫn URL không đúng định dạng.' });
-        return;
-      }
-
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        res.status(400).json({ error: 'Chỉ hỗ trợ giao thức HTTP hoặc HTTPS.' });
-        return;
-      }
-
-      const response = await fetch(parsedUrl.toString(), {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        res.status(response.status).json({
-          error: `Trang web trả về mã lỗi HTTP ${response.status}.`,
-        });
-        return;
-      }
-
-      const html = await response.text();
-      const extracted = extractWebChapterFromHtml(html, parsedUrl.toString(), nextSelector);
+      const { extracted } = await fetchWebChapterResilient(targetUrl, PORT, nextSelector);
       res.json(extracted);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Lỗi không xác định khi tải trang web.';
@@ -149,42 +119,8 @@ async function startServer() {
         return;
       }
 
-      const resolvedUrl = targetUrl.startsWith('/')
-        ? `http://127.0.0.1:${PORT}${targetUrl}`
-        : targetUrl;
-
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(resolvedUrl);
-      } catch {
-        res.status(400).json({ error: 'Đường dẫn URL không đúng định dạng.' });
-        return;
-      }
-
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        res.status(400).json({ error: 'Chỉ hỗ trợ giao thức HTTP hoặc HTTPS.' });
-        return;
-      }
-
-      const response = await fetch(parsedUrl.toString(), {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        res.status(response.status).json({
-          error: `Trang web trả về mã lỗi HTTP ${response.status}.`,
-        });
-        return;
-      }
-
-      const html = await response.text();
-      const extracted = extractWebChapterFromHtml(html, parsedUrl.toString(), '');
+      const parsedUrl = normalizeExternalUrl(targetUrl, PORT);
+      const { html, extracted } = await fetchWebChapterResilient(targetUrl, PORT, '');
 
       // Use Gemini AI to refine chapter extraction or discover next-chapter URL when heuristics are sparse
       const needsAiBoost =
@@ -1264,33 +1200,35 @@ Return JSON with:
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Trình duyệt BOOKHAD</title>
+<title>Trình duyệt Web</title>
 <style>
-  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f6f1; color: #1c1917; padding: 20px 16px 40px; }
-  .card { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid #e7e5e4; border-radius: 18px; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,0.05); }
-  h1 { font-size: 16px; margin: 0 0 6px; }
-  p { font-size: 12px; color: #57534e; margin: 0 0 14px; line-height: 1.5; }
-  form { display: flex; gap: 6px; margin-bottom: 14px; }
-  input { flex: 1; padding: 10px 12px; border-radius: 12px; border: 1px solid #d6d3d1; font-size: 13px; }
-  button { padding: 10px 14px; border-radius: 12px; border: 0; background: #92400e; color: #fff; font-weight: 600; font-size: 12px; cursor: pointer; }
-  .links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  a.tile { display: block; padding: 10px 12px; border-radius: 12px; background: #fafaf9; border: 1px solid #e7e5e4; color: #292524; text-decoration: none; font-size: 12px; font-weight: 600; }
-  a.tile span { display: block; font-size: 10px; font-weight: 400; color: #78716c; margin-top: 2px; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #ffffff; color: #202124; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 16px 48px; }
+  .wrap { width: 100%; max-width: 480px; text-align: center; }
+  .brand { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 18px; color: #202124; }
+  .brand span:nth-child(1){ color:#4285F4; } .brand span:nth-child(2){ color:#EA4335; } .brand span:nth-child(3){ color:#FBBC05; } .brand span:nth-child(4){ color:#4285F4; } .brand span:nth-child(5){ color:#34A853; } .brand span:nth-child(6){ color:#EA4335; }
+  form { display: flex; align-items: center; gap: 6px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 999px; padding: 4px 6px 4px 14px; margin-bottom: 22px; }
+  form:focus-within { background: #fff; border-color: #4285F4; box-shadow: 0 2px 8px rgba(66,133,244,0.16); }
+  input { flex: 1; border: 0; background: transparent; outline: none; font-size: 14px; padding: 8px 0; color: #202124; min-width: 0; }
+  button { padding: 8px 14px; border-radius: 999px; border: 0; background: #1a73e8; color: #fff; font-weight: 600; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .dial { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; text-align: left; }
+  a.tile { display: block; padding: 11px 12px; border-radius: 14px; background: #f8f9fa; border: 1px solid #e8eaed; color: #202124; text-decoration: none; font-size: 12.5px; font-weight: 600; }
+  a.tile:hover { background: #f1f3f4; }
+  a.tile span { display: block; font-size: 10.5px; font-weight: 400; color: #5f6368; margin-top: 2px; }
 </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Trình duyệt tìm truyện BOOKHAD</h1>
-    <p>Nhập địa chỉ trang web truyện hoặc từ khóa tìm kiếm ngay tại đây. Khi mở tới Chương 1, bấm <b>Bắt đầu AI quét tự động</b> trên thanh phía trên để AI tự lướt trang và lưu sách.</p>
+  <div class="wrap">
+    <div class="brand" aria-label="Trình duyệt Web"><span>B</span><span>r</span><span>o</span><span>w</span><span>s</span><span>e</span>r</div>
     <form id="navForm">
-      <input id="q" type="text" placeholder="Nhập URL (https://...) hoặc tên truyện cần tìm..." autocomplete="off" />
-      <button type="submit">Đi tới</button>
+      <input id="q" type="text" placeholder="Tìm kiếm web hoặc nhập URL (https://...)" autocomplete="off" />
+      <button type="submit">Tìm</button>
     </form>
-    <div class="links">
-      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('/demo-web-book/chuong-1')}">Truyện Mẫu AI (Chương 1)<span>Thử ngay AI quét tự động</span></a>
-      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://vi.wikipedia.org/wiki/V%C4%83n_h%E1%BB%8Dc_Vi%E1%BB%87t_Nam')}">Wikipedia Văn học<span>Đọc & quét bài viết mở</span></a>
-      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://html.duckduckgo.com/html/?q=doc+truyen+chu+online')}">Tìm truyện chữ Online<span>Tìm kiếm trang truyện</span></a>
-      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://gutenberg.org/')}">Project Gutenberg<span>Kho sách mở quốc tế</span></a>
+    <div class="dial">
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://html.duckduckgo.com/html/?q=doc+truyen+chu+online')}">Tìm truyện chữ Online<span>Công cụ tìm kiếm web</span></a>
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://vi.wikipedia.org/wiki/V%C4%83n_h%E1%BB%8Dc_Vi%E1%BB%87t_Nam')}">Wikipedia Tiếng Việt<span>Bách khoa & văn học mở</span></a>
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('/demo-web-book/chuong-1')}">Truyện Mẫu AI (Ch.1)<span>Thử AI tự quét ngay</span></a>
+      <a class="tile" href="/api/web/browse?url=${encodeURIComponent('https://gutenberg.org/')}">Project Gutenberg<span>Kho sách điện tử mở</span></a>
     </div>
   </div>
   <script>
@@ -1305,7 +1243,7 @@ Return JSON with:
             : 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(val));
       window.location.href = '/api/web/browse?url=' + encodeURIComponent(target);
     });
-    window.parent.postMessage({ type: 'BOOKHAD_BROWSER_URL', url: '', title: 'Trình duyệt BOOKHAD' }, '*');
+    window.parent.postMessage({ type: 'BOOKHAD_BROWSER_URL', url: '', title: 'Trình duyệt Web' }, '*');
   </script>
 </body>
 </html>`);
@@ -1356,7 +1294,7 @@ Return JSON with:
       // Remove frame-busting meta tags so the page stays cleanly inside BOOKHAD's embedded window
       html = html.replace(/<meta[^>]+http-equiv=["']?(?:Content-Security-Policy|X-Frame-Options)["']?[^>]*>/gi, '');
 
-      const bridgeScript = `<base href="${escapeHtml(finalUrl)}" />
+      const bridgeScript = `<base href="${escapeHtml(finalUrl)}" target="_self" />
 <script>
 (function(){
   var CURRENT_URL = ${JSON.stringify(displayUrl)};
@@ -1372,6 +1310,15 @@ Return JSON with:
   }
   reportUrl();
   window.addEventListener('DOMContentLoaded', reportUrl);
+  window.open = function(u) {
+    if (u) {
+      try {
+        var abs = new URL(String(u), FINAL_URL).toString();
+        window.location.href = '/api/web/browse?url=' + encodeURIComponent(abs);
+      } catch (err) {}
+    }
+    return null;
+  };
   document.addEventListener('click', function(e) {
     var anchor = e.target && e.target.closest ? e.target.closest('a[href]') : null;
     if (!anchor) return;
@@ -1553,133 +1500,28 @@ ${formatted}`,
     }
   });
 
-  // Store-Compliant YouTube Transcript-Only Extractor (NEVER downloads video/audio)
-  function extractYoutubeVideoId(rawUrl: string): string | null {
-    const m =
-      rawUrl.match(/(?:youtube\.com\/watch\?(?:[^#\s]*&)?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/) ||
-      rawUrl.match(/^([a-zA-Z0-9_-]{11})$/);
-    return m ? m[1] : null;
-  }
-
-  function extractYoutubePlaylistId(rawUrl: string): string | null {
-    const m = rawUrl.match(/[?&]list=([a-zA-Z0-9_-]{10,120})/);
-    return m ? m[1] : null;
-  }
-
-  function decodeXmlEntities(str: string): string {
-    return str
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
+  // Store-Compliant YouTube Transcript-Only Extractor (InnerTube ANDROID/IOS + JSON3/XML3/XML)
   app.post('/api/youtube/transcript', async (req, res) => {
     try {
       const { url = '', cleanWithAi = true } = req.body as {
         url?: string;
         cleanWithAi?: boolean;
       };
-      const videoId = extractYoutubeVideoId(String(url).trim());
-      if (!videoId) {
-        res.status(400).json({ error: 'Link YouTube không hợp lệ.' });
-        return;
-      }
 
-      const watchRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=vi`, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-        },
-      });
-      if (!watchRes.ok) {
-        res.status(502).json({ error: 'Không thể truy cập trang YouTube công khai.' });
-        return;
-      }
-      const html = await watchRes.text();
-
-      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
-      const rawTitle = titleMatch
-        ? decodeXmlEntities(titleMatch[1]).replace(/\s*-\s*YouTube$/i, '').trim()
-        : `YouTube ${videoId}`;
-
-      const authorMatch = html.match(/"ownerChannelName":"([^"]+)"/);
-      const author = authorMatch ? authorMatch[1] : 'YouTube';
-      const durationMatch = html.match(/"lengthSeconds":"(\d+)"/);
-      const durationSec = durationMatch ? Number(durationMatch[1]) : 600;
-
-      // Extract public captionTracks strictly from ytInitialPlayerResponse JSON
-      const captionTracksMatch = html.match(/"captionTracks":(\[[\s\S]*?\])/);
-      if (!captionTracksMatch) {
-        res.status(404).json({
-          error: 'Video này chưa có phụ đề (CC/Transcript) công khai trên YouTube.',
-          code: 'NO_CAPTIONS',
-          title: rawTitle,
-          author,
-          videoId,
-          durationSec,
+      const ytResult = await fetchYoutubeTranscriptResilient(String(url).trim());
+      if (!ytResult.ok) {
+        res.status(ytResult.status).json({
+          error: ytResult.error,
+          code: ytResult.code,
+          title: ytResult.title,
+          author: ytResult.author,
+          videoId: ytResult.videoId,
+          durationSec: ytResult.durationSec,
         });
         return;
       }
 
-      let tracks: Array<{ baseUrl: string; languageCode?: string; kind?: string }> = [];
-      try {
-        tracks = JSON.parse(captionTracksMatch[1]);
-      } catch {
-        tracks = [];
-      }
-
-      if (!Array.isArray(tracks) || tracks.length === 0) {
-        res.status(404).json({
-          error: 'Video này chưa có phụ đề (CC/Transcript) công khai trên YouTube.',
-          code: 'NO_CAPTIONS',
-          title: rawTitle,
-          author,
-          videoId,
-          durationSec,
-        });
-        return;
-      }
-
-      // Prefer Vietnamese captions, then English, then first available public caption track
-      const preferred =
-        tracks.find((t) => (t.languageCode || '').startsWith('vi') && t.kind !== 'asr') ||
-        tracks.find((t) => (t.languageCode || '').startsWith('vi')) ||
-        tracks.find((t) => (t.languageCode || '').startsWith('en')) ||
-        tracks[0];
-
-      const captionUrl = String(preferred.baseUrl || '').replace(/\\u0026/g, '&');
-      const capRes = await fetch(captionUrl);
-      if (!capRes.ok) {
-        res.status(502).json({ error: 'Không tải được dữ liệu phụ đề công khai.' });
-        return;
-      }
-      const capXml = await capRes.text();
-
-      // Strip all timestamps & XML tags, collect pure text lines
-      const rawLines: string[] = [];
-      const textTagRegex = /<text[^>]*>([\s\S]*?)<\/text>/gi;
-      let m: RegExpExecArray | null;
-      while ((m = textTagRegex.exec(capXml)) !== null) {
-        const clean = decodeXmlEntities(m[1]);
-        if (clean) rawLines.push(clean);
-      }
-
-      if (rawLines.length === 0) {
-        res.status(404).json({
-          error: 'Phụ đề của video trống hoặc không có văn bản đọc được.',
-          code: 'NO_CAPTIONS',
-        });
-        return;
-      }
-
-      // Merge into clean natural paragraphs (remove timestamp breaks)
+      const { videoId, title: rawTitle, author, durationSec, languageCode, rawLines } = ytResult.data;
       const joinedRaw = rawLines.join(' ').replace(/\s+/g, ' ').trim();
       let paragraphs: string[] = [];
 
@@ -1741,7 +1583,7 @@ ${sampleChunk}`,
         author,
         durationSec,
         estimatedScanSec: Math.max(4, Math.min(45, Math.round(durationSec / 90) + 4)),
-        languageCode: preferred.languageCode || 'vi',
+        languageCode,
         paragraphs,
         wordCount: paragraphs.join(' ').split(/\s+/).filter(Boolean).length,
       });
@@ -1754,66 +1596,12 @@ ${sampleChunk}`,
   app.post('/api/youtube/playlist', async (req, res) => {
     try {
       const { url = '' } = req.body as { url?: string };
-      const playlistId = extractYoutubePlaylistId(String(url).trim());
-      if (!playlistId) {
-        res.status(400).json({ error: 'Link Playlist YouTube không hợp lệ (cần tham số list=...).' });
+      const plResult = await fetchYoutubePlaylistResilient(String(url).trim());
+      if (!plResult.ok) {
+        res.status(plResult.status).json({ error: plResult.error });
         return;
       }
-
-      const plRes = await fetch(`https://www.youtube.com/playlist?list=${playlistId}&hl=vi`, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        },
-      });
-      if (!plRes.ok) {
-        res.status(502).json({ error: 'Không tải được danh sách phát YouTube.' });
-        return;
-      }
-      const html = await plRes.text();
-      const titleMatch = html.match(/<title>(.*?)<\/title>/i);
-      const playlistTitle = titleMatch
-        ? decodeXmlEntities(titleMatch[1]).replace(/\s*-\s*YouTube$/i, '').trim()
-        : `Playlist ${playlistId.slice(0, 8)}`;
-
-      const items: Array<{ videoId: string; title: string; url: string }> = [];
-      const seen = new Set<string>();
-      const itemRegex = /"playlistVideoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"[\s\S]*?"title":\{"runs":\[\{"text":"([^"]+)"/g;
-      let m: RegExpExecArray | null;
-      while ((m = itemRegex.exec(html)) !== null && items.length < 40) {
-        const vid = m[1];
-        if (seen.has(vid)) continue;
-        seen.add(vid);
-        items.push({
-          videoId: vid,
-          title: m[2].replace(/\\"/g, '"'),
-          url: `https://www.youtube.com/watch?v=${vid}`,
-        });
-      }
-
-      if (items.length === 0) {
-        // Fallback extract videoIds in order
-        const fallbackRegex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
-        let fm: RegExpExecArray | null;
-        while ((fm = fallbackRegex.exec(html)) !== null && items.length < 25) {
-          if (seen.has(fm[1])) continue;
-          seen.add(fm[1]);
-          items.push({
-            videoId: fm[1],
-            title: `Tập ${items.length + 1}`,
-            url: `https://www.youtube.com/watch?v=${fm[1]}`,
-          });
-        }
-      }
-
-      res.json({
-        playlistId,
-        title: playlistTitle,
-        totalVideos: items.length,
-        estimatedFullSec: Math.max(8, items.length * 6),
-        estimatedSingleSec: 6,
-        videos: items,
-      });
+      res.json(plResult.data);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi đọc danh sách phát YouTube.';
       res.status(500).json({ error: msg });
